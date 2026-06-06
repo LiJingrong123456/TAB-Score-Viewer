@@ -15,6 +15,7 @@
            7. 鼠标滚轮滚动 - 支持Ctrl加速/Shift精细控制
            8. 深色主题UI + 自定义组件(按钮/滑块/进度条)
            9. 键盘快捷键 - 空格播放暂停/方向键调速/ESC关闭
+          10. GTP文件完整渲染 - 基于gtp_engine库解析并渲染为六线谱图像
 
 创建日期: 2026-06-06
 最后修改: 2026-06-06
@@ -23,12 +24,14 @@
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图)
   - PyMuPDF >= 1.23   # PDF解析与页面渲染为图片 (开源项目: Artifex Software)
   - Pillow >= 10.0    # 图片处理(PNG/JPG/WEBP解码) (开源项目: Python Imaging Library)
+  - guitarpro >= 0.11 # Guitar Pro文件解析 (开源项目: pyguitarpro) - GTP渲染功能依赖
 
-技术栈: Python 3.8+ / PyQt5 / PyMuPDF / Pillow
+技术栈: Python 3.8+ / PyQt5 / PyMuPDF / Pillow / guitarpro(gtp_engine)
 兼容性: Windows / Linux / Docker (所有路径使用相对路径)
 
 项目结构:
   guitar_tab_viewer.py   - 主程序(本文件)
+  gtp_engine/            - GTP渲染引擎库(解析+渲染六线谱)
   config/settings.json   - 用户配置(运行时自动生成)
   data/annotations/      - 标注数据存储(JSON格式)
   readme/                - 项目文档目录
@@ -265,21 +268,48 @@ class LoadContentWorker(QRunnable):
     def _load_gtp(self) -> List[QPixmap]:
         """
         加载Guitar Pro文件(.gp3/.gp4/.gp5/.gpx/.gtp)
-        注意: 完整GTP解析需要专用库(如alphaTab)，当前版本提供信息展示
+        
+        原理: 使用 gtp_engine 库（基于 PyGuitarPro）完整解析 GTP 文件，
+              并通过 QPainter 渲染为六线谱图像。
+              解析流程: .gp文件 → PyGuitarPro → GTPSong中介模型 → TabRenderer → QPixmap列表
+        
+        依赖库:
+          - guitarpro >= 0.11   # Guitar Pro 文件解析（开源项目: pyguitarpro）
+          - gtp_engine           # 本项目内置的渲染引擎库
         """
         images = []
         try:
-            with open(self.file_path, 'rb') as f:
-                header = f.read(100)
-            info_pixmap = self._create_gtp_info_image(header)
+            # 使用 gtp_engine 进行完整解析和渲染
+            from gtp_engine.renderer import TabRenderer
+            
+            renderer = TabRenderer()
+            
+            # 进度报告：开始加载
+            self.signals.progress.emit(10)
+            
+            # 解析并渲染（内部调用 parse_gtp + render）
+            pixmaps = renderer.render_from_file(self.file_path)
+            
+            # 进度报告：完成
+            self.signals.progress.emit(100)
+            
+            images = pixmaps
+            
+        except ImportError as e:
+            # gtp_engine 或 guitarpro 未安装时，回退到信息展示图
+            info_pixmap = self._create_gtp_info_image(
+                f"GTP引擎依赖缺失:\n{str(e)}\n\n请安装: pip install PyGuitarPro"
+            )
             images.append(info_pixmap)
         except Exception as e:
+            # 其他错误时，显示错误信息和回退预览
             error_pixmap = self._create_error_image(f"GTP加载失败:\n{str(e)}")
             images.append(error_pixmap)
+        
         return images
 
-    def _create_gtp_info_image(self, header: bytes) -> QPixmap:
-        """创建GTP文件信息展示图"""
+    def _create_gtp_info_image(self, message: str) -> QPixmap:
+        """创建GTP信息/错误展示图（当gtp_engine不可用时回退显示）"""
         width, height = 800, 500
         pixmap = QPixmap(width, height)
         pixmap.fill(QColor(THEME_COLORS['bg_surface']))
@@ -297,23 +327,14 @@ class LoadContentWorker(QRunnable):
         painter.setPen(QColor(THEME_COLORS['text_primary']))
         info_font = QFont("Microsoft YaHei", 13)
         painter.setFont(info_font)
-        lines = [
-            "GTP(Guitar Pro)文件格式说明:",
-            "",
-            "• GP3/GP4/GP5: Guitar Pro 3-5原生格式",
-            "• GPX: Guitar Pro 6+ XML格式",
-            "• 当前版本提供基础预览功能",
-            "",
-            "建议: 使用Guitar Pro软件打开并",
-            "      导出为PDF或PNG格式以获得最佳体验。",
-            "",
-            "完整播放支持计划在后续版本中通过",
-            "集成alphaTab JavaScript库实现。"
-        ]
+        
+        # 将message按行分割并绘制
+        lines = message.split('\n')
         y = 130
         for line in lines:
-            painter.drawText(QRect(50, y, 700, 32), Qt.AlignLeft, line)
-            y += 35
+            if line.strip():
+                painter.drawText(QRect(50, y, 700, 32), Qt.AlignLeft, line)
+            y += 30
 
         # 边框
         painter.setPen(QPen(QColor(THEME_COLORS['primary']), 2))
