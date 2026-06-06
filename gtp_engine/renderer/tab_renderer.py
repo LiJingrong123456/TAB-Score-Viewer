@@ -20,6 +20,7 @@
   - 内部依赖: gtp_engine.models.*, layout_engine.*, utils.constants
 
 创建日期: 2026-06-06
+最后更新: 2026-06-06 (v1.1.3: 头部仅第1页显示; 符干统一向下)
 ============================================================
 """
 
@@ -122,8 +123,9 @@ class TabRenderer:
         painter.setRenderHint(QPainter.TextAntialiasing, True)
         
         try:
-            # 1. 绘制页面头部信息区
-            self._draw_header(painter, song, track, width)
+            # 1. 绘制页面头部信息区（仅第1页显示标题/调弦/BPM，后续页省略以节省空间）
+            if page.page_number == 1:
+                self._draw_header(painter, song, track, width)
             
             # 2. 绘制每行系统(六线谱行)
             for system in page.systems:
@@ -422,8 +424,9 @@ class TabRenderer:
         highest_string = beat.get_highest_string()
         lowest_string = beat.get_lowest_string()
         
-        # 多数情况：以最高音为准决定方向
-        stem_up = highest_string <= 2  # 第1-3弦 → 符干向上
+        # 符干方向统一向下：所有符干从第6弦线下方延伸，符尾在下方
+        # 这样视觉上更整洁，符尾不会与上方内容重叠
+        stem_up = False
         
         if stem_up:
             # 符干向上：从第1弦线上方延伸
