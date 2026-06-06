@@ -17,6 +17,7 @@
            9. 键盘快捷键 - 空格播放暂停/方向键调速/ESC关闭
           10. GTP文件完整渲染 - 基于gtp_engine库解析并渲染为六线谱图像
           11. 右键打开文件位置 - 文件列表右键菜单支持在资源管理器中定位文件
+          12. GTP音轨切换 - 下拉菜单选择不同音轨查看(含调弦信息显示)
 
 创建日期: 2026-06-06
 最后修改: 2026-06-06
@@ -1177,6 +1178,11 @@ class DisplayWindow(QMainWindow):
         self.total_scroll_distance:float=0.0   # 总可滚动距离
         self.play_time:float=0.0              # 已播放时间
 
+        # GTP音轨选择状态（仅GTP文件时使用）
+        self.gtp_track_combo=None             # 音轨下拉菜单控件
+        self.gtp_current_track:int=0          # 当前选中的音轨索引
+        self.gtp_file_path:str=""             # 当前GTP文件路径(用于切换音轨时重新渲染)
+
         self.init_ui()
         self._load_annotations()               # 加载已有标注
         self.load_content_async()              # 异步加载内容
@@ -1242,6 +1248,14 @@ class DisplayWindow(QMainWindow):
         self.file_label=QLabel(f"📄 {fname}")
         self.file_label.setStyleSheet(f"font-size:14px;font-weight:bold;color:{THEME_COLORS['primary_light']};")
         tb.addWidget(self.file_label)
+
+        # GTP音轨选择下拉菜单（仅GTP文件显示，默认隐藏）
+        self.gtp_track_combo=QComboBox()
+        self.gtp_track_combo.setMinimumWidth(160)
+        self.gtp_track_combo.setVisible(False)  # 非GTP文件时隐藏
+        self.gtp_track_combo.currentIndexChanged.connect(self._on_gtp_track_changed)
+        tb.addWidget(self.gtp_track_combo)
+
         tb.addStretch()
 
         # 缩放滑块
@@ -1415,8 +1429,91 @@ class DisplayWindow(QMainWindow):
         self._calculate_total_distance()
         self.update_progress_display()
         self._update_page_display()  # 更新页码显示
+
+        # GTP文件：填充音轨选择下拉菜单
+        if self.file_type == 'gtp':
+            self._populate_gtp_track_combo()
+        else:
+            if self.gtp_track_combo:
+                self.gtp_track_combo.setVisible(False)
+
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)
+
+    def _populate_gtp_track_combo(self)->None:
+        """
+        填充GTP音轨下拉菜单
+        
+        原理: 解析GTP文件获取所有音轨名称，填充到QComboBox中。
+              用户切换选项后触发重新渲染对应音轨的六线谱。
+        
+        注意: 此方法在主线程中调用（_on_content_loaded回调），解析操作很快（<50ms）
+        """
+        try:
+            from gtp_engine.parser import parse_gtp
+            song = parse_gtp(self.file_path)
+            self.gtp_file_path = self.file_path
+
+            # 阻断信号避免触发不必要的重新渲染
+            self.gtp_track_combo.blockSignals(True)
+            self.gtp_track_combo.clear()
+
+            for i, track in enumerate(song.tracks):
+                # 显示格式: "序号. 音轨名 (调弦)"
+                tuning_name = track.get_tuning_name()
+                display_name = f"{i+1}. {track.name} ({tuning_name})"
+                self.gtp_track_combo.addItem(display_name, userData=i)
+
+            # 恢复之前的选择或默认第0个
+            if self.gtp_current_track < self.gtp_track_combo.count():
+                self.gtp_track_combo.setCurrentIndex(self.gtp_current_track)
+            else:
+                self.gtp_current_track = 0
+
+            self.gtp_track_combo.blockSignals(False)
+            self.gtp_track_combo.setVisible(True)
+
+        except Exception as e:
+            # 解析失败时隐藏下拉菜单，不影响正常显示
+            if self.gtp_track_combo:
+                self.gtp_track_combo.setVisible(False)
+
+    def _on_gtp_track_changed(self, index:int)->None:
+        """
+        音轨切换回调 - 重新渲染指定音轨的六线谱
+        
+        参数:
+            index: 下拉菜单选中项索引(0-based)，对应音轨序号
+        """
+        if index < 0 or not self.gtp_file_path:
+            return
+
+        self.gtp_current_track = index
+
+        # 停止播放（避免渲染过程中滚动错乱）
+        was_playing = self.timer.isActive()
+        if was_playing:
+            self.stop_playback()
+
+        try:
+            from gtp_engine.renderer import TabRenderer
+            renderer = TabRenderer()
+            pixmaps = renderer.render_from_file(
+                self.gtp_file_path,
+                track_index=index
+            )
+            self.images = pixmaps
+            self.loaded_images = pixmaps
+            self.display_widget.set_images(pixmaps)
+            self.current_position = 0.0
+            self.play_time = 0.0
+            self._calculate_total_distance()
+            self._update_page_display()
+            self.update_progress_display()
+            self.display_widget.update()
+
+        except Exception as e:
+            QMessageBox.warning(self, "音轨切换失败", f"无法渲染音轨 {index+1}:\n{str(e)}")
 
     def _on_content_load_error(self,msg:str)->None:
         """加载失败回调"""
@@ -1427,6 +1524,10 @@ class DisplayWindow(QMainWindow):
         """更新显示内容"""
         self.file_path=file_path;self.file_type=file_type;self.base_speed=speed
         self._calculate_scroll_step(speed);self.annotations.clear()
+        # 重置GTP音轨状态（切换文件时清空）
+        self.gtp_current_track=0;self.gtp_file_path=""
+        if self.gtp_track_combo:
+            self.gtp_track_combo.setVisible(False)
         self._load_annotations();self.load_content_async()
 
     # ========== 播放控制 ==========

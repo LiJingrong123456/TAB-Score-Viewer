@@ -23,7 +23,8 @@ class GTPNote:
     
     属性说明:
       midi_pitch:    MIDI音高值 (0-127), 40=E2(6弦空弦), 64=E4(1弦空弦)
-      string:        弦号 (0-5), 0=1弦(最细/高音E), 5=6弦(最粗/低音E)
+      string:        弦号 (0-5), 0=1弦(最细/高音E/顶线), 5=6弦(最粗/低音E/底线)
+                     注意: PyGuitarPro原始数据为1-based(1-6)，解析时已转为0-based
       fret:          品格数 (0-30), 0=空弦
       velocity:      力度/击弦强度 (0-127), 影响播放音量
       duration:      时值类型 (NoteDuration枚举)
