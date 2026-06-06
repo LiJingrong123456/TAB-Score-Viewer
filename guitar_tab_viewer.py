@@ -64,7 +64,7 @@ from PIL import Image as PILImage  # Pillow - 图片处理(含WEBP) (开源库)
 # 配置常量
 # ============================================================
 
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".guitar_tab_viewer_config.json")
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "settings.json")
 ANNOTATION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "annotations")
 
 # 支持的文件扩展名
@@ -631,7 +631,8 @@ class SpeedCurveEditor(QDialog):
         self.curveUpdated.emit(self.curve_config)
 
     def _clear_all(self) -> None:
-        self.curve_config.points = []
+        """清除所有控制点 - 保留默认线性端点避免空曲线异常"""
+        self.curve_config.points = [SpeedCurvePoint(0, 50), SpeedCurvePoint(100, 50)]
         self.canvas_widget.load_curve(self.curve_config)
         self.curveUpdated.emit(self.curve_config)
 
@@ -1681,7 +1682,7 @@ class SettingsWindow(QMainWindow):
             self.max_speed_edit.setText(str(getattr(self,'max_range',200)))
 
     def on_file_double_clicked(self,item:QListWidgetItem)->None:
-        """双击文件项"""
+        """双击文件项 - 图片格式自动加载同目录所有图片(按序拼接)"""
         fpath=item.data(Qt.UserRole);is_dir=item.data(Qt.UserRole+1)
         if is_dir:
             self.is_loading=True;self.file_list.clear()
@@ -1694,7 +1695,14 @@ class SettingsWindow(QMainWindow):
             if ext in SUPPORTED_PDF_EXTENSIONS:
                 self.show_display(fpath,'pdf')
             elif ext in SUPPORTED_IMAGE_EXTENSIONS:
-                self.show_display([fpath],'images')
+                # 收集同目录下所有支持的图片文件，按名称排序后拼接
+                directory=os.path.dirname(fpath)
+                all_images=sorted(
+                    [os.path.join(directory,f) for f in os.listdir(directory)
+                     if os.path.isfile(os.path.join(directory,f))
+                     and os.path.splitext(f)[1].lower() in SUPPORTED_IMAGE_EXTENSIONS]
+                )
+                self.show_display(all_images,'images')
             elif ext in SUPPORTED_GTP_EXTENSIONS:
                 self.show_display(fpath,'gtp')
 
@@ -1779,6 +1787,9 @@ class SettingsWindow(QMainWindow):
 # ============================================================
 
 if __name__ == '__main__':
+    # 确保配置和标注目录存在
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    os.makedirs(ANNOTATION_DIR, exist_ok=True)
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色主题
     settings = SettingsWindow()
