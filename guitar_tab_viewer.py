@@ -1639,6 +1639,28 @@ class DisplayWindow(QMainWindow):
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['warning']};")
         self.stop_btn.setEnabled(True)
 
+    def closeEvent(self, event):
+        """
+        窗口关闭事件: 确保音频引擎完全停止释放资源
+        
+        原理: PyQt5 窗口关闭时默认只隐藏窗口，后台线程可能继续运行。
+              此方法在窗口销毁前强制停止 SynthEngine 播放线程和音频输出，
+              防止"关窗后声音仍在播放"的问题。
+        """
+        # 停止定时器和播放
+        self.timer.stop()
+        
+        # 强制停止音频引擎（释放所有发声音符 + 结束播放线程）
+        if self._synth_engine:
+            try:
+                self._synth_engine.stop()
+                self._synth_engine.shutdown()
+            except Exception:
+                pass
+        
+        # 调用父类关闭
+        super().closeEvent(event)
+
     def stop_playback(self)->None:
         """停止播放"""
         self.timer.stop()
@@ -1970,10 +1992,33 @@ class DisplayWindow(QMainWindow):
             self.timer.start(max(1,val))
 
     def _on_progress_changed(self,pos:float)->None:
-        """进度条拖动"""
+        """
+        进度条拖动回调: 同步更新滚动位置 + 音频跳转
+        
+        原理: 用户拖动进度条时，除了更新视觉滚动位置外，
+              还需要让音频引擎跳转到对应时间位置(如果音频正在播放)。
+        """
         if self.total_scroll_distance>0:
             self.current_position=pos/100*self.total_scroll_distance
             self.display_widget.update()
+            
+            # === 音频同步跳转 ===
+            # 仅在音频引擎已初始化且启用时执行seek
+            if self._synth_engine and self._audio_enabled and self._midi_converter and self._gtp_song:
+                try:
+                    # 获取当前模式的总时长
+                    if self._audio_mode == "all":
+                        total_ms = self._midi_converter.get_all_tracks_duration_ms(self._gtp_song)
+                    else:
+                        total_ms = self._midi_converter.get_total_duration_ms(
+                            self._gtp_song, self.gtp_current_track
+                        )
+                    
+                    if total_ms > 0:
+                        target_ms = (pos / 100.0) * total_ms
+                        self._synth_engine.seek(target_ms)
+                except Exception as e:
+                    print(f"[Audio] seek失败: {e}")
 
     def _on_region_selected(self,start:float,end:float)->None:
         """A-B区域选择"""
