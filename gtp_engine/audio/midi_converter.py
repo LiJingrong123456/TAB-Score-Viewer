@@ -83,6 +83,13 @@ class MidiConverter:
     # 吉他音色 MIDI 通道映射
     GUITAR_CHANNEL = 0    # 主吉他轨道使用通道0
     
+    # 多轨并轨时每轨分配的起始通道号（最多支持16个音轨，通道0-15）
+    MULTI_TRACK_START_CHANNEL = 0
+    
+    # MIDI标准中通道9(第10通道)是打击乐/鼓组保留通道，不能用于旋律乐器
+    # 多轨并轨时自动跳过此通道
+    PERCUSSION_CHANNEL = 9
+    
     def __init__(self, ticks_per_beat: int = None):
         """
         初始化转换器
@@ -147,6 +154,95 @@ class MidiConverter:
         events.sort(key=lambda e: (e.time, 0 if e.type == "note_on" else 1))
         
         return events
+    
+    def convert_all_tracks(self, song) -> Tuple[List[MidiEvent], List[int]]:
+        """
+        转换歌曲所有音轨为合并的 MIDI 事件序列（并轨模式）
+        
+        原理:
+          遍历 GTPSong 中所有音轨，每个音轨分配独立的 MIDI 通道，
+          将所有音轨的音符事件合并到一个列表中按时间排序。
+          这样播放时所有音轨同时发声，实现"乐队合奏"效果。
+        
+        通道分配规则:
+          - 音轨0 → MIDI通道0
+          - 音轨1 → MIDI通道1
+          - ...以此类推，最多支持16个音轨(通道0-15)
+          - 超过16个音轨时循环使用通道(取模)
+        
+        参数:
+            song: GTPSong 歌曲数据对象
+        
+        返回:
+            Tuple[events, track_channels]:
+              - events: 合并后的全部MIDI事件列表(已排序)
+              - track_channels: 每个音轨对应的MIDI通道号列表
+        
+        使用场景:
+          全轨并轨播放模式 - 用户想听到完整乐队效果而非单轨独奏
+        """
+        all_events: List[MidiEvent] = []
+        track_channels: List[int] = []
+        
+        if not song or not song.tracks:
+            return all_events, track_channels
+        
+        # 只在开头插入一次 tempo 事件（避免重复）
+        all_events.append(MidiEvent(
+            time=0,
+            type="tempo",
+            channel=0,
+            pitch=0,
+            velocity=0,
+            value=song.tempo
+        ))
+        
+        # 遍历每个音轨，各自转换后合并
+        # 通道分配规则: 跳过通道9(打击乐保留通道)，其余0-15共15个可用
+        _available_channels = [c for c in range(16) if c != self.PERCUSSION_CHANNEL]
+        
+        for track_idx, track in enumerate(song.tracks):
+            # 从可用通道列表中循环分配（跳过打击乐通道9）
+            ch = _available_channels[track_idx % len(_available_channels)]
+            track_channels.append(ch)
+            
+            # 复用 convert 的逻辑但指定该轨道的通道
+            current_tick = 0
+            for measure in track.measures:
+                measure_events = self._convert_measure(
+                    measure, current_tick, ch
+                )
+                all_events.extend(measure_events)
+                measure_ticks = self._measure_to_ticks(measure)
+                current_tick += measure_ticks
+        
+        # 全局排序：所有轨道的事件按时间统一排序
+        all_events.sort(key=lambda e: (e.time, 0 if e.type == "note_on" else 1))
+        
+        return all_events, track_channels
+    
+    def get_all_tracks_duration_ms(self, song) -> float:
+        """
+        获取所有音轨中最长的总时长(毫秒)
+        
+        用于全轨并轨模式下的进度条计算，
+        取最长轨道的时长作为总时长。
+        
+        参数:
+            song: GTPSong 对象
+        
+        返回:
+            最长音轨的时长(毫秒)
+        """
+        if not song or not song.tracks:
+            return 0.0
+        
+        max_duration = 0.0
+        for idx in range(len(song.tracks)):
+            duration = self.get_total_duration_ms(song, idx)
+            max_duration = max(max_duration, duration)
+        
+        return max_duration
     
     def _convert_measure(self, measure, start_tick: int, 
                           channel: int) -> List[MidiEvent]:

@@ -7,8 +7,9 @@
 
 创建日期: 2026-06-07
 依赖: 
-  - fluidsynth >= 1.2.0 (python-fluidsynth, 开源项目: FluidSynth)
-  - numpy (可选，用于高级音频处理)
+  - pyfluidsynth >= 1.4.0 (Python绑定, 开源项目: pyfluidsynth/nwhitehead)
+  - libfluidsynth-3.dll (FluidSynth C库, 需放到项目根目录或系统PATH中)
+  - SoundFont 文件 (.sf2) 用于音色采样
 设计原则:
   - 线程安全: 音频播放在独立线程中运行，不阻塞UI主线程
   - 精确定时: 使用系统高精度定时器驱动 MIDI 事件发送
@@ -32,8 +33,11 @@
     engine.stop()
 
 依赖库说明:
-  - python-fluidsynth: FluidSynth 的 Python 绑定（开源项目: FluidSynth）
-    安装命令: pip install fluidsynth -i https://pypi.tuna.tsinghua.edu.cn/simple
+  - pyfluidsynth: FluidSynth 的 Python ctypes 绑定（开源项目: nwhitehead/pyfluidsynth）
+    安装命令: pip install pyfluidsynth -i https://pypi.tuna.tsinghua.edu.cn/simple
+  - libfluidsynth-3.dll: FluidSynth C运行时库
+    下载地址: https://github.com/FluidSynth/fluidsynth/releases
+    放置位置: 项目根目录即可（代码自动搜索）
 ============================================================
 """
 
@@ -177,8 +181,33 @@ class SynthEngine:
         注意:
           此方法必须在 load_soundfont() 之前调用！
           如果 fluidsynth 库未安装会返回 False 但不抛异常。
+          
+        DLL 依赖说明:
+          需要 libfluidsynth-3.dll (FluidSynth C库)。
+          自动搜索顺序: 项目根目录 → 系统PATH → 标准安装路径。
+          用户可将DLL放到项目根目录即可免安装使用。
         """
         try:
+            # === 将DLL目录加入PATH(让ctypes.util.find_library能找到libfluidsynth-3.dll) ===
+            _dll_dir = self._get_project_root()
+            _dll_path = os.path.join(_dll_dir, "libfluidsynth-3.dll")
+            
+            if os.path.isfile(_dll_path):
+                # 将DLL目录添加到环境变量PATH（ctypes.util.find_library依赖PATH搜索）
+                _old_path = os.environ.get('PATH', '')
+                if _dll_dir not in _old_path:
+                    os.environ['PATH'] = _dll_dir + os.pathsep + _old_path
+                print(f"[SynthEngine] 已添加DLL目录到PATH: {_dll_dir}")
+                
+                # Python 3.8+ 同时添加到DLL搜索目录(用于运行时加载)
+                if hasattr(os, 'add_dll_directory'):
+                    try:
+                        os.add_dll_directory(_dll_dir)
+                    except OSError:
+                        pass  # 某些情况下可能失败，不影响PATH方式
+            else:
+                print(f"[SynthEngine] 警告: 未找到 libfluidsynth-3.dll")
+            
             import fluidsynth
             
             # 创建合成器实例
@@ -207,11 +236,58 @@ class SynthEngine:
             
         except ImportError:
             print("[SynthEngine] 警告: fluidsynth 库未安装")
-            print("  安装命令: pip install fluidsynth -i https://pypi.tuna.tsinghua.edu.cn/simple")
+            print("  安装命令: pip install pyfluidsynth -i https://pypi.tuna.tsinghua.edu.cn/simple")
             return False
         except Exception as e:
             print(f"[SynthEngine] 初始化失败: {e}")
             return False
+    
+    @staticmethod
+    def _get_project_root() -> str:
+        """
+        获取项目根目录路径，同时搜索 FluidSynth DLL 所在目录
+        
+        原理: 从当前文件位置向上查找，同时检查常见的DLL放置位置:
+             1. 项目根目录/libfluidsynth-3.dll
+             2. 项目根目录/fluidsnyth/bin/libfluidsynth-3.dll (FluidSynth Windows发行版)
+             3. 项目根目录/fluidsynth/bin/libfluidsynth-3.dll
+        
+        返回:
+            包含 libfluidsynth-3.dll 的目录绝对路径，找不到则返回项目根目录
+        """
+        # 方法1: 从本模块文件位置推导 (gtp_engine/audio/ → 项目根目录)
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _root = os.path.normpath(os.path.join(_here, '..', '..'))
+        
+        # 搜索DLL的候选目录（按优先级排序）
+        _dll_dirs = [
+            _root,                                    # 项目根目录
+            os.path.join(_root, "fluidsnyth", "bin"),  # FluidSynth Windows发行版(常见拼写)
+            os.path.join(_root, "fluidsynth", "bin"),  # 正确拼写的发行版目录
+            os.path.join(_root, "bin"),                # 通用bin目录
+        ]
+        
+        for _d in _dll_dirs:
+            if os.path.isfile(os.path.join(_d, "libfluidsynth-3.dll")):
+                print(f"[SynthEngine] 找到DLL: {_d}")
+                return _d
+        
+        # 都没找到，返回项目根目录（后续导入会报错但给出明确提示）
+        return _root
+    
+    def _find_dll_path(self) -> str:
+        """
+        查找 libfluidsynth-3.dll 的完整路径
+        
+        返回:
+            DLL完整路径，找不到返回空字符串
+        """
+        _root = self._get_project_root()
+        for _name in ["libfluidsynth-3.dll", "libfluidsynth.dll"]:
+            _path = os.path.join(_root, _name)
+            if os.path.isfile(_path):
+                return _path
+        return ""
     
     def load_soundfont(self, path: str = None) -> bool:
         """

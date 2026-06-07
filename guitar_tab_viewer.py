@@ -58,7 +58,7 @@ from PyQt5.QtWidgets import (
     QDialog, QTextEdit, QDialogButtonBox, QGroupBox, QCheckBox,
     QSpinBox, QColorDialog, QFontDialog, QSplitter, QFrame,
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QToolTip,
-    QProgressBar, QComboBox, QTabWidget
+    QProgressBar, QComboBox, QTabWidget, QToolButton
 )
 from PyQt5.QtGui import (
     QPixmap, QPainter, QPen, QColor, QFont, QIcon,
@@ -1238,7 +1238,9 @@ class DisplayWindow(QMainWindow):
         self._midi_converter=None             # MIDI转换器(MidiConverter)
         self._gtp_song=None                   # 当前加载的GTPSong对象(用于音频转换)
         self._audio_events:List=[]            # 转换后的MIDI事件列表
-        self._audio_enabled:bool=False        # 音频开关(用户可切换)
+        self._audio_enabled:bool=True         # 音频开关(默认开启,用户可通过模式菜单关闭)
+        self._audio_mode:str="all"            # 音频模式: "all"=全轨并轨(默认), "current"=仅当前轨, "off"=关闭
+        self._track_channels:List[int]=[]     # 各音轨对应的MIDI通道号(全轨模式用)
         self._current_highlight:tuple=None    # 当前高亮音符(midi_pitch, time_ms)
 
         self.init_ui()
@@ -1314,11 +1316,29 @@ class DisplayWindow(QMainWindow):
         self.gtp_track_combo.currentIndexChanged.connect(self._on_gtp_track_changed)
         tb.addWidget(self.gtp_track_combo)
 
-        # 音频播放开关按钮（仅GTP文件显示，默认隐藏）
-        self.audio_btn=ModernButton("🔊 音频",'accent')
-        self.audio_btn.setCheckable(True)
+        # 音频播放模式按钮（仅GTP文件显示，默认隐藏）
+        # 3种模式: 全轨并轨(默认) / 仅当前轨 / 关闭音频
+        self._audio_mode = "all"          # 当前音频模式: "all"=全轨并轨, "current"=仅当前轨, "off"=关闭
+        self.audio_btn = QToolButton()
+        self.audio_btn.setText("🔊 全轨")
+        self.audio_btn.setToolTip("点击切换音频模式\n全轨并轨 / 仅当前轨 / 关闭音频")
+        self.audio_btn.setPopupMode(QToolButton.InstantPopup)  # 点击即弹出菜单
         self.audio_btn.setVisible(False)  # 非GTP文件时隐藏
-        self.audio_btn.clicked.connect(self._toggle_audio)
+        
+        # 创建下拉菜单
+        audio_menu = QMenu(self)
+        self._audio_action_all = QAction("🔊 全轨并轨", self, checkable=True, checked=True)
+        self._audio_action_current = QAction("🎸 仅当前轨", self, checkable=True)
+        self._audio_action_off = QAction("🔇 关闭音频", self, checkable=True)
+        
+        self._audio_action_all.triggered.connect(lambda: self._set_audio_mode("all"))
+        self._audio_action_current.triggered.connect(lambda: self._set_audio_mode("current"))
+        self._audio_action_off.triggered.connect(lambda: self._set_audio_mode("off"))
+        
+        audio_menu.addAction(self._audio_action_all)
+        audio_menu.addAction(self._audio_action_current)
+        audio_menu.addAction(self._audio_action_off)
+        self.audio_btn.setMenu(audio_menu)
         tb.addWidget(self.audio_btn)
 
         tb.addStretch()
@@ -1635,12 +1655,16 @@ class DisplayWindow(QMainWindow):
         
         原理:
           1. 解析GTP文件获取 GTPSong 对象
-          2. 创建 MidiConverter 将歌曲转换为 MIDI 事件序列
-          3. 创建 SynthEngine(FluidSynth) 并加载 SoundFont
-          4. 设置音符回调用于视觉高亮同步
+          2. 创建 MidiConverter 和 SynthEngine(FluidSynth)
+          3. 加载 SoundFont 音色文件
+          4. 根据当前音频模式(_audio_mode)转换MIDI事件:
+             - "all"(默认): 转换所有音轨，每轨独立MIDI通道
+             - "current":   仅转换当前选中音轨
+          5. 设置音符回调用于视觉高亮同步
         
-        注意: 此方法在 _on_content_loaded 中调用，仅对 GTP 文件生效
-              如果 fluidsynth 未安装会优雅降级（音频按钮显示为禁用状态）
+        注意: 此方法在 _on_content_loaded 中调用，仅对 GTP 文件生效。
+              默认模式为"全轨并轨"，用户可通过按钮菜单切换。
+              如果 fluidsynth 未安装会优雅降级（音频按钮显示为禁用状态）。
         """
         try:
             from gtp_engine.parser import parse_gtp
@@ -1649,21 +1673,13 @@ class DisplayWindow(QMainWindow):
             # === Step 1: 解析GTP文件获取Song对象 ===
             self._gtp_song = parse_gtp(self.file_path)
             
-            # === Step 2: 创建MIDI转换器并生成事件序列 ===
+            # === Step 2: 创建MIDI转换器 ===
             self._midi_converter = MidiConverter()
-            self._audio_events = self._midi_converter.convert(
-                self._gtp_song, track_index=self.gtp_current_track
-            )
-            
-            if not self._audio_events:
-                print("[Audio] 警告: 未生成MIDI事件(可能该轨道无音符)")
-                return
             
             # === Step 3: 初始化FluidSynth合成器 ===
             self._synth_engine = SynthEngine(gain=0.7)
             
             if not self._synth_engine.initialize():
-                # fluidsynth未安装或初始化失败，禁用音频按钮
                 self.audio_btn.setEnabled(False)
                 self.audio_btn.setToolTip("fluidsynth库未安装，无法使用音频播放")
                 return
@@ -1674,53 +1690,95 @@ class DisplayWindow(QMainWindow):
                 self.audio_btn.setToolTip("未找到SoundFont文件")
                 return
             
-            # 设置吉他音色(27=Clean Electric Guitar 清音电吉他)
-            self._synth_engine.set_instrument(0, 27)
-            
             # === Step 4: 设置音符回调(视觉高亮同步) ===
             self._synth_engine.set_note_callback(self._on_audio_note_played)
             
-            # 加载事件到合成器(不自动播放)
-            self._synth_engine.load_events(
-                self._audio_events,
-                bpm=self._gtp_song.tempo,
-                ticks_per_beat=480
-            )
+            # === Step 5: 根据模式转换并加载MIDI事件(统一走_rebuild_audio_events) ===
+            self._rebuild_audio_events()
             
-            print(f"[Audio] 引擎就绪: {len(self._audio_events)}个MIDI事件, "
+            if not self._audio_events:
+                print("[Audio] 警告: 未生成MIDI事件(可能该轨道无音符)")
+                return
+            
+            # 打印就绪信息
+            mode_label = "全轨并轨" if self._audio_mode == "all" else f"仅当前轨"
+            duration_ms = (
+                self._midi_converter.get_all_tracks_duration_ms(self._gtp_song)
+                if self._audio_mode == "all"
+                else self._midi_converter.get_total_duration_ms(
+                    self._gtp_song, self.gtp_current_track
+                )
+            )
+            print(f"[Audio] 引擎就绪[{mode_label}]: "
+                  f"{len(self._audio_events)}个MIDI事件, "
+                  f"{len(self._track_channels)}个通道, "
                   f"BPM={self._gtp_song.tempo}, "
-                  f"时长={self._midi_converter.get_total_duration_ms(self._gtp_song, self.gtp_current_track)/1000:.1f}秒")
+                  f"时长={duration_ms/1000:.1f}秒")
             
         except ImportError as e:
             print(f"[Audio] 依赖库缺失: {e}")
             self.audio_btn.setEnabled(False)
-            self.audio_btn.setToolTip("请安装 fluidsynth: pip install fluidsynth")
+            self.audio_btn.setToolTip("请安装 pyfluidsynth: pip install pyfluidsynth")
         except Exception as e:
             print(f"[Audio] 初始化失败: {e}")
             self.audio_btn.setEnabled(False)
     
-    def _toggle_audio(self, checked: bool)->None:
+    def _set_audio_mode(self, mode: str)->None:
         """
-        Phase 3: 切换音频开关
+        Phase 3: 切换音频播放模式(3种模式)
         
         参数:
-            checked: 按钮是否被选中(True=开启音频, False=关闭音频)
+            mode: 目标模式
+              - "all":     全轨并轨 - 所有音轨同时播放(默认, 乐队合奏效果)
+              - "current": 仅当前轨 - 只播放当前选中音轨的音频
+              - "off":     关闭音频 - 仅滚动播放，不输出声音
         
-        原理: 用户点击 🔊 音频 按钮时切换是否在播放时同时输出声音。
-              关闭时仅保留滚动播放功能(兼容原有行为)。
+        原理: 用户通过 🔊 按钮下拉菜单选择模式。
+              切换时如果正在播放会自动重建事件序列并继续播放。
         """
-        self._audio_enabled = checked
-        if checked:
-            self.audio_btn.setText("🔊 音频开")
+        if self._audio_mode == mode:
+            return  # 模式未变，跳过
+        
+        old_mode = self._audio_mode
+        self._audio_mode = mode
+        
+        # 更新菜单项勾选状态
+        self._audio_action_all.setChecked(mode == "all")
+        self._audio_action_current.setChecked(mode == "current")
+        self._audio_action_off.setChecked(mode == "off")
+        
+        # 更新按钮文字和样式
+        if mode == "all":
+            self.audio_btn.setText("🔊 全轨")
             self.audio_btn.setStyleSheet(
-                f"background-color:{THEME_COLORS['accent']};"
+                f"QToolButton{{background-color:{THEME_COLORS['accent']};"
+                f"border-radius:4px;padding:4px 10px;}}"
             )
-        else:
-            self.audio_btn.setText("🔇 音频关")
+            self._audio_enabled = True
+        elif mode == "current":
+            self.audio_btn.setText("🎸 当前轨")
+            self.audio_btn.setStyleSheet(
+                f"QToolButton{{background-color:{THEME_COLORS['primary']};"
+                f"border-radius:4px;padding:4px 10px;}}"
+            )
+            self._audio_enabled = True
+        else:  # "off"
+            self.audio_btn.setText("🔇 关闭")
             self.audio_btn.setStyleSheet("")
-            # 如果正在播放，立即停止音频但保持滚动
+            self._audio_enabled = False
+            # 立即停止音频但保持滚动
             if self._synth_engine:
                 self._synth_engine.stop()
+        
+        print(f"[Audio] 模式切换: {old_mode} → {mode}")
+        
+        # 如果引擎已初始化，根据新模式重建事件
+        if self._synth_engine and mode != "off":
+            self._rebuild_audio_events()
+    
+    def _toggle_audio(self, checked: bool)->None:
+        """保留兼容接口（已由 _set_audio_mode 替代）"""
+        self._set_audio_mode("all" if checked else "off")
     
     def _on_audio_note_played(self, midi_pitch: int, velocity: int, time_ms: float)->None:
         """
@@ -1741,10 +1799,11 @@ class DisplayWindow(QMainWindow):
     
     def _rebuild_audio_events(self)->None:
         """
-        Phase 3: 重新构建MIDI事件(切换音轨或重新渲染时调用)
+        Phase 3: 重新构建MIDI事件(切换音轨/切换音频模式时调用)
         
-        当用户通过下拉菜单切换GTP音轨时需要重新转换MIDI事件，
-        因为不同音轨的音符数据完全不同。
+        根据当前音频模式决定转换范围:
+          - "all"模式: 转换所有音轨，每轨独立MIDI通道
+          - "current"模式: 仅转换当前选中音轨
         """
         if not self._gtp_song or not self._midi_converter:
             return
@@ -1753,10 +1812,26 @@ class DisplayWindow(QMainWindow):
         if self._synth_engine:
             self._synth_engine.stop()
         
-        # 用新音轨索引重新转换
-        self._audio_events = self._midi_converter.convert(
-            self._gtp_song, track_index=self.gtp_current_track
-        )
+        # === 根据模式选择转换方式 ===
+        if self._audio_mode == "all":
+            # 全轨并轨: 转换所有音轨
+            self._audio_events, self._track_channels = (
+                self._midi_converter.convert_all_tracks(self._gtp_song)
+            )
+            
+            # 为每个通道设置吉他音色
+            if self._synth_engine and self._track_channels:
+                for ch in set(self._track_channels):
+                    try:
+                        self._synth_engine.set_instrument(ch, 27)  # 27=Clean Electric Guitar
+                    except Exception:
+                        pass
+        else:
+            # 仅当前轨: 只转换当前选中的音轨
+            self._track_channels = []
+            self._audio_events = self._midi_converter.convert(
+                self._gtp_song, track_index=self.gtp_current_track
+            )
         
         # 重新加载到合成器
         if self._synth_engine and self._audio_events:
@@ -1765,6 +1840,11 @@ class DisplayWindow(QMainWindow):
                 bpm=self._gtp_song.tempo,
                 ticks_per_beat=480
             )
+            
+            # 打印日志
+            mode_label = "全轨并轨" if self._audio_mode == "all" else f"仅当前轨(#{self.gtp_current_track+1})"
+            print(f"[Audio] 事件重建[{mode_label}]: {len(self._audio_events)}个事件, "
+                  f"{len(self._track_channels)}个通道")
 
     def _tick(self)->None:
         """播放定时器回调 - 每帧执行"""
