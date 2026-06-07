@@ -38,6 +38,7 @@
 """
 
 from typing import List, Optional
+import copy
 
 from PyQt5.QtGui import (
     QPainter, QPixmap, QFont, QPen, QColor,
@@ -145,7 +146,6 @@ class TabRenderer:
             for sys_idx, system in enumerate(page.systems):
                 if page.page_number == 1 and sys_idx == 0:
                     # 第一页第一行：整体向下偏移15px留白
-                    import copy
                     shifted = copy.deepcopy(system)
                     shifted.y_top += 15
                     shifted.y_tab_top += 15
