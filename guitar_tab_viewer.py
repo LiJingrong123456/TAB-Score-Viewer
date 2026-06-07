@@ -2,7 +2,7 @@
 """
 ============================================================
 文件名: guitar_tab_viewer.py
-功能描述: 万能吉他谱查看器(TAB Score Viewer) - 支持多格式查看、播放、标注
+功能描述: 万能吉他谱查看器(TAB Score Viewer) - 支持多格式查看、播放、标注、导出
          支持格式: PNG, JPG, JPEG, WEBP(图片), PDF(文档), GP3/GP4/GP5/GPX(GTP吉他谱)
 
          核心功能:
@@ -10,20 +10,22 @@
            2. 可拖动进度条 + 循环播放(不循环/全局循环/区域A-B循环)
            3. 速度曲线编辑器 - 贝塞尔曲线可视化编辑，含预设模板(图片/PDF格式)
            4. 谱面文本标注系统 - 双击任意位置添加演奏技巧说明，支持样式自定义
-           5. 标注管理器 - 批量管理，Ctrl+Z撤销/Ctrl+Y重做(最多50步)
-           6. 页码导航 - PDF/多图模式底部页码输入框直接跳转
-           7. 鼠标滚轮滚动 - 支持Ctrl加速/Shift精细控制
-           8. 深色主题UI + 自定义组件(按钮/滑块/进度条)
-           9. 键盘快捷键 - 空格播放暂停/方向键调速/ESC关闭
-          10. GTP文件完整渲染 - 基于gtp_engine库解析并渲染为六线谱图像
-          11. 右键打开文件位置 - 文件列表右键菜单支持在资源管理器中定位文件
-          12. GTP音轨切换 - 下拉菜单选择不同音轨查看(含调弦信息显示)
+           5. 标注导入导出 - 自动加载同名.anno.json标注文件，A4尺寸PNG/PDF导出
+           6. 全局撤销重做 - Ctrl+Z/Y统一撤销所有标注操作(画布+管理器共享栈)
+           7. 页码导航 - PDF/多图模式底部页码输入框直接跳转
+           8. 鼠标滚轮滚动 - 支持Ctrl加速/Shift精细控制
+           9. 深色主题UI + 自定义组件(按钮/滑块/进度条)
+          10. 键盘快捷键 - 空格播放暂停/方向键调速/Ctrl+Z撤销/Ctrl+Y重做/ESC关闭
+          11. GTP文件完整渲染 - 基于gtp_engine库解析并渲染为六线谱图像
+          12. 右键打开文件位置 - 文件列表右键菜单支持在资源管理器中定位文件
+          13. GTP音轨切换 - 下拉菜单选择不同音轨查看(含调弦信息显示)
+          14. 播放光标 - 竖线跟随播放进度移动，当前小节高亮显示
 
 创建日期: 2026-06-06
-最后修改: 2026-06-06
+最后修改: 2026-06-07
 
 依赖库:
-  - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图)
+  - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
   - PyMuPDF >= 1.23   # PDF解析与页面渲染为图片 (开源项目: Artifex Software)
   - Pillow >= 10.0    # 图片处理(PNG/JPG/WEBP解码) (开源项目: Python Imaging Library)
   - guitarpro >= 0.11 # Guitar Pro文件解析 (开源项目: pyguitarpro) - GTP渲染功能依赖
@@ -35,7 +37,7 @@
   guitar_tab_viewer.py   - 主程序(本文件)
   gtp_engine/            - GTP渲染引擎库(解析+渲染六线谱)
   config/settings.json   - 用户配置(运行时自动生成)
-  data/annotations/      - 标注数据存储(JSON格式)
+  data/annotations/      - 旧版标注数据存储(JSON格式，兼容保留)
   readme/                - 项目文档目录
 ============================================================
 """
@@ -47,7 +49,7 @@ import math
 import copy
 import uuid
 from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 # Qt GUI组件
@@ -83,6 +85,9 @@ from PIL import Image as PILImage  # Pillow - 图片处理(含WEBP) (开源库)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "settings.json")
 ANNOTATION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "annotations")
+# 标注文件扩展名: 与源文件同目录，命名为 {源文件名}.anno.json
+# 例如: 晚安北京.gp4 → 晚安北京.gp4.anno.json
+ANNOTATION_EXT = ".anno.json"
 
 # 支持的文件扩展名
 SUPPORTED_IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
@@ -865,15 +870,19 @@ class AnnotationEditDialog(QDialog):
 class AnnotationManagerDialog(QDialog):
     """
     标注管理器 - 列表管理所有标注
+    
     功能: 新增/编辑/删除标注，支持 Ctrl+Z 撤销 / Ctrl+Y 重做
+    注意: 撤销/重做已统一委托给父窗口DisplayWindow的全局栈，
+          管理器内的操作与画布双击操作共享同一套撤销历史。
+    
+    调用方: DisplayWindow._open_annotation_manager()
     """
     annotationsChanged=pyqtSignal(list)
 
     def __init__(self,parent=None,annotations:List[Annotation]=None):
         super().__init__(parent); self.annotations=annotations or []
-        # 撤销/重做栈: 每次修改前保存快照
-        self._undo_stack:List[List[Annotation]]=[]   # 撤销栈(可回退的状态)
-        self._redo_stack:List[List[Annotation]]=[]   # 重做栈(已撤销可恢复)
+        # 引用父窗口的撤销/重做方法(全局统一栈)
+        self._parent_window = parent
         self.init_ui()
 
     def init_ui(self)->None:
@@ -912,36 +921,27 @@ class AnnotationManagerDialog(QDialog):
             item=QListWidgetItem(f"[{a.id}]({a.x:.0%},{a.y:.0%}){pv}")
             item.setData(Qt.UserRole,a.id);self.list_widget.addItem(item)
 
-    # ========== 撤销/重做核心方法 ==========
+    # ========== 撤销/重做(委托给父窗口全局栈) ==========
     def _save_snapshot(self)->None:
-        """修改前保存当前状态快照到撤销栈"""
-        snapshot=[Annotation(**asdict(a)) for a in self.annotations]
-        self._undo_stack.append(snapshot)
-        self._redo_stack.clear()  # 新操作清空重做栈
-        # 限制撤销深度避免内存膨胀
-        if len(self._undo_stack)>50: self._undo_stack.pop(0)
+        """修改前保存快照 → 委托给父窗口的全局撤销栈"""
+        if self._parent_window and hasattr(self._parent_window, '_anno_save_snapshot'):
+            self._parent_window._anno_save_snapshot()
 
     def _undo(self)->None:
-        """Ctrl+Z 撤销 - 回退到上一个状态"""
-        if not self._undo_stack: return
-        # 当前状态存入重做栈
-        redo_snap=[Annotation(**asdict(a)) for a in self.annotations]
-        self._redo_stack.append(redo_snap)
-        # 恢复上一个状态
-        prev=self._undo_stack.pop()
-        self.annotations=[Annotation(**asdict(a)) for a in prev]
-        self._populate_list();self.annotationsChanged.emit(self.annotations)
+        """Ctrl+Z 撤销 → 委托给父窗口"""
+        if self._parent_window and hasattr(self._parent_window, '_anno_undo'):
+            self._parent_window._anno_undo()
+            # 同步本地列表
+            self.annotations = self._parent_window.annotations
+            self._populate_list()
 
     def _redo(self)->None:
-        """Ctrl+Y 重做 - 恢复被撤销的状态"""
-        if not self._redo_stack: return
-        # 当前状态存入撤销栈
-        undo_snap=[Annotation(**asdict(a)) for a in self.annotations]
-        self._undo_stack.append(undo_snap)
-        # 恢复重做状态
-        nxt=self._redo_stack.pop()
-        self.annotations=[Annotation(**asdict(a)) for a in nxt]
-        self._populate_list();self.annotationsChanged.emit(self.annotations)
+        """Ctrl+Y 重做 → 委托给父窗口"""
+        if self._parent_window and hasattr(self._parent_window, '_anno_redo'):
+            self._parent_window._anno_redo()
+            # 同步本地列表
+            self.annotations = self._parent_window.annotations
+            self._populate_list()
 
     def keyPressEvent(self,event:QKeyEvent)->None:
         """键盘事件: Ctrl+Z撤销 / Ctrl+Y重做"""
@@ -957,27 +957,27 @@ class AnnotationManagerDialog(QDialog):
 
     # ========== 标注操作(已集成撤销) ==========
     def _add_new(self)->None:
-        self._save_snapshot()  # 修改前保存快照
+        self._save_snapshot()  # 修改前保存快照(委托给父窗口全局栈)
         dlg=AnnotationEditDialog(self)
         if dlg.exec_()==QDialog.Accepted:
             self.annotations.append(dlg.get_annotation());self._populate_list()
             self.annotationsChanged.emit(self.annotations)
         else:
             # 取消则撤销刚才保存的快照，恢复状态
-            if self._undo_stack: self._undo()
+            self._undo()
 
     def _edit_item(self,item)->None:
         if not item:return
         aid=item.data(Qt.UserRole);ann=next((a for a in self.annotations if a.id==aid),None)
         if ann:
-            self._save_snapshot()  # 修改前保存快照
+            self._save_snapshot()  # 修改前保存快照(委托给父窗口全局栈)
             dlg=AnnotationEditDialog(self,annotation=ann)
             if dlg.exec_()==QDialog.Accepted:
                 upd=dlg.get_annotation();idx=next(i for i,a in enumerate(self.annotations) if a.id==aid)
                 self.annotations[idx]=upd;self._populate_list();self.annotationsChanged.emit(self.annotations)
             else:
                 # 取消则撤销刚才保存的快照，恢复状态
-                if self._undo_stack: self._undo()
+                self._undo()
 
     def _delete_item(self)->None:
         item=self.list_widget.currentItem()
@@ -1301,7 +1301,8 @@ class DisplayWidget(QWidget):
                 # 检测点击是否在标注区域内(基于字体大小估算范围)
                 hit_w=len(ann.text)*ann.font_size//2+20; hit_h=ann.font_size+16
                 if (sx-hit_w<=cx<=sx+hit_w) and (sy-hit_h<=cy<=sy+8):
-                    # 点击到已有标注 → 打开编辑对话框
+                    # 点击到已有标注 → 打开编辑对话框(集成全局撤销)
+                    self.parent_window._anno_save_snapshot()  # 修改前保存快照
                     dlg=AnnotationEditDialog(self,annotation=ann)
                     if dlg.exec_()==QDialog.Accepted:
                         updated=dlg.get_annotation()
@@ -1310,9 +1311,13 @@ class DisplayWidget(QWidget):
                             self.parent_window.annotations[idx]=updated
                             self.parent_window._save_annotations()
                             self.set_annotations(self.parent_window.annotations)
+                    else:
+                        # 取消编辑 → 撤销刚才保存的快照
+                        if self.parent_window._undo_stack:
+                            self.parent_window._undo_stack.pop()
                     return
 
-        # === 未点击到任何标注 → 新建标注 ===
+        # === 未点击到任何标注 → 新建标注(通过add_annotation自动保存快照) ===
         rel_x=max(0,min(1,(cx-10)/(ww-20))) if ww>20 else 0
         if self.parent_window.images:
             total_h=sum((img.height()*(ww-20)/img.width())+5 for img in self.parent_window.images if not img.isNull())
@@ -1324,7 +1329,7 @@ class DisplayWidget(QWidget):
         new_ann=Annotation(id=f"ann_{uuid.uuid4().hex[:8]}",x=rel_x,y=rel_y,text="新标注-双击编辑")
         dlg=AnnotationEditDialog(self,annotation=new_ann)
         if dlg.exec_()==QDialog.Accepted:
-            self.parent_window.add_annotation(dlg.get_annotation())
+            self.parent_window.add_annotation(dlg.get_annotation())  # 内部已调用 _anno_save_snapshot
 
 
 # ============================================================
@@ -1358,6 +1363,13 @@ class DisplayWindow(QMainWindow):
 
         # 高级功能状态
         self.annotations:List[Annotation]=[]     # 标注列表
+        # === 全局撤销/重做栈 ===
+        # 原理: 命令模式 + 快照栈。每次修改annotations前保存当前状态深拷贝到undo_stack，
+        #       撤销时将当前状态移入redo_stack并恢复上一个快照。
+        #       所有标注操作(画布双击/管理器增删改)统一走此栈，Ctrl+Z/Y全局生效。
+        self._undo_stack:List[List[Annotation]]=[]   # 撤销栈(历史状态)
+        self._redo_stack:List[List[Annotation]]=[]   # 重做栈(被撤销可恢复)
+        self._UNDO_MAX_DEPTH=50                      # 最大撤销深度(防止内存膨胀)
         self.speed_curve:SpeedCurveConfig=SpeedCurveConfig()  # 速度曲线
         self.loop_config:LoopConfig=LoopConfig()          # 循环配置
         self.total_scroll_distance:float=0.0   # 总可滚动距离
@@ -1499,6 +1511,12 @@ class DisplayWindow(QMainWindow):
         self.annotation_btn=ModernButton("📝 标注",'accent')
         self.annotation_btn.clicked.connect(self._open_annotation_manager)
         tb.addWidget(self.annotation_btn)
+
+        # 导出按钮(A4 PNG/PDF，含标注)
+        self.export_btn=ModernButton("💾 导出",'primary')
+        self.export_btn.setToolTip("导出当前谱面(含标注)为A4图片或PDF")
+        self.export_btn.clicked.connect(self._export_to_a4)
+        tb.addWidget(self.export_btn)
 
         # 速度曲线按钮
         self.curve_btn=ModernButton("📊 速度曲线",'primary')
@@ -2437,16 +2455,19 @@ class DisplayWindow(QMainWindow):
     # ========== 标注管理 ==========
 
     def add_annotation(self,ann:Annotation)->None:
-        """添加标注"""
+        """添加标注(集成全局撤销)"""
+        self._anno_save_snapshot()  # 修改前保存快照
         self.annotations.append(ann)
         self.display_widget.set_annotations(self.annotations)
         self._save_annotations()
 
     def _open_annotation_manager(self)->None:
-        """打开标注管理器"""
+        """打开标注管理器(保存引用供撤销/重做同步)"""
         dlg=AnnotationManagerDialog(self,self.annotations)
+        self._ann_manager = dlg  # 保存引用，用于撤销/重做时同步列表
         dlg.annotationsChanged.connect(self._on_annotations_changed)
         dlg.exec_()
+        self._ann_manager = None  # 关闭后清除引用
 
     def _on_annotations_changed(self,new_anns:List[Annotation])->None:
         """标注列表变更回调"""
@@ -2455,34 +2476,452 @@ class DisplayWindow(QMainWindow):
         self._save_annotations()
 
     def _get_annotation_file_path(self)->str:
-        """获取当前文件的标注存储路径"""
-        if isinstance(self.file_path,str):
-            base=os.path.splitext(os.path.basename(self.file_path))[0]
+        """
+        获取当前文件的标注存储路径(同名.anno.json策略)
+        
+        原理: 标注文件与源文件放在同一目录，命名为 {源文件名}.anno.json
+              例如: 晚安北京.gp4 → 同目录下 晚安北京.gp4.anno.json
+              优点: 
+                1. 与谱子文件一起分发/备份，一目了然
+                2. 不依赖集中式data/annotations目录，多电脑同步更方便
+        
+        兼容性: 如果源文件路径无效(如多图模式)，回退到旧的 data/annotations/ 路径
+        
+        返回:
+            标注文件的绝对路径字符串
+        """
+        # 优先使用源文件同目录的 .anno.json 文件
+        if isinstance(self.file_path, str) and self.file_path:
+            return self.file_path + ANNOTATION_EXT
+        # 回退: 多图模式等无法确定源文件时，用旧路径
+        base = "multi_image"
+        os.makedirs(ANNOTATION_DIR, exist_ok=True)
+        return os.path.join(ANNOTATION_DIR, f"{base}.json")
+
+    def _get_annotation_file_path_legacy(self)->str:
+        """
+        获取旧版标注存储路径(data/annotations/{base}.json)
+        用于向后兼容: 加载时同时检查新旧两个位置
+        """
+        if isinstance(self.file_path, str):
+            base = os.path.splitext(os.path.basename(self.file_path))[0]
         else:
-            base="multi_image"
-        os.makedirs(ANNOTATION_DIR,exist_ok=True)
-        return os.path.join(ANNOTATION_DIR,f"{base}.json")
+            base = "multi_image"
+        os.makedirs(ANNOTATION_DIR, exist_ok=True)
+        return os.path.join(ANNOTATION_DIR, f"{base}.json")
 
     def _load_annotations(self)->None:
-        """从JSON加载标注"""
-        try:
-            fpath=self._get_annotation_file_path()
-            if os.path.exists(fpath):
-                with open(fpath,'r',encoding='utf-8') as f:
-                    data=json.load(f)
-                    self.annotations=[Annotation(**d) for d in data]
-        except Exception:
-            self.annotations=[]
+        """
+        从JSON加载标注 - 支持新旧两种路径(优先新路径)
+        
+        加载顺序:
+          1. 新路径: {源文件}.anno.json (同目录)
+          2. 旧路径: data/annotations/{base}.json (兼容旧版)
+        """
+        # 尝试新路径(同目录 .anno.json)
+        new_path = self._get_annotation_file_path()
+        old_path = self._get_annotation_file_path_legacy()
+        
+        load_from = None
+        if os.path.exists(new_path):
+            load_from = new_path
+        elif os.path.exists(old_path):
+            load_from = old_path  # 向后兼容: 旧位置有数据则加载
+        
+        if load_from:
+            try:
+                with open(load_from, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.annotations = [Annotation(**d) for d in data]
+                return
+            except Exception:
+                pass
+        self.annotations = []
 
     def _save_annotations(self)->None:
-        """保存标注到JSON"""
+        """保存标注到JSON - 写入到源文件同目录的 .anno.json 文件"""
         try:
-            fpath=self._get_annotation_file_path()
-            os.makedirs(os.path.dirname(fpath),exist_ok=True)
-            with open(fpath,'w',encoding='utf-8') as f:
-                json.dump([asdict(a) for a in self.annotations],f,ensure_ascii=False,indent=2)
+            fpath = self._get_annotation_file_path()
+            dname = os.path.dirname(fpath)
+            if dname:
+                os.makedirs(dname, exist_ok=True)
+            with open(fpath, 'w', encoding='utf-8') as f:
+                json.dump([asdict(a) for a in self.annotations], f,
+                          ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存标注失败: {e}")
+
+    # ========== 全局撤销/重做 ==========
+
+    def _anno_save_snapshot(self)->None:
+        """
+        保存当前标注状态快照到撤销栈(修改前必须调用)
+        
+        原理: 深拷贝当前annotations列表存入undo_stack，
+              同时清空redo_stack(新操作使重做历史失效)。
+        
+        使用场景: 所有修改annotations的操作前调用此方法:
+                  - 双击画布添加/编辑标注
+                  - 管理器中新增/编辑/删除/清空标注
+        """
+        snapshot = [Annotation(**asdict(a)) for a in self.annotations]
+        self._undo_stack.append(snapshot)
+        self._redo_stack.clear()  # 新操作清空重做栈
+        # 限制深度防止内存膨胀
+        if len(self._undo_stack) > self._UNDO_MAX_DEPTH:
+            self._undo_stack.pop(0)
+
+    def _anno_undo(self)->None:
+        """
+        Ctrl+Z 全局撤销 - 回退到上一个标注状态
+        
+        操作流程:
+          1. 当前状态 → 移入 redo_stack(可被Ctrl+Y恢复)
+          2. undo_stack 弹出上一个状态 → 设为当前 annotations
+          3. 刷新显示 + 自动保存
+        """
+        if not self._undo_stack:
+            return
+        # 当前状态存入重做栈
+        redo_snap = [Annotation(**asdict(a)) for a in self.annotations]
+        self._redo_stack.append(redo_snap)
+        # 恢复上一个状态
+        prev = self._undo_stack.pop()
+        self.annotations = [Annotation(**asdict(a)) for a in prev]
+        # 刷新UI
+        self.display_widget.set_annotations(self.annotations)
+        self._save_annotations()
+        # 同步管理器(如果打开着)
+        if hasattr(self, '_ann_manager') and self._ann_manager:
+            self._ann_manager.annotations = self.annotations
+            self._ann_manager._populate_list()
+
+    def _anno_redo(self)->None:
+        """
+        Ctrl+Y 全局重做 - 恢复被撤销的状态
+        
+        操作流程:
+          1. 当前状态 → 存入 undo_stack
+          2. redo_stack 弹出状态 → 设为当前 annotations
+          3. 刷新显示 + 自动保存
+        """
+        if not self._redo_stack:
+            return
+        # 当前状态存入撤销栈
+        undo_snap = [Annotation(**asdict(a)) for a in self.annotations]
+        self._undo_stack.append(undo_snap)
+        # 恢复重做状态
+        nxt = self._redo_stack.pop()
+        self.annotations = [Annotation(**asdict(a)) for a in nxt]
+        # 刷新UI
+        self.display_widget.set_annotations(self.annotations)
+        self._save_annotations()
+        # 同步管理器(如果打开着)
+        if hasattr(self, '_ann_manager') and self._ann_manager:
+            self._ann_manager.annotations = self.annotations
+            self._ann_manager._populate_list()
+
+    # ========== A4导出(PNG/PDF，含标注) ==========
+
+    def _export_to_a4(self)->None:
+        """
+        导出当前谱面(含标注)为A4尺寸的PNG图片或PDF文档
+        
+        原理: 
+          1. 弹出文件对话框让用户选择保存路径和格式(PNG/PDF)
+          2. A4纸尺寸: 210mm x 297mm，渲染DPI=300 → 2480 x 3508 px
+          3. 使用QPainter将所有页面图片+标注层重新绘制到A4画布上
+          4. 如果总内容超过一页A4高度，自动分页导出
+        
+        支持格式:
+          - PNG: 高清位图，适合查看/打印/分享
+          - PDF: 矢量质量最佳，适合正式文档
+        """
+        if not self.images or all(img.isNull() for img in self.images):
+            QMessageBox.warning(self, "无法导出", "当前没有可导出的谱面内容")
+            return
+
+        # 让用户选择保存路径和格式
+        src_name = os.path.basename(self.file_path) if isinstance(self.file_path, str) else "谱面"
+        base_name = os.path.splitext(src_name)[0]
+        
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "导出A4谱面(含标注)",
+            f"{base_name}_annotated",
+            "PNG 图片 (*.png);;PDF 文档 (*.pdf)",
+            "PNG 图片 (*.png)"
+        )
+        
+        if not file_path:
+            return  # 用户取消
+
+        is_pdf = file_path.lower().endswith('.pdf')
+        
+        try:
+            if is_pdf:
+                self._render_to_a4_pdf(file_path)
+            else:
+                self._render_to_a4_png(file_path)
+            
+            fmt = "PDF" if is_pdf else "PNG"
+            QMessageBox.information(
+                self, "导出成功",
+                f"已导出为 {fmt} 格式:\n{file_path}\n\n"
+                f"尺寸: A4 (210mm × 297mm @300dpi)\n"
+                f"包含: 谱面图像 + 全部标注"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出过程中出错:\n{str(e)}")
+
+    def _get_a4_size_px(self, dpi:int=300)->tuple:
+        """
+        获取A4纸的像素尺寸
+        
+        参数:
+            dpi: 每英寸像素数，默认300(印刷级质量)
+                 调大→更清晰但文件更大；调小→文件小但可能模糊
+        
+        返回:
+            (宽度px, 高度px) 元组
+        """
+        # A4: 210mm x 297mm = 8.27in x 11.69in
+        mm_to_inch = 25.4
+        a4_w_mm, a4_h_mm = 210, 297
+        w_px = int(a4_w_mm / mm_to_inch * dpi)
+        h_px = int(a4_h_mm / mm_to_inch * dpi)
+        return w_px, h_px
+
+    def _render_to_a4_png(self, file_path:str, dpi:int=300)->None:
+        """
+        渲染当前谱面(含标注)为A4 PNG图片(支持多页自动分页)
+        
+        原理:
+          1. 计算所有图片在A4宽度下的总高度
+          2. 按A4高度分页，每页独立渲染一张PNG
+          3. 文件名自动追加页码: xxx_annotated_p1.png, p2.png, ...
+        
+        参数:
+            file_path: 用户选择的保存路径
+            dpi: 渲染分辨率(DPI)，默认300
+        """
+        a4_w, a4_h = self._get_a4_size_px(dpi)
+        margin = int(a4_w * 0.05)  # 5%边距
+        draw_w = a4_w - 2 * margin   # 实际绘图区域宽度
+        
+        # 计算每张图片在A4宽度下的缩放后高度
+        page_images = []  # [(scaled_pixmap, draw_height), ...]
+        total_content_h = 0
+        for img in self.images:
+            if img.isNull():
+                continue
+            ratio = draw_w / img.width() if img.width() > 0 else 1
+            scaled_h = int(img.height() * ratio)
+            page_images.append((img, ratio, scaled_h))
+            total_content_h += scaled_h + 5  # +5px 页间距
+        
+        if not page_images:
+            raise ValueError("没有可渲染的内容")
+        
+        # 计算需要多少页A4
+        draw_area_h = a4_h - 2 * margin  # 每页可用绘图高度
+        n_pages = max(1, (total_content_h + draw_area_h - 1) // draw_area_h)
+        
+        # 渲染每一页
+        current_y_offset = 0  # 在总内容中的Y偏移
+        page_idx = 0
+        
+        while page_idx < n_pages:
+            # 创建A4画布
+            canvas = QPixmap(a4_w, a4_h)
+            canvas.fill(QColor("#FFFFFF"))  # 白色背景
+            
+            painter = QPainter(canvas)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            
+            # 当前页在总内容中的Y范围
+            page_start_y = page_idx * draw_area_h
+            page_end_y = page_start_y + draw_area_h
+            
+            # 绘制图片
+            running_y = 0
+            for img, ratio, scaled_h in page_images:
+                img_bottom = running_y + scaled_h
+                # 只绘制与当前页有交集的部分
+                if img_bottom > page_start_y and running_y < page_end_y:
+                    scaled = img.scaled(draw_w, scaled_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                    # 计算在画布上的位置
+                    target_x = margin
+                    target_y = margin + (running_y - page_start_y)
+                    painter.drawPixmap(target_x, target_y, scaled)
+                running_y += scaled_h + 5
+            
+            # 绘制标注层(映射到当前页坐标)
+            self._draw_annotations_on_canvas(painter, margin, margin, 
+                                               draw_w, total_content_h,
+                                               page_start_y, page_end_y,
+                                               scale_ratio=draw_w / (self.display_widget.width() - 20) if self.display_widget.width() > 20 else 1)
+            
+            # 绘制页码
+            painter.setPen(QColor("#999999"))
+            painter.setFont(QFont("Arial", 9))
+            page_text = f"- {page_idx + 1} / {n_pages} -"
+            painter.drawText(QRect(margin, a4_h - margin - 20, draw_w, 20),
+                           Qt.AlignCenter, page_text)
+            
+            painter.end()
+            
+            # 保存当前页
+            if n_pages == 1:
+                save_path = file_path
+            else:
+                base, ext = os.path.splitext(file_path)
+                save_path = f"{base}_p{page_idx + 1}{ext}"
+            
+            canvas.save(save_path, "PNG")
+            page_idx += 1
+
+    def _render_to_a4_pdf(self, file_path:str, dpi:int=300)->None:
+        """
+        渲染当前谱面(含标注)为A4 PDF文档(支持多页自动分页)
+        
+        原理: 使用QPdfWriter生成PDF，每页A4尺寸，
+              通过QPainter绘制图片+标注层。
+        
+        参数:
+            file_path: 用户选择的保存路径(.pdf)
+            dpi: 渲染分辨率(DPI)，默认300
+        """
+        from PyQt5.QtPrintSupport import QPdfWriter
+        
+        a4_w, a4_h = self._get_a4_size_px(dpi)
+        margin = int(a4_w * 0.05)
+        draw_w = a4_w - 2 * margin
+        
+        # 计算每张图片在A4宽度下的缩放后高度
+        page_images = []
+        total_content_h = 0
+        for img in self.images:
+            if img.isNull():
+                continue
+            ratio = draw_w / img.width() if img.width() > 0 else 1
+            scaled_h = int(img.height() * ratio)
+            page_images.append((img, ratio, scaled_h))
+            total_content_h += scaled_h + 5
+        
+        if not page_images:
+            raise ValueError("没有可渲染的内容")
+        
+        draw_area_h = a4_h - 2 * margin
+        n_pages = max(1, (total_content_h + draw_area_h - 1) // draw_area_h)
+        
+        # 创建PDF写入器
+        pdf_writer = QPdfWriter(file_path)
+        pdf_writer.setPageSize(QPagedPaintDevice.A4)
+        pdf_writer.setResolution(dpi)
+        
+        painter = QPainter(pdf_writer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        
+        page_idx = 0
+        page_start_y = 0
+        
+        while page_idx < n_pages:
+            if page_idx > 0:
+                pdf_writer.newPage()
+            
+            page_end_y = page_start_y + draw_area_h
+            
+            # 绘制白色背景
+            painter.fillRect(QRect(0, 0, a4_w, a4_h), QColor("#FFFFFF"))
+            
+            # 绘制图片
+            running_y = 0
+            for img, ratio, scaled_h in page_images:
+                img_bottom = running_y + scaled_h
+                if img_bottom > page_start_y and running_y < page_end_y:
+                    scaled = img.scaled(draw_w, scaled_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                    target_x = margin
+                    target_y = margin + (running_y - page_start_y)
+                    painter.drawPixmap(target_x, target_y, scaled)
+                running_y += scaled_h + 5
+            
+            # 绘制标注层
+            self._draw_annotations_on_canvas(painter, margin, margin,
+                                               draw_w, total_content_h,
+                                               page_start_y, page_end_y,
+                                               scale_ratio=draw_w / (self.display_widget.width() - 20) if self.display_widget.width() > 20 else 1)
+            
+            # 绘制页码
+            painter.setPen(QColor("#999999"))
+            painter.setFont(QFont("Arial", 9))
+            page_text = f"- {page_idx + 1} / {n_pages} -"
+            painter.drawText(QRect(margin, a4_h - margin - 20, draw_w, 20),
+                           Qt.AlignCenter, page_text)
+            
+            page_start_y = page_end_y
+            page_idx += 1
+        
+        painter.end()
+
+    def _draw_annotations_on_canvas(self, painter:QPainter, 
+                                     offset_x:int, offset_y:int,
+                                     draw_w:int, total_h:float,
+                                     page_start:float, page_end:float,
+                                     scale_ratio:float=1.0)->None:
+        """
+        在导出画布上绘制标注层(供PNG/PDF导出使用)
+        
+        原理: 将标注从相对坐标(0-1)映射到绝对像素坐标，
+              只绘制落在当前页范围内的标注。
+        
+        参数:
+            painter:      QPainter实例(已在目标画布上初始化)
+            offset_x:     画布左边距(px)
+            offset_y:     画布上边距(px)
+            draw_w:       画布绘图区域宽度(px)
+            total_h:      总内容高度(px，用于计算相对坐标对应的绝对位置)
+            page_start:   当前页在总内容中的起始Y位置
+            page_end:     当前页在总内容中的结束Y位置
+            scale_ratio:  坐标缩放比(显示宽度/导出宽度)
+        """
+        if not self.annotations:
+            return
+        
+        for ann in self.annotations:
+            # 相对坐标 → 总内容中的绝对位置
+            abs_x = offset_x + draw_w * ann.x
+            abs_y = offset_y + total_h * ann.y
+            
+            # 只绘制在当前页范围内的标注
+            ann_top = abs_y - ann.font_size
+            ann_bottom = abs_y + 8
+            if ann_bottom < page_start or ann_top > page_end:
+                continue  # 不在当前页，跳过
+            
+            # 设置字体
+            font = QFont(ann.font_family, int(ann.font_size * scale_ratio))
+            font.setBold(ann.is_bold)
+            painter.setFont(font)
+            
+            # 绘制背景(如果有且带透明度)
+            if ann.background_color and ann.background_color != "#00000000":
+                bg_color = QColor(ann.background_color)
+                text_bbox = painter.fontMetrics().boundingRect(
+                    QRect(int(abs_x), int(abs_y), 1000, 100),
+                    Qt.AlignLeft | Qt.TextSingleLine, ann.text
+                )
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(bg_color)
+                painter.drawRect(
+                    int(abs_x - 2), int(abs_y - text_bbox.height()),
+                    text_bbox.width() + 4, text_bbox.height() + 4
+                )
+            
+            # 绘制文字
+            painter.setPen(QColor(ann.color))
+            painter.drawText(int(abs_x), int(abs_y), ann.text)
 
     # ========== 速度曲线 ==========
 
@@ -2501,8 +2940,15 @@ class DisplayWindow(QMainWindow):
     # ========== 键盘事件 ==========
 
     def keyPressEvent(self,event:QKeyEvent)->None:
-        """键盘快捷键"""
+        """键盘快捷键 - 含全局标注撤销/重做(Ctrl+Z / Ctrl+Y)"""
         try:
+            # === 标注撤销/重做(优先于其他快捷键) ===
+            if event.modifiers() & Qt.ControlModifier:
+                if event.key() == Qt.Key_Z:       # Ctrl+Z: 撤销标注
+                    self._anno_undo(); return
+                elif event.key() == Qt.Key_Y:      # Ctrl+Y: 重做标注
+                    self._anno_redo(); return
+            
             if event.key()==Qt.Key_Space:          # 空格: 播放/暂停
                 self.toggle_playback()
             elif event.key()==Qt.Key_Up:           # 上箭头: 向上滚动
@@ -2831,25 +3277,37 @@ class SettingsWindow(QMainWindow):
         在系统文件资源管理器中打开并选中指定文件/文件夹
         
         原理: 调用系统命令定位到文件
-          Windows: explorer /select,"路径"
+          Windows: explorer /select,"路径" (需确保路径为绝对路径)
           Linux:   xdg-open 或 nautilus --select "路径"
         
+        修复: 
+          - 确保传入绝对路径(相对路径会导致explorer打开默认文档文件夹)
+          - 使用shell=True避免PowerShell参数解析问题
+          - 路径不存在时给出明确提示
+        
         参数:
-            fpath: 要定位的文件或文件夹的绝对路径
+            fpath: 要定位的文件或文件夹的路径(绝对或相对)
         """
         import subprocess, platform
         try:
+            # 统一转为绝对路径(关键修复: 相对路径会导致explorer打开"文档"文件夹)
+            abs_path = os.path.abspath(fpath) if fpath else ""
+            
+            if not os.path.exists(abs_path):
+                QMessageBox.warning(self,'无法定位',f'文件/文件夹不存在:\n{abs_path}')
+                return
+            
             if platform.system() == 'Windows':
-                # Windows: explorer /select,"路径" 需要将 /select, 和路径合并为一个参数，
-                # 否则 subprocess 会把它们当作两个独立参数传入，导致资源管理器无法正确定位
-                subprocess.run(['explorer', f'/select,{fpath}'], check=False)
+                # Windows: 使用shell=True确保explorer正确解析/select参数
+                # 注意: /select和路径之间不能有空格，否则explorer会忽略select参数
+                subprocess.run(f'explorer /select,"{abs_path}"', shell=True, check=False)
             elif platform.system() == 'Linux':
                 # Linux: 尝试多种文件管理器
                 for cmd in [
-                    ['xdg-open', os.path.dirname(fpath)],
-                    ['nautilus', '--select', fpath],
-                    ['dolphin', '--select', fpath],
-                    ['thunar', fpath],
+                    ['xdg-open', os.path.dirname(abs_path)],
+                    ['nautilus', '--select', abs_path],
+                    ['dolphin', '--select', abs_path],
+                    ['thunar', abs_path],
                 ]:
                     try:
                         subprocess.run(cmd, check=False, timeout=3)
