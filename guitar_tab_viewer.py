@@ -1070,6 +1070,9 @@ class DisplayWidget(QWidget):
 
         # 绘制标注层
         self._draw_annotations(painter)
+        
+        # Phase 3: 绘制当前播放音符高亮(音频同步)
+        self._draw_audio_highlight(painter)
 
         # 加载遮罩
         if self.parent_window and self.parent_window.is_loading:
@@ -1100,6 +1103,53 @@ class DisplayWidget(QWidget):
         painter.setPen(QColor(ann.color));painter.drawText(x,y,ann.text)
         painter.setBrush(QColor(ann.color));painter.setPen(Qt.NoPen)
         painter.drawEllipse(x-3,y+2,6,6)
+
+    def _draw_audio_highlight(self, painter: QPainter)->None:
+        """
+        Phase 3: 绘制当前播放音符的视觉高亮
+        
+        原理: 当音频引擎播放到某个 note_on 事件时，
+              通过回调记录当前发声的 MIDI 音高，
+              在谱面可视区域绘制一个半透明高亮条，
+              表示当前正在播放的音符位置。
+        
+        视觉效果: 
+          - 水平高亮条横跨整个画布宽度
+          - 颜色随力度变化(弱=蓝/中=绿/强=橙)
+          - 半透明(40%不透明度)避免遮挡谱面内容
+        """
+        if not self.parent_window:
+            return
+        
+        highlight = self.parent_window._current_highlight
+        if not highlight:
+            return
+        
+        midi_pitch, velocity, time_ms = highlight
+        
+        # 根据力度选择颜色
+        # 弱声(0-60)→蓝色, 中强(61-100)→绿色, 强力(101-127)→橙色
+        if velocity < 60:
+            color = QColor("#3B82F6")   # 蓝色
+        elif velocity < 101:
+            color = QColor("#22C55E")   # 绿色
+        else:
+            color = QColor("#F97316")   # 橙色
+        
+        # 绘制顶部高亮指示条
+        bar_height = 3  # 高亮条高度(px)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(color.red(), color.green(), color.blue(), 100))  # 40%透明
+        painter.drawRect(0, 0, self.width(), bar_height)
+        
+        # 绘制当前音高信息文字（右上角）
+        painter.setPen(color)
+        painter.setFont(QFont("Arial", 9))
+        pitch_names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+        octave = midi_pitch // 12 - 1
+        note_name = pitch_names[midi_pitch % 12]
+        info_text = f"{note_name}{octave} (vel:{velocity})"
+        painter.drawText(self.width() - 80, 14, info_text)
 
     def mouseDoubleClickEvent(self,event:QMouseEvent)->None:
         """双击谱面 - 优先检测是否点击了已有标注(编辑)，否则新建"""
@@ -1183,6 +1233,14 @@ class DisplayWindow(QMainWindow):
         self.gtp_current_track:int=0          # 当前选中的音轨索引
         self.gtp_file_path:str=""             # 当前GTP文件路径(用于切换音轨时重新渲染)
 
+        # === Phase 3: 音频播放引擎 ===
+        self._synth_engine=None               # FluidSynth合成器实例(SynthEngine)
+        self._midi_converter=None             # MIDI转换器(MidiConverter)
+        self._gtp_song=None                   # 当前加载的GTPSong对象(用于音频转换)
+        self._audio_events:List=[]            # 转换后的MIDI事件列表
+        self._audio_enabled:bool=False        # 音频开关(用户可切换)
+        self._current_highlight:tuple=None    # 当前高亮音符(midi_pitch, time_ms)
+
         self.init_ui()
         self._load_annotations()               # 加载已有标注
         self.load_content_async()              # 异步加载内容
@@ -1255,6 +1313,13 @@ class DisplayWindow(QMainWindow):
         self.gtp_track_combo.setVisible(False)  # 非GTP文件时隐藏
         self.gtp_track_combo.currentIndexChanged.connect(self._on_gtp_track_changed)
         tb.addWidget(self.gtp_track_combo)
+
+        # 音频播放开关按钮（仅GTP文件显示，默认隐藏）
+        self.audio_btn=ModernButton("🔊 音频",'accent')
+        self.audio_btn.setCheckable(True)
+        self.audio_btn.setVisible(False)  # 非GTP文件时隐藏
+        self.audio_btn.clicked.connect(self._toggle_audio)
+        tb.addWidget(self.audio_btn)
 
         tb.addStretch()
 
@@ -1430,12 +1495,16 @@ class DisplayWindow(QMainWindow):
         self.update_progress_display()
         self._update_page_display()  # 更新页码显示
 
-        # GTP文件：填充音轨选择下拉菜单
+        # GTP文件：填充音轨选择下拉菜单 + 初始化音频引擎
         if self.file_type == 'gtp':
             self._populate_gtp_track_combo()
+            self._init_audio_engine()  # Phase 3: 初始化音频播放引擎
+            self.audio_btn.setVisible(True)  # 显示音频按钮
         else:
             if self.gtp_track_combo:
                 self.gtp_track_combo.setVisible(False)
+            if self.audio_btn:
+                self.audio_btn.setVisible(False)  # 非GTP文件隐藏音频按钮
 
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)
@@ -1512,6 +1581,9 @@ class DisplayWindow(QMainWindow):
             self.update_progress_display()
             self.display_widget.update()
 
+            # Phase 3: 切换音轨后重建音频事件
+            self._rebuild_audio_events()
+
         except Exception as e:
             QMessageBox.warning(self, "音轨切换失败", f"无法渲染音轨 {index+1}:\n{str(e)}")
 
@@ -1540,6 +1612,9 @@ class DisplayWindow(QMainWindow):
     def start_playback(self)->None:
         """开始播放"""
         self.timer.start(max(1,int(self.base_speed)))
+        # Phase 3: 同时启动音频引擎
+        if self._synth_engine and self._audio_enabled:
+            self._synth_engine.play()
         self.play_btn.setText("⏸ 暂停")
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['warning']};")
         self.stop_btn.setEnabled(True)
@@ -1547,9 +1622,149 @@ class DisplayWindow(QMainWindow):
     def stop_playback(self)->None:
         """停止播放"""
         self.timer.stop()
+        # Phase 3: 同时停止音频引擎
+        if self._synth_engine and self._audio_enabled:
+            self._synth_engine.stop()
         self.play_btn.setText("▶ 播放")
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['success']};")
         self.stop_btn.setEnabled(False)
+
+    def _init_audio_engine(self)->None:
+        """
+        Phase 3: 初始化音频播放引擎(GTP文件加载后调用)
+        
+        原理:
+          1. 解析GTP文件获取 GTPSong 对象
+          2. 创建 MidiConverter 将歌曲转换为 MIDI 事件序列
+          3. 创建 SynthEngine(FluidSynth) 并加载 SoundFont
+          4. 设置音符回调用于视觉高亮同步
+        
+        注意: 此方法在 _on_content_loaded 中调用，仅对 GTP 文件生效
+              如果 fluidsynth 未安装会优雅降级（音频按钮显示为禁用状态）
+        """
+        try:
+            from gtp_engine.parser import parse_gtp
+            from gtp_engine.audio import MidiConverter, SynthEngine
+            
+            # === Step 1: 解析GTP文件获取Song对象 ===
+            self._gtp_song = parse_gtp(self.file_path)
+            
+            # === Step 2: 创建MIDI转换器并生成事件序列 ===
+            self._midi_converter = MidiConverter()
+            self._audio_events = self._midi_converter.convert(
+                self._gtp_song, track_index=self.gtp_current_track
+            )
+            
+            if not self._audio_events:
+                print("[Audio] 警告: 未生成MIDI事件(可能该轨道无音符)")
+                return
+            
+            # === Step 3: 初始化FluidSynth合成器 ===
+            self._synth_engine = SynthEngine(gain=0.7)
+            
+            if not self._synth_engine.initialize():
+                # fluidsynth未安装或初始化失败，禁用音频按钮
+                self.audio_btn.setEnabled(False)
+                self.audio_btn.setToolTip("fluidsynth库未安装，无法使用音频播放")
+                return
+            
+            # 加载 SoundFont 音色文件
+            if not self._synth_engine.load_soundfont():
+                self.audio_btn.setEnabled(False)
+                self.audio_btn.setToolTip("未找到SoundFont文件")
+                return
+            
+            # 设置吉他音色(27=Clean Electric Guitar 清音电吉他)
+            self._synth_engine.set_instrument(0, 27)
+            
+            # === Step 4: 设置音符回调(视觉高亮同步) ===
+            self._synth_engine.set_note_callback(self._on_audio_note_played)
+            
+            # 加载事件到合成器(不自动播放)
+            self._synth_engine.load_events(
+                self._audio_events,
+                bpm=self._gtp_song.tempo,
+                ticks_per_beat=480
+            )
+            
+            print(f"[Audio] 引擎就绪: {len(self._audio_events)}个MIDI事件, "
+                  f"BPM={self._gtp_song.tempo}, "
+                  f"时长={self._midi_converter.get_total_duration_ms(self._gtp_song, self.gtp_current_track)/1000:.1f}秒")
+            
+        except ImportError as e:
+            print(f"[Audio] 依赖库缺失: {e}")
+            self.audio_btn.setEnabled(False)
+            self.audio_btn.setToolTip("请安装 fluidsynth: pip install fluidsynth")
+        except Exception as e:
+            print(f"[Audio] 初始化失败: {e}")
+            self.audio_btn.setEnabled(False)
+    
+    def _toggle_audio(self, checked: bool)->None:
+        """
+        Phase 3: 切换音频开关
+        
+        参数:
+            checked: 按钮是否被选中(True=开启音频, False=关闭音频)
+        
+        原理: 用户点击 🔊 音频 按钮时切换是否在播放时同时输出声音。
+              关闭时仅保留滚动播放功能(兼容原有行为)。
+        """
+        self._audio_enabled = checked
+        if checked:
+            self.audio_btn.setText("🔊 音频开")
+            self.audio_btn.setStyleSheet(
+                f"background-color:{THEME_COLORS['accent']};"
+            )
+        else:
+            self.audio_btn.setText("🔇 音频关")
+            self.audio_btn.setStyleSheet("")
+            # 如果正在播放，立即停止音频但保持滚动
+            if self._synth_engine:
+                self._synth_engine.stop()
+    
+    def _on_audio_note_played(self, midi_pitch: int, velocity: int, time_ms: float)->None:
+        """
+        Phase 3: 音频音符触发回调(由SynthEngine在note_on时调用)
+        
+        功能: 记录当前正在发声的音符信息，
+              用于 DisplayWidget.paintEvent 绘制高亮框。
+        
+        参数:
+            midi_pitch: MIDI音高值
+            velocity:   力度
+            time_ms:    事件时间位置(毫秒)
+        """
+        self._current_highlight = (midi_pitch, velocity, time_ms)
+        # 触发重绘以更新高亮
+        if hasattr(self, 'display_widget'):
+            self.display_widget.update()
+    
+    def _rebuild_audio_events(self)->None:
+        """
+        Phase 3: 重新构建MIDI事件(切换音轨或重新渲染时调用)
+        
+        当用户通过下拉菜单切换GTP音轨时需要重新转换MIDI事件，
+        因为不同音轨的音符数据完全不同。
+        """
+        if not self._gtp_song or not self._midi_converter:
+            return
+        
+        # 先停止正在播放的音频
+        if self._synth_engine:
+            self._synth_engine.stop()
+        
+        # 用新音轨索引重新转换
+        self._audio_events = self._midi_converter.convert(
+            self._gtp_song, track_index=self.gtp_current_track
+        )
+        
+        # 重新加载到合成器
+        if self._synth_engine and self._audio_events:
+            self._synth_engine.load_events(
+                self._audio_events,
+                bpm=self._gtp_song.tempo,
+                ticks_per_beat=480
+            )
 
     def _tick(self)->None:
         """播放定时器回调 - 每帧执行"""

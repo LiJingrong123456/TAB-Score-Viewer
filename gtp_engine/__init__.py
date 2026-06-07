@@ -12,6 +12,7 @@ gtp_engine - Guitar Pro 文件渲染与播放引擎库
   - parser:    GTP文件解析 (PyGuitarPro → 中介数据模型)
   - models:    数据模型定义 (Note/Beat/Measure/Track/Song)
   - renderer:  六线谱渲染引擎 (QPainter → QPixmap)
+  - audio:     音频播放引擎 (MIDI转换 + FluidSynth合成)
   - utils:     常量定义与辅助函数
 
 快速开始:
@@ -37,12 +38,13 @@ gtp_engine - Guitar Pro 文件渲染与播放引擎库
 from .parser import GTPParser, parse_gtp
 from .models import GTPNote, GTPBeat, GTPMeasure, GTPTrack, GTPSong
 from .renderer import TabRenderer, render_gtp, TabLayoutEngine
+from .audio import MidiConverter, MidiEvent, SynthEngine
 from .utils import (
     StandardTunings, NoteDuration, TechniqueType,
     RenderConfig, TECHNIQUE_ABBREVIATION, get_string_name
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     # 解析器
     'GTPParser', 'parse_gtp',
@@ -50,6 +52,8 @@ __all__ = [
     'GTPNote', 'GTPBeat', 'GTPMeasure', 'GTPTrack', 'GTPSong',
     # 渲染器
     'TabRenderer', 'render_gtp', 'TabLayoutEngine',
+    # 音频播放 (Phase 3)
+    'MidiConverter', 'MidiEvent', 'SynthEngine',
     # 工具
     'StandardTunings', 'NoteDuration', 'TechniqueType',
     'RenderConfig', 'TECHNIQUE_ABBREVIATION', 'get_string_name',
