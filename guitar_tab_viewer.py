@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-07
+最后修改: 2026-06-09 (v1.6.1 - 修复全轨并轨模式切轨播放条不同步)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -1949,6 +1949,9 @@ class DisplayWindow(QMainWindow):
             # 单轨模式: 重置到开头
             if not need_stop:
                 self._calculate_total_distance()  # 重新计算总距离(新图像尺寸可能不同)
+                # 重建播放光标时间线(基于新轨道的布局数据)
+                # 修复: 并轨模式切轨时必须重建时间线，否则scroll_y映射仍基于旧轨道导致速度不同步
+                self._build_playhead_timeline()
                 self._update_page_display()
                 self.update_progress_display()
                 self.display_widget.update()
