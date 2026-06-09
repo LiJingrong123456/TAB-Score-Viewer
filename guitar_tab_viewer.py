@@ -6,10 +6,10 @@
          支持格式: PNG, JPG, JPEG, WEBP(图片), PDF(文档), GP3/GP4/GP5/GPX(GTP吉他谱)
 
          核心功能:
-           1. 多格式吉他谱查看与自动滚动播放
+           1. 多格式吉他谱查看与自动滚动播放(速度范围350-700ms)
            2. 可拖动进度条 + 循环播放(不循环/全局循环/区域A-B循环)
            3. 速度曲线编辑器 - 贝塞尔曲线可视化编辑，含预设模板(图片/PDF格式)
-           4. 谱面文本标注系统 - 双击任意位置添加演奏技巧说明，支持样式自定义
+           4. 谱面文本标注系统 - 双击添加/拖动移动/样式自定义
            5. 标注导入导出 - 自动加载同名.anno.json标注文件，A4尺寸PNG/PDF导出
            6. 全局撤销重做 - Ctrl+Z/Y统一撤销所有标注操作(画布+管理器共享栈)
            7. 页码导航 - PDF/多图模式底部页码输入框直接跳转
@@ -20,6 +20,7 @@
           12. 右键打开文件位置 - 文件列表右键菜单支持在资源管理器中定位文件
           13. GTP音轨切换 - 下拉菜单选择不同音轨查看(含调弦信息显示)
           14. 播放光标 - 竖线跟随播放进度移动，当前小节高亮显示
+          15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
 最后修改: 2026-06-07
@@ -60,7 +61,7 @@ from PyQt5.QtWidgets import (
     QDialog, QTextEdit, QDialogButtonBox, QGroupBox, QCheckBox,
     QSpinBox, QColorDialog, QFontDialog, QSplitter, QFrame,
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QToolTip,
-    QProgressBar, QComboBox, QTabWidget, QToolButton
+    QProgressBar, QComboBox, QTabWidget, QToolButton, QRadioButton
 )
 from PyQt5.QtGui import (
     QPixmap, QPainter, QPen, QColor, QFont, QIcon,
@@ -1000,7 +1001,12 @@ class AnnotationManagerDialog(QDialog):
 class DisplayWidget(QWidget):
     """
     谱面显示画布组件
-    功能: 渲染图片/PDF页面，叠加绘制标注层，支持双击添加标注
+    功能: 渲染图片/PDF页面，叠加绘制标注层，支持双击添加/拖动移动标注
+    
+    标注交互:
+      - 双击空白处: 新建标注
+      - 双击已有标注: 编辑标注
+      - 左键按住标注拖动: 移动标注位置(实时预览,松手保存+入撤销栈)
     """
 
     def __init__(self, parent: 'DisplayWindow' = None):
@@ -1012,11 +1018,58 @@ class DisplayWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
 
+        # === 标注拖动状态 ===
+        self._drag_ann_id: str = ""       # 当前拖动的标注ID(空=未拖动)
+        self._drag_start_xy: Tuple[float,float] = (0.0,0.0)  # 拖动开始时的相对坐标
+        self._drag_mouse_start: QPoint = QPoint()  # 拖动开始时鼠标屏幕坐标
+
+        # === 图片缓存(避免每帧重新scale，解决播放卡顿) ===
+        self._cached_scaled: List[QPixmap] = []   # 缩放后的图片缓存
+        self._cache_width: int = 0                # 缓存时的画布宽度(宽度变化时失效)
+        self._cache_dirty: bool = True            # 缓存是否需要重建
+
     def set_images(self, images: List[QPixmap]) -> None:
-        self.images = images; self.update()
+        self.images = images; self._cache_dirty = True; self.update()
 
     def set_annotations(self, annotations: List[Annotation]) -> None:
         self.annotations = annotations; self.update()
+
+    def _rebuild_image_cache(self) -> None:
+        """
+        重建缩放图片缓存
+        
+        原理: 将所有原始图片按当前画布宽度预缩放并存入缓存，
+              paintEvent时直接使用缓存，避免每帧调用scaled()。
+              这是解决播放卡顿的核心优化 — scaled()是CPU密集操作。
+        
+        触发时机:
+          - set_images()后首次绘制
+          - 画布宽度变化(resizeEvent)
+        """
+        if not self._cache_dirty and self._cache_width == self.width():
+            return  # 缓存有效，无需重建
+        ww = self.width()
+        if ww <= 20 or not self.images:
+            self._cached_scaled = []; self._cache_width = ww; self._cache_dirty = False
+            return
+        sw = ww - 20
+        self._cached_scaled = []
+        for img in self.images:
+            if img.isNull():
+                self._cached_scaled.append(QPixmap())
+                continue
+            ratio = sw / img.width() if img.width() > 0 else 1
+            sh = int(img.height() * ratio)
+            self._cached_scaled.append(
+                img.scaled(sw, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        self._cache_width = ww
+        self._cache_dirty = False
+
+    def resizeEvent(self, event) -> None:
+        """窗口大小变化 → 图片缓存失效(需要重新缩放)"""
+        super().resizeEvent(event)
+        self._cache_dirty = True
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """
@@ -1045,6 +1098,124 @@ class DisplayWidget(QWidget):
         self.update()
         event.accept()
 
+    def _hit_annotation(self, cx: int, cy: int) -> Optional[Annotation]:
+        """
+        检测坐标(cx,cy)是否命中某个标注(用于拖动/编辑)
+        
+        原理: 遍历所有标注，将相对坐标映射到屏幕绝对坐标，
+              检测鼠标是否落在标注文字的包围盒内(含10px容差)。
+        
+        参数:
+            cx, cy: 鼠标在画布上的屏幕坐标(px)
+        返回:
+            命中的Annotation对象，未命中返回None
+        """
+        if not self.parent_window or not self.parent_window.annotations or not self.images:
+            return None
+        ww = self.width()
+        if ww <= 20:
+            return None
+        total_h = sum((img.height() * (ww - 20) / img.width()) + 5
+                      for img in self.parent_window.images if not img.isNull())
+        if total_h <= 0:
+            return None
+        base_y = -self.parent_window.current_position
+
+        for ann in self.parent_window.annotations:
+            sx = int(10 + (ww - 20) * ann.x)
+            sy = int(base_y + total_h * ann.y)
+            # 命中范围: 文字宽度估算 + 左右上下容差
+            hit_w = len(ann.text) * ann.font_size // 2 + 20
+            hit_h = ann.font_size + 16
+            if (sx - hit_w <= cx <= sx + hit_w) and (sy - hit_h <= cy <= sy + 8):
+                return ann
+        return None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """
+        鼠标按下 - 检测标注拖动
+        
+        原理: 左键按下时检测是否命中标注，
+              命中则进入拖动模式(记录初始位置)，不触发其他操作。
+              未命中则不处理(留给双击事件或默认行为)。
+        """
+        if (event.button() == Qt.LeftButton and
+                self.parent_window and self.parent_window.images):
+            ann = self._hit_annotation(event.x(), event.y())
+            if ann:
+                # 进入拖动模式
+                self._drag_ann_id = ann.id
+                self._drag_start_xy = (ann.x, ann.y)
+                self._drag_mouse_start = event.pos()
+                self.setCursor(Qt.ClosedHandCursor)  # 抓手光标
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """
+        鼠标移动 - 拖动标注实时更新位置(视觉预览，不保存)
+        
+        原理: 拖动过程中实时计算新的相对坐标(x,y)并更新标注位置，
+              触发repaint显示预览效果。松开鼠标后才真正保存。
+              这样拖动流畅不会频繁写入文件。
+        """
+        if (self._drag_ann_id and
+                self.parent_window and self.parent_window.images):
+            ww = self.width()
+            if ww > 20:
+                # 计算鼠标偏移量 → 映射到相对坐标变化
+                dx = event.x() - self._drag_mouse_start.x()
+                dy = event.y() - self._drag_mouse_start.y()
+                total_h = sum((img.height() * (ww - 20) / img.width()) + 5
+                              for img in self.parent_window.images if not img.isNull())
+                if total_h > 0:
+                    rel_dx = dx / (ww - 20)
+                    rel_dy = dy / total_h
+                    new_x = max(0.0, min(1.0, self._drag_start_xy[0] + rel_dx))
+                    new_y = max(0.0, min(1.0, self._drag_start_xy[1] + rel_dy))
+                    # 实时更新标注位置(仅视觉，不入栈)
+                    for a in self.parent_window.annotations:
+                        if a.id == self._drag_ann_id:
+                            a.x = new_x; a.y = new_y; break
+                    self.update()  # 重绘显示新位置
+            event.accept()
+            return
+        # 非拖动状态: 更新光标样式(悬停在标注上时显示手型)
+        if self.parent_window and self.parent_window.images:
+            ann = self._hit_annotation(event.x(), event.y())
+            if ann:
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """
+        鼠标释放 - 结束拖动，保存快照+持久化
+        
+        原理: 松开鼠标时如果正在拖动标注，
+              1. 先保存当前状态快照到撤销栈
+              2. 标注位置已在拖动中实时更新，此时只需保存文件
+              3. 如果位置实际没变(误触)，不入撤销栈避免无意义记录
+        """
+        if event.button() == Qt.LeftButton and self._drag_ann_id:
+            self.setCursor(Qt.ArrowCursor)
+            if self.parent_window:
+                # 检查位置是否有实际变化
+                for a in self.parent_window.annotations:
+                    if a.id == self._drag_ann_id:
+                        if (abs(a.x - self._drag_start_xy[0]) > 0.001 or
+                                abs(a.y - self._drag_start_xy[1]) > 0.001):
+                            # 位置有变化 → 入撤销栈 + 保存
+                            self.parent_window._anno_save_snapshot()
+                            self.parent_window._save_annotations()
+                        break
+            self._drag_ann_id = ""
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -1060,15 +1231,15 @@ class DisplayWidget(QWidget):
         ww=self.width()
         base_y=-(self.parent_window.current_position if self.parent_window else 0)
 
-        # 绘制图片序列
-        for img in self.images:
-            if img.isNull(): continue
-            sw=ww-20; ratio=img.width()>0 and sw/img.width() or 1
-            sh=img.height()*ratio
+        # 使用缓存的缩放图片(避免每帧重新scaled，解决播放卡顿)
+        self._rebuild_image_cache()
+        sw=ww-20
+        for i, cached in enumerate(self._cached_scaled):
+            if cached.isNull(): continue
+            sh=cached.height()
             target=QRect(10,int(base_y),sw,int(sh))
             if target.bottom()>0 and target.top()<self.height():
-                scaled=img.scaled(sw,int(sh),Qt.KeepAspectRatio,Qt.SmoothTransformation)
-                painter.drawPixmap(target,scaled,scaled.rect())
+                painter.drawPixmap(target,cached,cached.rect())
             base_y+=sh+5
 
         # 绘制标注层
@@ -1348,7 +1519,7 @@ class DisplayWindow(QMainWindow):
       - 键盘快捷键支持
     """
 
-    def __init__(self, file_path, file_type: str, speed: int = 45):
+    def __init__(self, file_path, file_type: str, speed: int = 500):
         super().__init__()
         # 核心状态
         self.file_path=file_path; self.file_type=file_type
@@ -1362,7 +1533,8 @@ class DisplayWindow(QMainWindow):
         self.scroll_step:float=1.0         # 每帧滚动px
 
         # 高级功能状态
-        self.annotations:List[Annotation]=[]     # 标注列表
+        self.annotations:List[Annotation]=[]     # 当前音轨的标注列表(视图，实际存储在_annotations_by_track中)
+        self._annotations_by_track:Dict[int,List[Annotation]]={}  # 按音轨索引分轨存储的标注字典
         # === 全局撤销/重做栈 ===
         # 原理: 命令模式 + 快照栈。每次修改annotations前保存当前状态深拷贝到undo_stack，
         #       撤销时将当前状态移入redo_stack并恢复上一个快照。
@@ -1556,7 +1728,7 @@ class DisplayWindow(QMainWindow):
         # === 速度控制 ===
         sg=QGroupBox("播放速度");sl=QVBoxLayout(sg)
         sr=QHBoxLayout();sr.addWidget(QLabel("速度:"))
-        self.speed_spin=QSpinBox();self.speed_spin.setRange(1,500)
+        self.speed_spin=QSpinBox();self.speed_spin.setRange(350,700)
         self.speed_spin.setValue(self.base_speed);self.speed_spin.setSuffix(" ms")
         self.speed_spin.valueChanged.connect(self._on_speed_changed)
         sr.addWidget(self.speed_spin);sl.addLayout(sr)
@@ -1744,7 +1916,13 @@ class DisplayWindow(QMainWindow):
         if index < 0 or not self.gtp_file_path:
             return
 
-        self.gtp_current_track = index
+        # === 切换分轨标注(在更新gtp_current_track之前调用) ===
+        old_track = self.gtp_current_track
+        if old_track != index:
+            self._switch_track_annotations(old_track, index)
+            # _switch_track_annotations 内部已更新 self.gtp_current_track = index
+        else:
+            self.gtp_current_track = index
 
         # === 判断是否需要停止播放 ===
         # 仅在非并轨模式时停止（因为单轨模式音频与视觉绑定）
@@ -1813,8 +1991,13 @@ class DisplayWindow(QMainWindow):
         else: self.start_playback()
 
     def start_playback(self)->None:
-        """开始播放"""
-        self.timer.start(max(1,int(self.base_speed)))
+        """
+        开始播放
+        使用固定30fps定时器确保播放条和滚动平滑连贯
+        原理: 固定帧率(33ms) + 每帧滚动像素量随速度变化，避免低帧率导致的卡顿感
+        """
+        # 使用固定30fps定时器(33ms)，不再用base_speed作为间隔
+        self.timer.start(33)
         # Phase 3: 同时启动音频引擎
         if self._synth_engine and self._audio_enabled:
             self._synth_engine.play()
@@ -2065,16 +2248,22 @@ class DisplayWindow(QMainWindow):
 
     def _build_playhead_timeline(self)->None:
         """
-        构建播放光标时间线 - 将每个拍(Beat)映射到其音频时间和屏幕X坐标
+        构建播放光标时间线 - 将每个拍(Beat)映射到其音频时间、屏幕X坐标和滚动Y位置
         
         原理:
           遍历所有页面的布局数据(PageLayout→SystemLayout→MeasureLayout→BeatLayout)，
           结合GTP歌曲的BPM和时间签名，计算每个拍对应的音频时间位置(ms)，
           生成一个按时间排序的时间线索引。
+          
+        核心改进: 每个拍同时记录scroll_y(在总内容中的Y偏移)，
+        使滚动位置可以由音乐时间驱动，而非线性恒速滚动。
+        这样在音符密集区(16分/32分音符)播放条自动加快，
+        在稀疏区(全音符/二分音符)自动减慢，与实际音乐节奏同步。
         
         数据结构 _playhead_timeline:
           List[dict], 每个元素包含:
             - time_ms:   该拍的起始音频时间(毫秒)
+            - scroll_y:  该拍在总内容中的Y位置(像素)，用于时间→滚动映射
             - page_idx:  所在页面索引
             - sys_idx:   所在系统(行)索引
             - meas_idx:  所在小节索引
@@ -2084,7 +2273,8 @@ class DisplayWindow(QMainWindow):
             - x_end:     该拍的结束X坐标
         
         使用方式:
-          在 _update_playhead(time_ms) 中通过二分查找快速定位当前拍。
+          - _update_playhead(time_ms): 二分查找定位当前拍(X坐标高亮)
+          - _time_to_scroll_pos(time_ms): 二分查找+插值获取对应滚动Y位置
         """
         self._playhead_timeline = []
         
@@ -2104,14 +2294,35 @@ class DisplayWindow(QMainWindow):
         
         current_time_ticks = 0
         current_time_ms = 0.0
+
+        # 计算每页的缩放高度和缩放比(用于累计scroll_y，与paintEvent一致)
+        ww = self.display_widget.width() if self.display_widget.width() > 100 else 800
+        draw_w = ww - 20
+        page_heights = []  # 每页缩放后的高度
+        page_scales = []   # 每页的缩放比(width_ratio)
+        for img in self.images:
+            if not img.isNull():
+                ratio = draw_w / img.width() if img.width() > 0 else 1
+                page_heights.append(img.height() * ratio + 5)
+                page_scales.append(ratio)
+            else:
+                page_heights.append(0)
+                page_scales.append(1)
+        
+        cumulative_y = 0.0  # 累计Y偏移(所有之前页面的总高度)
         
         for page_idx, page in enumerate(self._page_layouts):
+            page_base_y = cumulative_y  # 当前页的起始Y
+            page_scale_ratio = page_scales[page_idx] if page_idx < len(page_scales) else 1
+            
+            if page_idx < len(page_heights):
+                cumulative_y += page_heights[page_idx]
+            
             for sys_idx, system in enumerate(page.systems):
                 for meas_idx, m_layout in enumerate(system.measures):
                     measure = m_layout.measure
                     
                     # 获取该小节的时值信息
-                    # 计算该小节总时长(tick)
                     if hasattr(measure, 'time_signature'):
                         ts = measure.time_signature
                         numerator = getattr(ts, 'numerator', 4)
@@ -2119,8 +2330,6 @@ class DisplayWindow(QMainWindow):
                     else:
                         numerator, denominator = 4, 4
                     
-                    # 一个小节的tick数 = (numerator / denominator) * ticks_per_beat * 4
-                    # 例如 4/4拍 = 4 * 480 = 1920 ticks
                     measure_ticks = int(numerator * ticks_per_beat * 4 / max(denominator, 1))
                     
                     beats_in_measure = m_layout.beats
@@ -2129,14 +2338,27 @@ class DisplayWindow(QMainWindow):
                         current_time_ms = current_time_ticks * ms_per_tick
                         continue
                     
-                    # 在该小节内分配各拍的时间
-                    # 简化处理: 均匀分配(不考虑实际时值变化)
                     n_beats = len(beats_in_measure)
                     tick_per_beat = measure_ticks // max(n_beats, 1)
                     
                     for beat_idx, b_layout in enumerate(beats_in_measure):
+                        # === 精确scroll_y: 每个拍有独立递增的Y位置 ===
+                        # 将该系统内的拍均匀分布在该系统的渲染区域内，
+                        # scroll_y = 页面基Y + (系统顶部Y + 拍在系统内的相对位置) * 缩放比
+                        # 这样同一系统内不同拍的scroll_y不同，滚动会随时间连续变化
+                        sys_beats_count = sum(len(m.beats) for m in system.measures)
+                        beats_before = sum(len(m2.beats) for m2 in system.measures[:meas_idx]) + beat_idx
+                        rel_pos = beats_before / max(sys_beats_count, 1)
+                        sys_h_render = max(system.y_tab_bottom - system.y_tab_top, 1)
+
+                        scroll_y = (
+                            page_base_y
+                            + (system.y_tab_top + rel_pos * sys_h_render) * page_scale_ratio
+                        )
+                        
                         entry = {
                             'time_ms': current_time_ms,
+                            'scroll_y': scroll_y,
                             'page_idx': page_idx,
                             'sys_idx': sys_idx,
                             'meas_idx': meas_idx,
@@ -2151,6 +2373,48 @@ class DisplayWindow(QMainWindow):
                         
                         current_time_ticks += tick_per_beat
                         current_time_ms = current_time_ticks * ms_per_tick
+        
+        # === 后处理: 确保scroll_y严格单调递增 + 可选哨兵 ===
+        if self._playhead_timeline:
+            # 强制单调递增(防止布局数据异常导致回退)
+            prev_y = -1.0
+            for entry in self._playhead_timeline:
+                if entry['scroll_y'] <= prev_y:
+                    entry['scroll_y'] = prev_y + 0.5  # 最小增量保证递增
+                prev_y = entry['scroll_y']
+            
+            self._total_audio_duration_ms = self._playhead_timeline[-1]['time_ms']
+
+            # 总内容高度(与 _calculate_total_distance 完全一致)
+            # cumulative_y 已包含每张图片高度+5，最后一张的+5需减去
+            total_content_h = max(cumulative_y - 5, 0)
+            
+            last_entry = self._playhead_timeline[-1]
+            last_scroll_y = last_entry['scroll_y']
+            last_time_ms = last_entry['time_ms']
+            remaining_h = total_content_h - last_scroll_y
+
+            # 仅当剩余空白区域超过一个系统的高度时才加哨兵
+            # 避免末尾"多走一截"
+            if remaining_h > 50:  # 至少50px空白才值得加哨兵
+                first = self._playhead_timeline[0]
+                elapsed_y = last_scroll_y - first['scroll_y']
+                elapsed_t = max(last_time_ms - first['time_ms'], 1)
+                avg_speed = elapsed_y / elapsed_t
+                estimated_remaining_ms = remaining_h / max(avg_speed, 0.01)
+
+                sentinel = {
+                    'time_ms': last_time_ms + estimated_remaining_ms,
+                    'scroll_y': float(total_content_h),
+                    'page_idx': len(self._page_layouts) - 1,
+                    'sys_idx': 0, 'meas_idx': 0, 'beat_idx': 0,
+                    'x_center': 0, 'x_start': 0, 'x_end': 0,
+                    'y_top': 0, 'y_bottom': 0,
+                }
+                self._playhead_timeline.append(sentinel)
+                self._total_audio_duration_ms = sentinel['time_ms']
+        else:
+            self._total_audio_duration_ms = 0.0
     
     def _update_playhead(self, time_ms: float = None)->None:
         """
@@ -2212,34 +2476,161 @@ class DisplayWindow(QMainWindow):
                 curr['beat_idx'], x_pos, progress
             )
 
+    def _time_to_scroll_pos(self, time_ms: float)->float:
+        """
+        根据音频时间(ms)计算对应的滚动Y位置
+        
+        原理:
+          在 _playhead_timeline 中二分查找当前时间对应的拍，
+          通过线性插值获取精确的scroll_y值。
+          这使得滚动位置随音符时值自动变化：
+          - 音符密集区(16/32分音符): 相同时间→更大scroll_y变化 → 滚动更快
+          - 音符稀疏区(全/二分音符): 相同时间→更小scroll_y变化 → 滚动更慢
+          
+        参数:
+            time_ms: 当前音频播放时间(毫秒)
+        
+        返回:
+            对应的滚动Y位置(像素)，范围 [0, total_scroll_distance]
+        """
+        if not self._playhead_timeline or self.total_scroll_distance <= 0:
+            return 0.0
+
+        # 边界处理
+        if time_ms <= 0:
+            return 0.0
+        if time_ms >= self._playhead_timeline[-1]['time_ms']:
+            return float(self.total_scroll_distance)
+
+        # 二分查找时间位置
+        import bisect
+        times = [e['time_ms'] for e in self._playhead_timeline]
+        idx = bisect.bisect_right(times, time_ms) - 1
+
+        if idx < 0:
+            return 0.0
+        if idx >= len(self._playhead_timeline) - 1:
+            return float(self.total_scroll_distance)
+
+        # 线性插值
+        curr = self._playhead_timeline[idx]
+        next_e = self._playhead_timeline[idx + 1]
+        dt = next_e['time_ms'] - curr['time_ms']
+        if dt <= 0:
+            return curr['scroll_y']
+        t = (time_ms - curr['time_ms']) / dt
+        scroll_y = curr['scroll_y'] + t * (next_e['scroll_y'] - curr['scroll_y'])
+
+        # 映射到显示区域(减去可视区域高度的一半，让光标居中)
+        display_h = max(self.display_widget.height(), 100)
+        centered_pos = max(0, scroll_y - display_h / 2)
+
+        return min(centered_pos, float(self.total_scroll_distance))
+
     def _tick(self)->None:
-        """播放定时器回调 - 每帧执行"""
-        # 计算当前速度(启用曲线时从曲线获取)
-        if self.speed_curve.is_enabled and len(self.speed_curve.points)>=2:
-            current_speed=self._get_curve_speed()
+        """
+        播放定时器回调 - 每帧执行(已优化: 时间驱动滚动+图片缓存+节流UI)
+        
+        核心改进: 当音频引擎可用且有播放时间线时，使用音乐时间驱动滚动位置，
+        而非线性恒速滚动。这样播放条速度会随音符时值自动变化：
+        - 音符密集区(16/32分音符) → 同时间内scroll_y变化大 → 滚动加快
+        - 音符稀疏区(全/二分音符) → 同时间内scroll_y变化小 → 滚动减慢
+        
+        性能优化点:
+          1. 图片缩放缓存: paintEvent使用预缓存的scaled图片，避免每帧重新scale(CPU密集)
+          2. UI节流: 进度条位置每帧更新(轻量)，页码同步/标签每3帧更新一次
+        """
+        # === 判断是否使用时间驱动滚动(有音频引擎 + 有时间线) ===
+        use_time_scroll = (
+            self._synth_engine is not None
+            and hasattr(self._synth_engine, 'current_time_ms')
+            and len(self._playhead_timeline) >= 2
+        )
+
+        if use_time_scroll:
+            # --- 时间驱动模式: 滚动位置由音乐时间决定 ---
+            audio_time_ms = self._synth_engine.current_time_ms
+            # 用速度曲线调整时间流逝速度(曲线加速=时间变快)
+            if self.speed_curve.is_enabled and len(self.speed_curve.points) >= 2:
+                curve_speed = self._get_curve_speed()
+                time_scale = self.base_speed / max(curve_speed, 1)
+                effective_time = audio_time_ms * time_scale
+            else:
+                effective_time = audio_time_ms
+
+            self.current_position = self._time_to_scroll_pos(effective_time)
+            self.play_time = effective_time / 1000.0
+
+            # 进度百分比基于音频时间
+            total_dur = getattr(self, '_total_audio_duration_ms', 0) or 1
+            pct = min((effective_time / total_dur) * 100, 100)
+
+            # 循环检查(时间模式)
+            should_loop = self._check_loop_condition()
+            if should_loop:
+                if self.loop_config.loop_type == 'all':
+                    self.current_position = 0; self.play_time = 0
+                    if self._synth_engine:
+                        self._synth_engine.seek(0)
+                elif self.loop_config.loop_type == 'region':
+                    start_pct = self.loop_config.start_position
+                    target_time = total_dur * start_pct / 100
+                    self.current_position = self.total_scroll_distance * start_pct / 100
+                    if self._synth_engine:
+                        self._synth_engine.seek(target_time)
+            elif effective_time >= total_dur:
+                self.current_position = self.total_scroll_distance
+                self.stop_playback()
+
         else:
-            current_speed=self.base_speed
+            # --- 线性恒速模式(无音频时降级使用) ---
+            if self.speed_curve.is_enabled and len(self.speed_curve.points)>=2:
+                current_speed=self._get_curve_speed()
+            else:
+                current_speed=self.base_speed
 
-        self._calculate_scroll_step(current_speed)
-        self.current_position+=self.scroll_step
-        self.play_time+=current_speed/1000.0
+            self._calculate_scroll_step(current_speed)
+            self.current_position+=self.scroll_step
+            self.play_time+=current_speed/1000.0
 
-        # 循环检查
-        should_loop=self._check_loop_condition()
-        if should_loop:
-            if self.loop_config.loop_type=='all':
-                self.current_position=0;self.play_time=0
-            elif self.loop_config.loop_type=='region':
-                self.current_position=self.total_scroll_distance*self.loop_config.start_position/100
-        elif self.current_position>=self.total_scroll_distance:
-            self.current_position=self.total_scroll_distance
-            self.stop_playback()
+            # 循环检查
+            should_loop=self._check_loop_condition()
+            if should_loop:
+                if self.loop_config.loop_type=='all':
+                    self.current_position=0;self.play_time=0
+                elif self.loop_config.loop_type=='region':
+                    self.current_position=self.total_scroll_distance*self.loop_config.start_position/100
+            elif self.current_position>=self.total_scroll_distance:
+                self.current_position=self.total_scroll_distance
+                self.stop_playback()
+
+            if self.total_scroll_distance > 0:
+                pct = (self.current_position / self.total_scroll_distance) * 100
+            else:
+                pct = 0
 
         # 更新播放光标位置(每帧同步)
         self._update_playhead()
 
+        # === 重绘画布(使用缓存图片，已优化) ===
         self.display_widget.update()
-        self.update_progress_display()
+
+        # === 更新进度显示(节流: 页码同步每3帧执行一次) ===
+        if not hasattr(self, '_tick_counter'):
+            self._tick_counter = 0
+        self._tick_counter += 1
+        
+        self.position_label.setText(f"位置: {pct:.1f}%")
+        self.progress_bar.blockSignals(True)
+        self.progress_bar.position = pct
+        self.progress_bar.blockSignals(False)
+        
+        secs = int(self.play_time)
+        self.time_start_label.setText(f"{secs // 60:02d}:{secs % 60:02d}")
+        
+        # 页码同步: 每3帧执行一次(避免每帧遍历所有图片计算高度)
+        if self._tick_counter % 3 == 1:
+            self._sync_page_input()
 
     def _get_curve_speed(self)->float:
         """根据速度曲线获取当前时刻的速度值"""
@@ -2257,53 +2648,40 @@ class DisplayWindow(QMainWindow):
 
     def _calculate_scroll_step(self,speed_ms:float)->None:
         """
-        根据速度(ms)计算每帧滚动像素数 - 速度越小越快
+        根据速度(ms)计算每帧滚动像素数 - 使用固定30fps定时器确保平滑
         
-        原理:
-          播放总时长(秒) ∝ speed_ms (用户设的值越大→播放越慢)
-          每帧前进距离 = 总距离 / 总帧数
+        原理(已优化):
+          定时器固定33ms间隔(≈30fps)，通过调整scroll_step控制播放快慢。
           
-          总帧数的计算考虑两个因素:
-            1. speed_ms: 用户期望的播放时长系数(越大越慢)
-            2. base_speed: 定时器实际间隔(ms)，决定每秒多少帧
-            
-          公式: scroll_step = total_distance × base_speed / (speed_ms × SCALE × 1000)
+          核心公式: scroll_step = total_distance * FRAME_INTERVAL / (speed_ms * SCALE * 1000)
           
-          这样无论定时器间隔是否变化(如速度曲线模式)，scroll_step 都会
-          正确响应 speed_ms 的变化，保证速度控制始终有效。
+          其中:
+            - FRAME_INTERVAL = 33ms (固定，保证30fps平滑更新)
+            - speed_ms: 用户设置的速度系数(越大越慢)
+            - DURATION_SCALE: 总时长缩放因子(默认1.5)
         
         参数:
-            speed_ms: 当前有效速度(毫秒)。来自 base_speed 或速度曲线返回值。
-                     值越大→scroll_step越小→播放越慢
+            speed_ms: 当前有效速度(毫秒)。值越大→播放越慢
         
-        调整效果(以 base_speed=50 为例):
-            speed_ms=25  → 2x速 (约37.5秒播完)
-            speed_ms=50  → 1x速 (约75秒播完，基准)
-            speed_ms=100 → 0.5x速 (约150秒播完)
-            speed_ms=150 → 0.33x速 (约225秒播完)
+        调整效果(以总距离10000px为例):
+            speed_ms=350 → 约2px/帧 → 平滑滚动
+            speed_ms=500 → 约1.4px/帧 → 中速
+            speed_ms=700 → 约1px/帧 → 慢速但依然流畅
         """
         if speed_ms<=0:
             speed_ms=1
-        
+
+        # 固定帧率参数(30fps = 33ms/帧) - 保证视觉更新连贯不卡顿
+        FRAME_INTERVAL_MS = 33  # 调大→帧率降低可能卡顿; 调小→更流畅但CPU略增
+
         # 缩放因子: 控制速度档位的整体快慢感
         # 调大此值 → 同样speed_ms下播放更慢(耗时更长)
         # 调小此值 → 同样speed_ms下播放更快
         DURATION_SCALE = 1.5  # 总时长(秒) = speed_ms * DURATION_SCALE / 1000
         
         if self.total_scroll_distance > 0:
-            # 核心公式: scroll_step 与 speed_ms 成反比，与 base_speed 成正比
-            # 
-            # 推导:
-            #   目标总时长 T_total = speed_ms * DURATION_SCALE / 1000 (秒)
-            #   定时器帧率     FPS ≈ 1000 / base_speed (帧/秒，由timer.start(base_speed)决定)
-            #   总帧数         N_frames = T_total * FPS
-            #                        = (speed_ms * DURATION_SCALE / 1000) * (1000 / base_speed)
-            #                        = speed_ms * DURATION_SCALE / base_speed
-            #   每帧像素       scroll_step = total_distance / N_frames
-            #                        = total_distance * base_speed / (speed_ms * DURATION_SCALE)
-            #
             self.scroll_step = (
-                self.total_scroll_distance * self.base_speed /
+                self.total_scroll_distance * FRAME_INTERVAL_MS /
                 (speed_ms * DURATION_SCALE * 1000.0)
             )
         else:
@@ -2344,7 +2722,7 @@ class DisplayWindow(QMainWindow):
         return False
 
     def update_progress_display(self)->None:
-        """更新进度显示 - 含页码同步"""
+        """更新进度显示(非播放时调用，如拖动进度条/滚轮滚动)"""
         if self.total_scroll_distance>0:
             pct=(self.current_position/self.total_scroll_distance)*100
         else:
@@ -2355,23 +2733,32 @@ class DisplayWindow(QMainWindow):
         self.progress_bar.blockSignals(False)
         secs=int(self.play_time)
         self.time_start_label.setText(f"{secs//60:02d}:{secs%60:02d}")
+        # 同步页码(非播放时每次都同步)
+        self._sync_page_input()
 
-        # 同步页码输入框(避免循环触发信号)
-        if hasattr(self,'page_input') and self.images and len(self.images)>1:
-            ww=self.display_widget.width()-20
-            offset=0.0;current_page=1
-            for i,img in enumerate(self.images):
-                if img.isNull(): continue
-                ratio=img.width()>0 and ww/img.width() or 1
-                h=img.height()*ratio+5
-                if offset+h>self.current_position:
-                    current_page=i+1; break
-                offset+=h
-            else:
-                current_page=len(self.images)
-            self.page_input.blockSignals(True)
-            self.page_input.setValue(current_page)
-            self.page_input.blockSignals(False)
+    def _sync_page_input(self)->None:
+        """
+        同步页码输入框(从update_progress_display中提取的节流方法)
+        
+        原理: 遍历所有图片计算累积高度，确定当前滚动位置落在哪一页。
+              此操作O(n)且涉及浮点乘法，在_tick中每3帧调用一次以减少CPU开销。
+        """
+        if not (hasattr(self,'page_input') and self.images and len(self.images)>1):
+            return
+        ww=self.display_widget.width()-20
+        offset=0.0;current_page=1
+        for i,img in enumerate(self.images):
+            if img.isNull(): continue
+            ratio=img.width()>0 and ww/img.width() or 1
+            h=img.height()*ratio+5
+            if offset+h>self.current_position:
+                current_page=i+1; break
+            offset+=h
+        else:
+            current_page=len(self.images)
+        self.page_input.blockSignals(True)
+        self.page_input.setValue(current_page)
+        self.page_input.blockSignals(False)
 
     # ========== 事件处理 ==========
 
@@ -2477,21 +2864,23 @@ class DisplayWindow(QMainWindow):
 
     def _get_annotation_file_path(self)->str:
         """
-        获取当前文件的标注存储路径(同名.anno.json策略)
+        获取当前音轨的标注存储路径(同名.anno.json策略 + 分轨)
         
-        原理: 标注文件与源文件放在同一目录，命名为 {源文件名}.anno.json
-              例如: 晚安北京.gp4 → 同目录下 晚安北京.gp4.anno.json
-              优点: 
-                1. 与谱子文件一起分发/备份，一目了然
-                2. 不依赖集中式data/annotations目录，多电脑同步更方便
+        原理: 标注文件与源文件放在同一目录:
+          - 非GTP/单轨: {源文件名}.anno.json (例: 晚安北京.png.anno.json)
+          - GTP多轨:   {源文件名}.t{轨道号}.anno.json (例: song.gp4.t0.anno.json, song.gp4.t1.anno.json)
+              每个音轨独立一个标注文件，切换音轨时自动加载对应轨道的标注。
         
         兼容性: 如果源文件路径无效(如多图模式)，回退到旧的 data/annotations/ 路径
         
         返回:
             标注文件的绝对路径字符串
         """
-        # 优先使用源文件同目录的 .anno.json 文件
         if isinstance(self.file_path, str) and self.file_path:
+            # GTP多轨文件: 文件名后追加 .t{track_idx}
+            if self.gtp_file_path:
+                return f"{self.file_path}.t{self.gtp_current_track}{ANNOTATION_EXT}"
+            # 非GTP/单轨文件: 直接追加 .anno.json
             return self.file_path + ANNOTATION_EXT
         # 回退: 多图模式等无法确定源文件时，用旧路径
         base = "multi_image"
@@ -2550,6 +2939,57 @@ class DisplayWindow(QMainWindow):
                           ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存标注失败: {e}")
+
+    def _switch_track_annotations(self, old_track:int, new_track:int)->None:
+        """
+        切换音轨时的标注切换(保存当前轨 → 加载目标轨)
+        
+        原理: GTP多轨文件每个音轨有独立的标注文件(.t0.anno.json, .t1.anno.json, ...)。
+              切换音轨时:
+                1. 将当前annotations存入分轨字典 _annotations_by_track[old_track]
+                2. 从字典或文件中加载 new_track 的 annotations
+                3. 更新画布显示 + 清空撤销/重做栈(跨轨撤销无意义)
+        
+        参数:
+            old_track: 切换前的音轨索引
+            new_track: 切换后的音轨索引
+        """
+        if old_track == new_track:
+            return
+
+        # 1. 保存当前轨标注到内存字典
+        self._annotations_by_track[old_track] = self.annotations.copy()
+
+        # 2. 持久化当前轨标注到文件(确保不丢失)
+        try:
+            fpath = self._get_annotation_file_path()  # 注意: 此时gtp_current_track还是old_track!
+            dname = os.path.dirname(fpath)
+            if dname:
+                os.makedirs(dname, exist_ok=True)
+            with open(fpath, 'w', encoding='utf-8') as f:
+                json.dump([asdict(a) for a in self.annotations], f,
+                          ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        # 3. 加载目标轨标注(优先内存 > 文件 > 空列表)
+        # 先更新gtp_current_track到新轨道，以便_get_annotation_file_path返回正确路径
+        self.gtp_current_track = new_track
+
+        if new_track in self._annotations_by_track and self._annotations_by_track[new_track]:
+            # 内存中有缓存
+            self.annotations = [Annotation(**asdict(a)) for a in self._annotations_by_track[new_track]]
+        else:
+            # 从文件加载或空列表
+            self._load_annotations()
+            self._annotations_by_track[new_track] = self.annotations.copy()
+
+        # 4. 更新画布显示
+        self.display_widget.set_annotations(self.annotations)
+
+        # 5. 清空撤销/重做栈(跨轨操作不应共享撤销历史)
+        self._undo_stack.clear()
+        self._redo_stack.clear()
 
     # ========== 全局撤销/重做 ==========
 
@@ -2621,251 +3061,322 @@ class DisplayWindow(QMainWindow):
             self._ann_manager.annotations = self.annotations
             self._ann_manager._populate_list()
 
-    # ========== A4导出(PNG/PDF，含标注) ==========
+    # ========== A4导出(PNG/PDF，含标注，支持分轨/分页) ==========
 
     def _export_to_a4(self)->None:
         """
-        导出当前谱面(含标注)为A4尺寸的PNG图片或PDF文档
+        导出谱面(含标注)为A4尺寸的PNG或PDF
         
-        原理: 
-          1. 弹出文件对话框让用户选择保存路径和格式(PNG/PDF)
-          2. A4纸尺寸: 210mm x 297mm，渲染DPI=300 → 2480 x 3508 px
-          3. 使用QPainter将所有页面图片+标注层重新绘制到A4画布上
-          4. 如果总内容超过一页A4高度，自动分页导出
+        功能:
+          - 格式: PNG(每页一图) / PDF(单文件多页)
+          - 分轨: GTP文件可选指定轨道导出，或"全部轨道"按顺序拼接
+          - 分页: 可选单页、页数范围、全部页面
+          - 标注: 完整渲染所有标注(颜色/字体/大小)
         
-        支持格式:
-          - PNG: 高清位图，适合查看/打印/分享
-          - PDF: 矢量质量最佳，适合正式文档
+        原理:
+          1. 弹出自定义导出对话框(ExportDialog)让用户选择格式/轨道/页码范围
+          2. 收集需要导出的图片列表(GTP多轨时按需重新渲染各轨)
+          3. 按A4尺寸(2480×3508px @300dpi)逐页/逐轨绘制到画布
+          4. PNG: 每页保存独立文件; PDF: 单文件多页
         """
         if not self.images or all(img.isNull() for img in self.images):
             QMessageBox.warning(self, "无法导出", "当前没有可导出的谱面内容")
             return
 
-        # 让用户选择保存路径和格式
-        src_name = os.path.basename(self.file_path) if isinstance(self.file_path, str) else "谱面"
-        base_name = os.path.splitext(src_name)[0]
-        
-        file_path, selected_filter = QFileDialog.getSaveFileName(
-            self, "导出A4谱面(含标注)",
-            f"{base_name}_annotated",
-            "PNG 图片 (*.png);;PDF 文档 (*.pdf)",
-            "PNG 图片 (*.png)"
+        # 弹出导出对话框
+        dlg = ExportDialog(
+            parent=self,
+            src_name=os.path.basename(self.file_path) if isinstance(self.file_path, str) else "谱面",
+            is_gtp=bool(self.gtp_file_path),
+            gtp_track_count=self.gtp_track_combo.count() if self.gtp_track_combo else 0,
+            current_track=self.gtp_current_track,
+            total_pages=len([i for i in self.images if not i.isNull()])
         )
-        
-        if not file_path:
-            return  # 用户取消
+        if dlg.exec_() != QDialog.Accepted:
+            return
 
-        is_pdf = file_path.lower().endswith('.pdf')
-        
+        # 获取用户选择
+        fmt = dlg.format_choice  # "png" 或 "pdf"
+        track_mode = dlg.track_mode  # "current" | "all" | list[int]
+        page_mode = dlg.page_mode    # "all" | ("range", start, end)
+        save_path = dlg.save_path
+
         try:
-            if is_pdf:
-                self._render_to_a4_pdf(file_path)
-            else:
-                self._render_to_a4_png(file_path)
-            
-            fmt = "PDF" if is_pdf else "PNG"
+            # === Step 1: 收集要导出的图片和标注 ===
+            export_items = self._collect_export_data(track_mode, page_mode)
+            # export_items: List[ExportItem] = [(images_list, annotations_list, track_label), ...]
+
+            if not export_items or not any(item[0] for item in export_items):
+                QMessageBox.warning(self, "无法导出", "没有可导出的内容")
+                return
+
+            # === Step 2: 执行导出 ===
+            total_files = 0
+            for item_idx, (imgs, anns, label) in enumerate(export_items):
+                if not imgs:
+                    continue
+
+                # 构建此轨/部分的保存路径
+                if len(export_items) > 1 or label:
+                    base, ext = os.path.splitext(save_path)
+                    part_path = f"{base}_{label}{ext}"
+                else:
+                    part_path = save_path
+
+                if fmt == "pdf":
+                    self._render_to_a4_pdf_v2(part_path, imgs, anns)
+                    total_files += 1
+                else:
+                    n = self._render_to_a4_png_v2(part_path, imgs, anns)
+                    total_files += n
+
+            fmt_name = "PDF" if fmt == "pdf" else "PNG"
+            mode_desc = ""
+            if track_mode == "all":
+                mode_desc = f"(全部{self.gtp_track_combo.count()}轨)"
+            elif isinstance(track_mode, list):
+                mode_desc = f"(轨道 {', '.join(str(t+1) for t in track_mode)})"
+
             QMessageBox.information(
                 self, "导出成功",
-                f"已导出为 {fmt} 格式:\n{file_path}\n\n"
-                f"尺寸: A4 (210mm × 297mm @300dpi)\n"
-                f"包含: 谱面图像 + 全部标注"
+                f"已导出为 {fmt_name} 格式:\n{save_path}\n\n"
+                f"共 {total_files} 个文件{mode_desc}\n"
+                f"尺寸: A4 (210mm × 297mm @300dpi)\n包含: 谱面图像 + 全部标注"
             )
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "导出失败", f"导出过程中出错:\n{str(e)}")
+
+    def _collect_export_data(self, track_mode, page_mode)->list:
+        """
+        收集导出数据: 根据用户选择的轨道模式和页码模式，收集图片列表和标注
+        
+        参数:
+            track_mode: "current"(当前轨) | "all"(全部轨) | [int,...](指定轨道索引列表)
+            page_mode: "all"(全部页) | ("range", start, end)(页码范围,1-based)
+        
+        返回:
+            List[(images:List[QPixmap], annotations:List[Annotation], label:str), ...]
+        """
+        items = []
+
+        if track_mode == "current":
+            imgs, anns, label = self._get_page_range_images(page_mode)
+            items.append((imgs, anns, ""))
+
+        elif track_mode == "all" and self.gtp_file_path:
+            from gtp_engine.renderer import TabRenderer
+            renderer = TabRenderer()
+            for t_idx in range(self.gtp_track_combo.count()):
+                try:
+                    pixmaps = renderer.render_from_file(self.gtp_file_path, track_index=t_idx)
+                    valid_pixmaps = [p for p in pixmaps if not p.isNull()]
+                    if page_mode[0] == "range":
+                        valid_pixmaps = valid_pixmaps[page_mode[1]-1:page_mode[2]]
+                    track_anns = self._load_track_annotations(t_idx)
+                    tname = self.gtp_track_combo.itemText(t_idx).replace(' ', '_')[:20]
+                    items.append((valid_pixmaps, track_anns, f"t{t_idx+1}_{tname}"))
+                except Exception as e:
+                    print(f"警告: 渲染轨道{t_idx}失败: {e}")
+
+        elif isinstance(track_mode, list):
+            from gtp_engine.renderer import TabRenderer
+            renderer = TabRenderer()
+            for t_idx in track_mode:
+                try:
+                    pixmaps = renderer.render_from_file(self.gtp_file_path, track_index=t_idx)
+                    valid_pixmaps = [p for p in pixmaps if not p.isNull()]
+                    if page_mode[0] == "range":
+                        valid_pixmaps = valid_pixmaps[page_mode[1]-1:page_mode[2]]
+                    track_anns = self._load_track_annotations(t_idx)
+                    items.append((valid_pixmaps, track_anns, f"t{t_idx+1}"))
+                except Exception as e:
+                    print(f"警告: 渲染轨道{t_idx}失败: {e}")
+        else:
+            imgs, anns, label = self._get_page_range_images(page_mode)
+            items.append((imgs, anns, ""))
+        return items
+
+    def _get_page_range_images(self, page_mode)->tuple:
+        """根据页码模式获取当前显示的图片子集"""
+        valid_imgs = [img for img in self.images if not img.isNull()]
+        if page_mode[0] == "range":
+            valid_imgs = valid_imgs[page_mode[1]-1:page_mode[2]]
+        return (valid_imgs, self.annotations.copy(), "")
+
+    def _load_track_annotations(self, track_idx:int)->list:
+        """加载指定轨道的标注(从文件或内存缓存)"""
+        if track_idx in self._annotations_by_track and self._annotations_by_track[track_idx]:
+            return [Annotation(**asdict(a)) for a in self._annotations_by_track[track_idx]]
+        old_track = self.gtp_current_track
+        self.gtp_current_track = track_idx
+        fpath = self._get_annotation_file_path()
+        self.gtp_current_track = old_track
+        if os.path.exists(fpath):
+            try:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return [Annotation(**d) for d in data]
+            except Exception:
+                pass
+        return []
 
     def _get_a4_size_px(self, dpi:int=300)->tuple:
         """
         获取A4纸的像素尺寸
-        
-        参数:
-            dpi: 每英寸像素数，默认300(印刷级质量)
-                 调大→更清晰但文件更大；调小→文件小但可能模糊
-        
-        返回:
-            (宽度px, 高度px) 元组
+        参数: dpi(默认300印刷级，调大更清晰文件更大)
+        返回: (宽度px, 高度px)
         """
-        # A4: 210mm x 297mm = 8.27in x 11.69in
         mm_to_inch = 25.4
-        a4_w_mm, a4_h_mm = 210, 297
-        w_px = int(a4_w_mm / mm_to_inch * dpi)
-        h_px = int(a4_h_mm / mm_to_inch * dpi)
+        w_px = int(210 / mm_to_inch * dpi)
+        h_px = int(297 / mm_to_inch * dpi)
         return w_px, h_px
 
-    def _render_to_a4_png(self, file_path:str, dpi:int=300)->None:
+    def _render_to_a4_png_v2(self, file_path:str, images:list, annotations:list, dpi:int=300)->int:
         """
-        渲染当前谱面(含标注)为A4 PNG图片(支持多页自动分页)
+        渲染为PNG(v3: 自适应画布尺寸，消除多余空白)
         
-        原理:
-          1. 计算所有图片在A4宽度下的总高度
-          2. 按A4高度分页，每页独立渲染一张PNG
-          3. 文件名自动追加页码: xxx_annotated_p1.png, p2.png, ...
-        
-        参数:
-            file_path: 用户选择的保存路径
-            dpi: 渲染分辨率(DPI)，默认300
+        改进: 
+          - 画布尺寸根据实际内容自动计算，不再强制固定A4
+          - 单页/末页: 画布高度=内容高度+边距，无多余空白
+          - 多页中间页: 使用A4高度保持一致
+          - margin从5%缩小到2%，减少四周留白
+        返回: 生成的文件数
         """
         a4_w, a4_h = self._get_a4_size_px(dpi)
-        margin = int(a4_w * 0.05)  # 5%边距
-        draw_w = a4_w - 2 * margin   # 实际绘图区域宽度
-        
-        # 计算每张图片在A4宽度下的缩放后高度
-        page_images = []  # [(scaled_pixmap, draw_height), ...]
-        total_content_h = 0
-        for img in self.images:
-            if img.isNull():
-                continue
-            ratio = draw_w / img.width() if img.width() > 0 else 1
-            scaled_h = int(img.height() * ratio)
-            page_images.append((img, ratio, scaled_h))
-            total_content_h += scaled_h + 5  # +5px 页间距
-        
-        if not page_images:
-            raise ValueError("没有可渲染的内容")
-        
-        # 计算需要多少页A4
-        draw_area_h = a4_h - 2 * margin  # 每页可用绘图高度
-        n_pages = max(1, (total_content_h + draw_area_h - 1) // draw_area_h)
-        
-        # 渲染每一页
-        current_y_offset = 0  # 在总内容中的Y偏移
-        page_idx = 0
-        
-        while page_idx < n_pages:
-            # 创建A4画布
-            canvas = QPixmap(a4_w, a4_h)
-            canvas.fill(QColor("#FFFFFF"))  # 白色背景
-            
-            painter = QPainter(canvas)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            
-            # 当前页在总内容中的Y范围
-            page_start_y = page_idx * draw_area_h
-            page_end_y = page_start_y + draw_area_h
-            
-            # 绘制图片
-            running_y = 0
-            for img, ratio, scaled_h in page_images:
-                img_bottom = running_y + scaled_h
-                # 只绘制与当前页有交集的部分
-                if img_bottom > page_start_y and running_y < page_end_y:
-                    scaled = img.scaled(draw_w, scaled_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                    # 计算在画布上的位置
-                    target_x = margin
-                    target_y = margin + (running_y - page_start_y)
-                    painter.drawPixmap(target_x, target_y, scaled)
-                running_y += scaled_h + 5
-            
-            # 绘制标注层(映射到当前页坐标)
-            self._draw_annotations_on_canvas(painter, margin, margin, 
-                                               draw_w, total_content_h,
-                                               page_start_y, page_end_y,
-                                               scale_ratio=draw_w / (self.display_widget.width() - 20) if self.display_widget.width() > 20 else 1)
-            
-            # 绘制页码
-            painter.setPen(QColor("#999999"))
-            painter.setFont(QFont("Arial", 9))
-            page_text = f"- {page_idx + 1} / {n_pages} -"
-            painter.drawText(QRect(margin, a4_h - margin - 20, draw_w, 20),
-                           Qt.AlignCenter, page_text)
-            
-            painter.end()
-            
-            # 保存当前页
-            if n_pages == 1:
-                save_path = file_path
-            else:
-                base, ext = os.path.splitext(file_path)
-                save_path = f"{base}_p{page_idx + 1}{ext}"
-            
-            canvas.save(save_path, "PNG")
-            page_idx += 1
+        margin = int(a4_w * 0.02); draw_w = a4_w - 2 * margin  # 边距从5%→2%
 
-    def _render_to_a4_pdf(self, file_path:str, dpi:int=300)->None:
-        """
-        渲染当前谱面(含标注)为A4 PDF文档(支持多页自动分页)
-        
-        原理: 使用QPdfWriter生成PDF，每页A4尺寸，
-              通过QPainter绘制图片+标注层。
-        
-        参数:
-            file_path: 用户选择的保存路径(.pdf)
-            dpi: 渲染分辨率(DPI)，默认300
-        """
-        from PyQt5.QtPrintSupport import QPdfWriter
-        
-        a4_w, a4_h = self._get_a4_size_px(dpi)
-        margin = int(a4_w * 0.05)
-        draw_w = a4_w - 2 * margin
-        
-        # 计算每张图片在A4宽度下的缩放后高度
-        page_images = []
-        total_content_h = 0
-        for img in self.images:
-            if img.isNull():
-                continue
+        # 预缩放所有图片
+        scaled_info = []; total_h = 0
+        for img in images:
+            if img.isNull(): continue
             ratio = draw_w / img.width() if img.width() > 0 else 1
-            scaled_h = int(img.height() * ratio)
-            page_images.append((img, ratio, scaled_h))
-            total_content_h += scaled_h + 5
-        
-        if not page_images:
+            sh = int(img.height() * ratio)
+            scaled_info.append((img.scaled(draw_w, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation), sh))
+            total_h += sh + 5
+        if not scaled_info:
             raise ValueError("没有可渲染的内容")
+
+        draw_area_h = a4_h - 2 * margin  # 每页最大可用绘制高度
+        n_pages = max(1, (total_h + draw_area_h - 1) // draw_area_h)
+        saved = 0
+
+        for page_idx in range(n_pages):
+            ps = page_idx * draw_area_h; pe = ps + draw_area_h
+            
+            # === 自适应画布高度: 紧贴实际内容 ===
+            page_content_h = min(total_h - ps, draw_area_h)
+            canvas_h = int(page_content_h + 2 * margin)  # 画布高度=内容高度+上下边距
+            
+            canvas = QImage(a4_w, canvas_h, QImage.Format_ARGB32_Premultiplied)
+            canvas.fill(QColor(255,255,255,255).rgba())
+
+            p = QPainter(canvas)
+            p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+            ry = 0
+            for scaled_img, sh in scaled_info:
+                if ry + sh > ps and ry < pe:
+                    p.drawPixmap(margin, margin + (ry - ps), scaled_img)
+                ry += sh + 5
+
+            # 绘制标注(临时替换self.annotations以支持传入的annotations列表)
+            orig_anns = self.annotations
+            self.annotations = annotations
+            self._draw_annotations_on_canvas(p, margin, margin, draw_w, float(total_h), float(ps), float(pe),
+                                               scale_ratio=draw_w / max(self.display_widget.width()-20, 1))
+            self.annotations = orig_anns
+
+            p.setPen(QColor("#999999")); p.setFont(QFont("Arial",9))
+            p.drawText(QRect(margin, canvas_h-margin-20, draw_w, 20), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
+            p.end()
+
+            path = file_path if n_pages == 1 else f"{os.path.splitext(file_path)[0]}_p{page_idx+1}{os.path.splitext(file_path)[1]}"
+            if not canvas.save(path, "PNG"):
+                raise IOError(f"PNG保存失败: {path}")
+            saved += 1
+        return saved
+
+    def _render_to_a4_pdf_v2(self, file_path:str, images:list, annotations:list, dpi:int=300)->None:
+        """
+        渲染为PDF(v3: 自适应画布尺寸 + PyMuPDF生成)
         
+        改进:
+          - 画布高度自适应实际内容，消除末页空白
+          - margin从5%缩小到2%
+          - PDF页面尺寸也自适应(非固定A4)，每页紧贴内容
+          - 使用PyMuPDF(fitz)生成PDF，兼容性更好
+        """
+        import io
+        a4_w, a4_h = self._get_a4_size_px(dpi)
+        margin = int(a4_w * 0.02); draw_w = a4_w - 2 * margin  # 边距从5%→2%
+
+        # 预缩放所有图片
+        scaled_info = []; total_h = 0
+        for img in images:
+            if img.isNull(): continue
+            ratio = draw_w / img.width() if img.width() > 0 else 1
+            sh = int(img.height() * ratio)
+            scaled_info.append((img.scaled(draw_w, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation), sh))
+            total_h += sh + 5
+        if not scaled_info:
+            raise ValueError("没有可渲染的内容")
+
         draw_area_h = a4_h - 2 * margin
-        n_pages = max(1, (total_content_h + draw_area_h - 1) // draw_area_h)
-        
-        # 创建PDF写入器
-        pdf_writer = QPdfWriter(file_path)
-        pdf_writer.setPageSize(QPagedPaintDevice.A4)
-        pdf_writer.setResolution(dpi)
-        
-        painter = QPainter(pdf_writer)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        
-        page_idx = 0
-        page_start_y = 0
-        
-        while page_idx < n_pages:
-            if page_idx > 0:
-                pdf_writer.newPage()
-            
-            page_end_y = page_start_y + draw_area_h
-            
-            # 绘制白色背景
-            painter.fillRect(QRect(0, 0, a4_w, a4_h), QColor("#FFFFFF"))
-            
-            # 绘制图片
-            running_y = 0
-            for img, ratio, scaled_h in page_images:
-                img_bottom = running_y + scaled_h
-                if img_bottom > page_start_y and running_y < page_end_y:
-                    scaled = img.scaled(draw_w, scaled_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                    target_x = margin
-                    target_y = margin + (running_y - page_start_y)
-                    painter.drawPixmap(target_x, target_y, scaled)
-                running_y += scaled_h + 5
-            
-            # 绘制标注层
-            self._draw_annotations_on_canvas(painter, margin, margin,
-                                               draw_w, total_content_h,
-                                               page_start_y, page_end_y,
-                                               scale_ratio=draw_w / (self.display_widget.width() - 20) if self.display_widget.width() > 20 else 1)
-            
-            # 绘制页码
-            painter.setPen(QColor("#999999"))
-            painter.setFont(QFont("Arial", 9))
-            page_text = f"- {page_idx + 1} / {n_pages} -"
-            painter.drawText(QRect(margin, a4_h - margin - 20, draw_w, 20),
-                           Qt.AlignCenter, page_text)
-            
-            page_start_y = page_end_y
-            page_idx += 1
-        
-        painter.end()
+        n_pages = max(1, (total_h + draw_area_h - 1) // draw_area_h)
 
-    def _draw_annotations_on_canvas(self, painter:QPainter, 
+        # 用PyMuPDF创建PDF
+        pdf_doc = fitz.open()
+        a4_pt_w, a4_pt_h = 595.28, 841.89
+        px_to_pt = a4_pt_w / a4_w  # 像素→点数转换比
+
+        for page_idx in range(n_pages):
+            ps = page_idx * draw_area_h; pe = ps + draw_area_h
+            
+            # === 自适应画布高度 ===
+            page_content_h = min(total_h - ps, draw_area_h)
+            canvas_h = int(page_content_h + 2 * margin)
+
+            # === 渲染当前页到QImage(自适应尺寸) ===
+            canvas = QImage(a4_w, canvas_h, QImage.Format_ARGB32_Premultiplied)
+            canvas.fill(QColor(255,255,255,255).rgba())
+            p = QPainter(canvas)
+            p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+
+            ry = 0
+            for scaled_img, sh in scaled_info:
+                if ry + sh > ps and ry < pe:
+                    p.drawPixmap(margin, margin + (ry-ps), scaled_img)
+                ry += sh + 5
+
+            # 绘制标注
+            orig_anns = self.annotations
+            self.annotations = annotations
+            self._draw_annotations_on_canvas(p, margin, margin, draw_w, float(total_h), float(ps), float(pe),
+                                               scale_ratio=draw_w / max(self.display_widget.width()-20, 1))
+            self.annotations = orig_anns
+
+            # 页码
+            p.setPen(QColor("#999999")); p.setFont(QFont("Arial",9))
+            p.drawText(QRect(margin, canvas_h-margin-20, draw_w, 20), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
+            p.end()
+
+            # === 将QImage转为PDF页面(自适应尺寸) ===
+            buf = io.BytesIO()
+            canvas.save(buf, "PNG")
+            png_bytes = buf.getvalue()
+
+            page_pt_w = a4_pt_w
+            page_pt_h = canvas_h * px_to_pt
+            page = pdf_doc.new_page(width=page_pt_w, height=page_pt_h)
+            rect = fitz.Rect(0, 0, page_pt_w, page_pt_h)
+            page.insert_image(rect, stream=png_bytes)
+
+        pdf_doc.save(file_path)
+        pdf_doc.close()
+
+    def _draw_annotations_on_canvas(self, painter:QPainter,
                                      offset_x:int, offset_y:int,
                                      draw_w:int, total_h:float,
                                      page_start:float, page_end:float,
@@ -2923,6 +3434,7 @@ class DisplayWindow(QMainWindow):
             painter.setPen(QColor(ann.color))
             painter.drawText(int(abs_x), int(abs_y), ann.text)
 
+
     # ========== 速度曲线 ==========
 
     def _open_speed_curve_editor(self)->None:
@@ -2948,7 +3460,7 @@ class DisplayWindow(QMainWindow):
                     self._anno_undo(); return
                 elif event.key() == Qt.Key_Y:      # Ctrl+Y: 重做标注
                     self._anno_redo(); return
-            
+        
             if event.key()==Qt.Key_Space:          # 空格: 播放/暂停
                 self.toggle_playback()
             elif event.key()==Qt.Key_Up:           # 上箭头: 向上滚动
@@ -2958,9 +3470,9 @@ class DisplayWindow(QMainWindow):
                 self.current_position=min(self.total_scroll_distance,self.current_position+30)
                 self.display_widget.update();self.update_progress_display()
             elif event.key()==Qt.Key_Left:          # 左箭头: 减速
-                self.speed_spin.setValue(max(1,self.speed_spin.value()-5))
+                self.speed_spin.setValue(max(350,self.speed_spin.value()-25))
             elif event.key()==Qt.Key_Right:         # 右箭头: 加速
-                self.speed_spin.setValue(min(500,self.speed_spin.value()+5))
+                self.speed_spin.setValue(min(700,self.speed_spin.value()+25))
             elif event.key()==Qt.Key_Escape:        # ESC: 关闭
                 self.close()
             super().keyPressEvent(event)
@@ -2976,6 +3488,83 @@ class DisplayWindow(QMainWindow):
         """窗口大小改变"""
         super().resizeEvent(event)
         self._calculate_total_distance()
+
+
+# ========== 导出设置对话框 ==========
+
+class ExportDialog(QDialog):
+    """
+    导出设置对话框 - 选择格式/轨道/页码范围
+    功能: PNG(每页一图)或PDF(单文件多页); GTP可选轨道; 可选页码范围
+    """
+
+    def __init__(self, parent, src_name:str, is_gtp:bool,
+                 gtp_track_count:int, current_track:int, total_pages:int):
+        super().__init__(parent)
+        self.src_name = src_name; self.is_gtp = is_gtp
+        self.gtp_track_count = gtp_track_count; self.current_track = current_track
+        self.total_pages = total_pages
+        self.format_choice = "png"; self.track_mode = "current"
+        self.page_mode = "all"; self.save_path = ""
+        self.setWindowTitle("导出谱面(A4)"); self.setMinimumWidth(420)
+        self._setup_ui()
+
+    def _setup_ui(self)->None:
+        lo = QVBoxLayout(self); lo.setSpacing(12)
+        # 格式
+        fg = QGroupBox("导出格式"); fl = QHBoxLayout(fg)
+        self.fmt_png = QRadioButton("PNG 图片(每页一张)"); self.fmt_pdf = QRadioButton("PDF 文档(单文件)")
+        self.fmt_png.setChecked(True); fl.addWidget(self.fmt_png); fl.addWidget(self.fmt_pdf); lo.addWidget(fg)
+        # 轨道(GTP多轨时显示)
+        if self.is_gtp and self.gtp_track_count > 1:
+            tg = QGroupBox(f"音轨选择(共{self.gtp_track_count}轨)"); tl = QVBoxLayout(tg)
+            self.tk_cur = QRadioButton("仅当前轨道"); self.tk_all = QRadioButton("全部轨道(按顺序拼接)")
+            self.tk_sel = QRadioButton("指定轨道:")
+            self.tk_cur.setChecked(True); self.tk_sel.toggled.connect(lambda c: self._ck.setVisible(c))
+            tl.addWidget(self.tk_cur); tl.addWidget(self.tk_all)
+            sr = QHBoxLayout(); sr.addWidget(self.tk_sel)
+            self._ck = QWidget(); cl = QHBoxLayout(self._ck); cl.setContentsMargins(0,0,0,0)
+            self.tks = []
+            for i in range(self.gtp_track_count):
+                cb = QCheckBox(str(i+1)); cb.setChecked(i == self.current_track); self.tks.append(cb); cl.addWidget(cb)
+            self._ck.setVisible(False); sr.addWidget(self._ck); sr.addStretch(); tl.addLayout(sr); lo.addWidget(tg)
+        else:
+            self.tk_all = None; self.tk_sel = None; self.tks = []; self.tk_cur = None
+        # 页码
+        pg = QGroupBox(f"页码范围(共{self.total_pages}页)"); pl = QVBoxLayout(pg)
+        self.pg_all = QRadioButton("全部页面"); self.pg_rng = QRadioButton("指定范围:")
+        self.pg_all.setChecked(True); self.pg_rng.toggled.connect(lambda c: self._pw.setVisible(c))
+        pl.addWidget(self.pg_all)
+        rl = QHBoxLayout(); rl.addWidget(self.pg_rng)
+        self._ps = QSpinBox(); self._ps.setRange(1,max(1,self.total_pages)); self._ps.setValue(1)
+        self._pe = QSpinBox(); self._pe.setRange(1,max(1,self.total_pages)); self._pe.setValue(self.total_pages)
+        rl.addWidget(QLabel("第")); rl.addWidget(self._ps); rl.addWidget(QLabel(" 到 "))
+        rl.addWidget(self._pe); rl.addWidget(QLabel(" 页")); rl.addStretch()
+        self._pw = QWidget(); rw = QHBoxLayout(self._pw); rw.setContentsMargins(0,0,0,0); rw.addLayout(rl)
+        self._pw.setVisible(False); pl.addWidget(self._pw); lo.addWidget(pg)
+        # 按钮
+        bb = QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); lo.addWidget(bb)
+
+    def accept(self)->None:
+        self.format_choice = "pdf" if self.fmt_pdf.isChecked() else "png"
+        if self.is_gtp and self.gtp_track_count > 1:
+            if self.tk_all and self.tk_all.isChecked(): self.track_mode = "all"
+            elif self.tk_sel and self.tk_sel.isChecked():
+                self.track_mode = [i for i,c in enumerate(self.tks) if c.isChecked()]
+                if not self.track_mode: QMessageBox.warning(self,"提示","请至少选一个轨道"); return
+            else: self.track_mode = "current"
+        else: self.track_mode = "current"
+        if hasattr(self,'pg_rng') and self.pg_rng.isChecked():
+            s,e = self._ps.value(), self._pe.value()
+            if s > e: s,e = e,s
+            self.page_mode = ("range", s, e)
+        else: self.page_mode = "all"
+        ext = ".pdf" if self.format_choice=="pdf" else ".png"
+        fp,_ = QFileDialog.getSaveFileName(self,"保存导出文件",f"{os.path.splitext(self.src_name)[0]}_annotated{ext}",
+                                           f"{'PDF文档' if self.format_choice=='pdf' else 'PNG图片'} (*{ext})")
+        if not fp: return
+        self.save_path = fp; super().accept()
 
 
 # ============================================================
@@ -3207,7 +3796,8 @@ class SettingsWindow(QMainWindow):
         if self.display_window and self.display_window.isVisible():
             self.display_window.base_speed=value
             if self.display_window.timer.isActive():
-                self.display_window.timer.start(value)
+                # 使用固定33ms定时器，不再用base_speed作为间隔
+                self.display_window.timer.start(33)
 
     def _update_speed_range(self)->None:
         """速度范围改变"""
@@ -3334,12 +3924,13 @@ class SettingsWindow(QMainWindow):
         if mx_range>mn_range:
             linear_pct=(slider_val-mn_range)/(mx_range-mn_range)
             adj_pct=linear_pct**0.5
-            if adj_pct>=0.8:speed=15
-            elif adj_pct>=0.6:speed=25
-            elif adj_pct>=0.4:speed=40
-            elif adj_pct>=0.2:speed=60
-            else:speed=90
-        else:speed=45
+            # 映射到350-700ms范围(值越小播放越快)
+            if adj_pct>=0.8:speed=350      # 最快
+            elif adj_pct>=0.6:speed=450
+            elif adj_pct>=0.4:speed=525
+            elif adj_pct>=0.2:speed=600
+            else:speed=700                  # 最慢
+        else:speed=500                      # 默认中速
         speed=int(speed)
 
         if not self.display_window or not self.display_window.isVisible():
