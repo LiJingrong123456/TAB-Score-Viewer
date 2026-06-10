@@ -720,6 +720,11 @@ class SynthEngine:
                 # note_off: 通道 + 音高(velocity=0)
                 self._synth.noteoff(event.channel, event.pitch)
                 
+            elif event.type == "pitch_bend":
+                # pitch_bend: 通道 + 弯音值(0-16383, 中值8192=无弯音)
+                # 用于实现推弦(bend)、颤音(vibrato)等效果
+                self._synth.pitch_bend(event.channel, event.pitch)
+                
             elif event.type == "tempo":
                 # tempo 变化: 更新内部 BPM 参考
                 # (实际变速能力需要更复杂的实现，这里仅记录)

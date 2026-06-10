@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-09 (v1.6.2 - 修复速度调整卡顿+标注删除功能)
+最后修改: 2026-06-09 (v1.6.3 - 多项Bug修复+推弦MIDI+点击播放)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -1147,10 +1147,14 @@ class DisplayWidget(QWidget):
 
     def _hit_annotation(self, cx: int, cy: int) -> Optional[Annotation]:
         """
-        检测坐标(cx,cy)是否命中某个标注(用于拖动/编辑)
+        检测坐标(cx,cy)是否命中某个标注(用于拖动/编辑/悬停删除)
         
         原理: 遍历所有标注，将相对坐标映射到屏幕绝对坐标，
-              检测鼠标是否落在标注文字的包围盒内(含10px容差)。
+              使用QFontMetrics精确计算标注文字的实际渲染宽度，
+              检测鼠标是否落在标注的包围盒内(含容差)。
+        
+        改进: 使用fontMetrics精确计算而非粗略估算(len*font_size//2)，
+              确保中英文混合、不同字体大小时命中区域准确。
         
         参数:
             cx, cy: 鼠标在画布上的屏幕坐标(px)
@@ -1171,32 +1175,75 @@ class DisplayWidget(QWidget):
         for ann in self.parent_window.annotations:
             sx = int(10 + (ww - 20) * ann.x)
             sy = int(base_y + total_h * ann.y)
-            # 命中范围: 文字宽度估算 + 左右上下容差
-            hit_w = len(ann.text) * ann.font_size // 2 + 20
-            hit_h = ann.font_size + 16
+            
+            # 使用QFontMetrics精确计算文字实际渲染宽度(替代粗略估算)
+            font = QFont(ann.font_family, ann.font_size)
+            if ann.is_bold:
+                font.setWeight(QFont.Bold)
+            metrics = QFontMetrics(font)
+            tw = metrics.horizontalAdvance(ann.text)  # 精确文字宽度
+            
+            # 命中范围: 精确文字宽度 + padding容差
+            pad = 8  # 内边距(与_draw_one_ann中的pad=5对应，稍大以增加点击友好度)
+            hit_w = tw // 2 + pad + 15  # 从中心点到边缘的距离 + 额外容差
+            hit_h = metrics.height() + pad + 10  # 文字高度 + 容差
             if (sx - hit_w <= cx <= sx + hit_w) and (sy - hit_h <= cy <= sy + 8):
                 return ann
         return None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """
-        鼠标按下 - 检测标注拖动
+        鼠标按下 - 检测标注拖动 或 点击谱面跳转播放
         
-        原理: 左键按下时检测是否命中标注，
-              命中则进入拖动模式(记录初始位置)，不触发其他操作。
-              未命中则不处理(留给双击事件或默认行为)。
+        原理: 左键按下时按优先级处理:
+              1. 检测是否命中标注 → 进入拖动模式
+              2. 未命中标注 → 跳转到点击位置并开始播放(单击=跳转+播放)
         """
         if (event.button() == Qt.LeftButton and
                 self.parent_window and self.parent_window.images):
             ann = self._hit_annotation(event.x(), event.y())
             if ann:
-                # 进入拖动模式
+                # 命中标注 → 进入拖动模式
                 self._drag_ann_id = ann.id
                 self._drag_start_xy = (ann.x, ann.y)
                 self._drag_mouse_start = event.pos()
                 self.setCursor(Qt.ClosedHandCursor)  # 抓手光标
                 event.accept()
                 return
+            
+            # === 未命中标注 → 点击谱面跳转到该位置并开始播放 ===
+            # 计算点击位置对应的scroll_y(相对于当前滚动位置的偏移)
+            click_y = event.y()  # 鼠标在画布中的Y坐标
+            new_position = self.parent_window.current_position + click_y - (self.height() / 2)
+            # 限制在有效范围内
+            new_position = max(0, min(new_position, self.parent_window.total_scroll_distance))
+            
+            # 跳转到新位置
+            self.parent_window.current_position = new_position
+            self.parent_window.update_progress_display()
+            
+            # 如果音频引擎可用，同步跳转音频时间
+            if (self.parent_window._synth_engine and 
+                self.parent_window._audio_enabled and
+                self.parent_window._midi_converter and
+                self.parent_window._gtp_song):
+                try:
+                    # 计算目标时间百分比
+                    if self.parent_window.total_scroll_distance > 0:
+                        pct = new_position / self.parent_window.total_scroll_distance * 100
+                        if hasattr(self.parent_window, '_on_progress_changed'):
+                            self.parent_window._on_progress_changed(pct)
+                except Exception as e:
+                    print(f"[ClickPlay] 音频跳转失败: {e}")
+            
+            self.update()  # 立即更新显示
+            
+            # 自动开始播放(如果尚未播放)
+            if not self.parent_window.timer.isActive():
+                self.parent_window.toggle_playback()
+            
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1577,35 +1624,42 @@ class DisplayWidget(QWidget):
         painter.drawPolygon(triangle)
 
     def mouseDoubleClickEvent(self,event:QMouseEvent)->None:
-        """双击谱面 - 优先检测是否点击了已有标注(编辑)，否则新建"""
+        """
+        双击谱面 - 优先检测是否点击了已有标注(编辑)，否则新建
+        
+        注意: 删除标注后必须return，防止代码继续执行到新建标注分支
+        """
         if not self.parent_window or not self.parent_window.images: return
         cx,cy=event.x(),event.y()
         ww=self.width()
 
-        # === 先检测是否点击了已有标注(点击范围: 标注文字区域+周围10px) ===
+        # === 先检测是否点击了已有标注(点击范围: 标注文字区域+周围容差) ===
         if self.parent_window.annotations and ww>20:
             total_h=sum((img.height()*(ww-20)/img.width())+5 for img in self.parent_window.images if not img.isNull())
             base_y=-self.parent_window.current_position
+            # 记录要操作的标注ID(防止对话框修改后ID变化)
+            target_ann_id = None
             for ann in self.parent_window.annotations:
                 sx=int(10+(ww-20)*ann.x); sy=int(base_y+total_h*ann.y)
                 # 检测点击是否在标注区域内(基于字体大小估算范围)
                 hit_w=len(ann.text)*ann.font_size//2+20; hit_h=ann.font_size+16
                 if (sx-hit_w<=cx<=sx+hit_w) and (sy-hit_h<=cy<=sy+8):
+                    target_ann_id = ann.id  # 记录目标标注ID
                     # 点击到已有标注 → 打开编辑对话框(集成全局撤销+删除)
                     self.parent_window._anno_save_snapshot()  # 修改前保存快照
                     dlg=AnnotationEditDialog(self,annotation=ann)
                     if dlg.exec_()==QDialog.Accepted:
                         if dlg.should_delete:
-                            # 用户点击了删除按钮 → 从列表移除该标注
+                            # 用户点击了删除按钮 → 根据ID移除该标注(而非对象引用)
                             self.parent_window.annotations = [
-                                a for a in self.parent_window.annotations if a.id != ann.id
+                                a for a in self.parent_window.annotations if a.id != target_ann_id
                             ]
                             self.parent_window._save_annotations()
                             self.set_annotations(self.parent_window.annotations)
                         else:
-                            # 正常保存修改
+                            # 正常保存修改(使用ID定位，防止对象引用失效)
                             updated=dlg.get_annotation()
-                            idx=next((i for i,a in enumerate(self.parent_window.annotations) if a.id==ann.id),None)
+                            idx=next((i for i,a in enumerate(self.parent_window.annotations) if a.id==target_ann_id),None)
                             if idx is not None:
                                 self.parent_window.annotations[idx]=updated
                                 self.parent_window._save_annotations()
@@ -1614,7 +1668,7 @@ class DisplayWidget(QWidget):
                         # 取消编辑 → 撤销刚才保存的快照
                         if self.parent_window._undo_stack:
                             self.parent_window._undo_stack.pop()
-                    return
+                    return  # ← 关键: 必须return，防止继续执行新建标注
 
         # === 未点击到任何标注 → 新建标注(通过add_annotation自动保存快照) ===
         rel_x=max(0,min(1,(cx-10)/(ww-20))) if ww>20 else 0
@@ -1698,6 +1752,14 @@ class DisplayWindow(QMainWindow):
         # 格式: (page_idx, system_idx, measure_idx, beat_idx, x_in_page)
         #       x_in_page = 光标在页面内的X坐标(原始渲染分辨率)
         self._playhead_info:tuple=None
+
+        # === 播放光标时间线(必须在此初始化，否则图片/PDF模式会报AttributeError) ===
+        # 由_build_playhead_timeline()构建(GTP文件)，或保持空列表(非GTP文件降级为线性滚动)
+        # 数据结构: List[dict]，每个元素包含 time_ms/scroll_y/page_idx/sys_idx/meas_idx/beat_idx/x_center
+        self._playhead_timeline:list=[]  # 修复: 初始化空列表，防止_update_playhead()访问时报错
+
+        # === 总音频时长(ms)(用于进度条百分比计算) ===
+        self._total_audio_duration_ms:float=0.0
 
         self.init_ui()
         self._load_annotations()               # 加载已有标注
@@ -1853,8 +1915,8 @@ class DisplayWindow(QMainWindow):
         pl.addLayout(ab_row)
         layout.addWidget(pg)
 
-        # === 速度控制 ===
-        sg=QGroupBox("播放速度");sl=QVBoxLayout(sg)
+        # === 速度控制(非GTP文件显示，GTP文件由BPM驱动自动隐藏) ===
+        self.speed_group_box=QGroupBox("播放速度");sl=QVBoxLayout(self.speed_group_box)
         sr=QHBoxLayout();sr.addWidget(QLabel("速度:"))
         self.speed_spin=QSpinBox();self.speed_spin.setRange(350,700)
         self.speed_spin.setValue(self.base_speed);self.speed_spin.setSuffix(" ms")
@@ -1864,7 +1926,7 @@ class DisplayWindow(QMainWindow):
         self.curve_status_label=QLabel("速度曲线: 未启用")
         self.curve_status_label.setStyleSheet(f"color:{THEME_COLORS['text_muted']};font-size:11px;")
         sl.addWidget(self.curve_status_label)
-        layout.addWidget(sg)
+        layout.addWidget(self.speed_group_box)  # 使用实例变量以便动态控制可见性
 
         # === 状态信息 ===
         ig=QGroupBox("状态信息");il=QVBoxLayout(ig)
@@ -1977,16 +2039,34 @@ class DisplayWindow(QMainWindow):
         self.update_progress_display()
         self._update_page_display()  # 更新页码显示
 
-        # GTP文件：填充音轨选择下拉菜单 + 初始化音频引擎
+        # GTP文件：填充音轨选择下拉菜单 + 初始化音频引擎 + 隐藏手动速度控制
         if self.file_type == 'gtp':
             self._populate_gtp_track_combo()
             self._init_audio_engine()  # Phase 3: 初始化音频播放引擎
             self.audio_btn.setVisible(True)  # 显示音频按钮
+            # GTP模式: 隐藏手动速度控制(由BPM驱动，不需要ms/曲线控制)
+            if hasattr(self, 'speed_spin'):
+                self.speed_spin.setVisible(False)
+            if hasattr(self, 'curve_btn'):
+                self.curve_btn.setVisible(False)
+            if hasattr(self, 'speed_group_box'):
+                self.speed_group_box.setVisible(False)
+            if hasattr(self, 'curve_status_label'):
+                self.curve_status_label.setVisible(False)
         else:
             if self.gtp_track_combo:
                 self.gtp_track_combo.setVisible(False)
             if self.audio_btn:
                 self.audio_btn.setVisible(False)  # 非GTP文件隐藏音频按钮
+            # 非GTP模式: 显示手动速度控制(图片/PDF需要)
+            if hasattr(self, 'speed_spin'):
+                self.speed_spin.setVisible(True)
+            if hasattr(self, 'curve_btn'):
+                self.curve_btn.setVisible(True)
+            if hasattr(self, 'speed_group_box'):
+                self.speed_group_box.setVisible(True)
+            if hasattr(self, 'curve_status_label'):
+                self.curve_status_label.setVisible(True)
 
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)

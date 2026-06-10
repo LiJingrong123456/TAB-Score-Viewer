@@ -36,18 +36,18 @@ class MidiEvent:
     
     属性说明:
       time:     绝对时间位置(tick单位, 从歌曲开头开始累加)
-      type:     事件类型 ('note_on' | 'note_off' | 'tempo')
+      type:     事件类型 ('note_on' | 'note_off' | 'tempo' | 'pitch_bend')
       channel:  MIDI通道 (0-15), 吉他通常用通道0-3
-      pitch:    音高/MIDI音高值 (0-127)
+      pitch:    音高/MIDI音高值 (0-127), pitch_bend时为弯音值(0-16383,中值8192)
       velocity: 力度/击弦强度 (0-127), note_off时为0
       value:    附加值(tempo事件用, BPM值)
     
     调用来源: MidiConverter.convert() 生成的所有MIDI事件
     """
     time: int = 0                    # 绝对时间位置(tick)
-    type: str = "note_on"            # 事件类型
+    type: str = "note_on"            # 事件类型 (note_on/note_off/tempo/pitch_bend)
     channel: int = 0                 # MIDI通道
-    pitch: int = 0                   # MIDI音高
+    pitch: int = 0                   # MIDI音高 (或pitch_bend值)
     velocity: int = 0                # 力度
     value: int = 0                   # 附加值(BPM等)
 
@@ -355,6 +355,31 @@ class MidiConverter:
                     velocity=velocity
                 ))
                 
+                # === 生成推弦(Pitch Bend)事件(如果该音符有推弦技巧) ===
+                # 调用开源项目: guitarpro (PyGuitarPro库) 解析的BendEffect数据
+                # MIDI Pitch Bend规范: 值范围0-16383, 中值8192=无弯音, 每半音≈8192
+                # BendData.value单位: 四分之一音(cent), 25=1/4音, 50=1/2音, 100=Full(全音)
+                if note.bend and note.bend.value > 0:
+                    bend_value = self._bend_to_midi_pitch(note.bend)
+                    if bend_value != 8192:  # 非零弯音才生成事件
+                        events.append(MidiEvent(
+                            time=beat_tick + beat_ticks // 8,  # 推弦在音符开始后稍晚触发(更自然)
+                            type="pitch_bend",
+                            channel=channel,
+                            pitch=bend_value,  # MIDI弯音值(0-16383)
+                            velocity=0
+                        ))
+                        
+                        # 如果有释放段(推弦后回到原位)，在音符结束时生成释放事件
+                        if note.bend.has_release:
+                            events.append(MidiEvent(
+                                time=beat_tick + actual_duration - beat_ticks // 8,  # 音符结束前释放
+                                type="pitch_bend",
+                                channel=channel,
+                                pitch=8192,  # 回到无弯音状态(中值)
+                                velocity=0
+                            ))
+                
                 # === 生成 note_off 事件(在音符结束时触发) ===
                 events.append(MidiEvent(
                     time=beat_tick + actual_duration,
@@ -368,6 +393,46 @@ class MidiConverter:
             beat_tick += beat_ticks
         
         return events
+    
+    def _bend_to_midi_pitch(self, bend_data) -> int:
+        """
+        将GTP推弦数据(BendData)转换为MIDI Pitch Bend值
+        
+        原理:
+          MIDI Pitch Bend是14位值(0-16383)，中值8192表示无弯音。
+          默认灵敏度范围是±2半音(即±8192)，所以：
+            - 1个全音(Full bend) = +8192 (从中值8192到16384，但最大16383)
+            - 1/2音 = +4096
+            - 1/4音 = +2048
+          
+          BendData.value单位是四分之一音(cent):
+            - 25 = 1/4音 → MIDI偏移+2048 → 最终值=8192+2048=10240
+            - 50 = 1/2音 → MIDI偏移+4096 → 最终值=8192+4096=12288
+            - 100 = Full(全音) → MIDI偏移+8192 → 最终值=8192+8192=16384(限制为16383)
+        
+        参数:
+            bend_data: BendData对象(含value/max_value属性)
+        
+        返回:
+            MIDI Pitch Bend值(0-16383, 中值8192=无弯音)
+        """
+        # MIDI中值(无弯音)
+        midi_center = 8192
+        
+        # 获取推弦量(使用max_value作为峰值，value作为初始值)
+        bend_cents = getattr(bend_data, 'max_value', 0) or getattr(bend_data, 'value', 0) or 0
+        
+        if bend_cents <= 0:
+            return midi_center
+        
+        # 转换: 四分之一音 → MIDI偏移量
+        # 每个全音(100 cents) = 8192 MIDI单位 (默认灵敏度±2半音)
+        # 所以每个四分之一音 = 8192 / 4 = 2048
+        midi_offset = int(bend_cents * 81.92)  # 8192 / 100 = 81.92 per cent
+        
+        # 计算最终值并限制在有效范围内
+        result = midi_center + midi_offset
+        return max(0, min(result, 16383))  # 限制: 0 ≤ value ≤ 16383
     
     def _beat_duration_to_ticks(self, beat) -> int:
         """
