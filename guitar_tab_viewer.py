@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-09 (v1.6.1 - 修复全轨并轨模式切轨播放条不同步)
+最后修改: 2026-06-09 (v1.6.2 - 修复速度调整卡顿+标注删除功能)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -813,19 +813,32 @@ class _SpeedCurveCanvas(QWidget):
 
 
 class AnnotationEditDialog(QDialog):
-    """单个标注编辑对话框"""
+    """
+    单个标注编辑对话框
+    
+    功能: 编辑标注文本/字体/颜色/位置，支持删除当前标注
+    
+    调用方式:
+      dialog = AnnotationEditDialog(parent, annotation)
+      if dialog.exec_() == QDialog.Accepted:
+          if dialog.should_delete:  # 用户点击了删除
+              # 执行删除逻辑
+          else:
+              ann = dialog.get_annotation()  # 获取修改后的标注
+    """
 
-    def __init__(self, parent=None, annotation: Annotation=None):
+    def __init__(self, parent=None, annotation: Annotation = None):
         super().__init__(parent)
         self.annotation = annotation or Annotation(
             id=f"ann_{uuid.uuid4().hex[:8]}", x=0.1, y=0.1,
             text="双击谱面可快速添加标注"
         )
         self._temp_color=self.annotation.color
+        self.should_delete = False  # 标记用户是否点击了删除按钮
         self.init_ui()
 
     def init_ui(self)->None:
-        self.setWindowTitle("编辑标注"); self.setFixedSize(420,360)
+        self.setWindowTitle("编辑标注"); self.setFixedSize(420,400)
         self.setStyleSheet(f"""
             QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
             QLabel {{ color: {THEME_COLORS['text_primary']}; font-family: 'Microsoft YaHei'; }}
@@ -837,6 +850,8 @@ class AnnotationEditDialog(QDialog):
             QPushButton {{ background-color: {THEME_COLORS['primary']}; color: white; border: none;
                            border-radius: 6px; padding: 8px 20px; font-family: 'Microsoft YaHei'; }}
             QPushButton:hover {{ background-color: {THEME_COLORS['primary_hover']}; }}
+            QPushButton#deleteBtn {{ background-color: {THEME_COLORS['danger']}; }}
+            QPushButton#deleteBtn:hover {{ background-color: #DC2626; }}
         """)
         layout=QVBoxLayout(self)
         pg=QGroupBox("位置坐标"); pl=QHBoxLayout(pg)
@@ -853,12 +868,39 @@ class AnnotationEditDialog(QDialog):
         self.color_btn=QPushButton("选择颜色"); self.color_btn.clicked.connect(self._pick_color)
         self.color_btn.setStyleSheet(f"background-color:{self.annotation.color};color:white;")
         cl.addWidget(self.color_btn); cl.addStretch(); layout.addWidget(cg)
-        bbox=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
-        bbox.accepted.connect(self.accept); bbox.rejected.connect(self.reject); layout.addWidget(bbox)
+
+        # 按钮区域: 确定 / 删除 / 取消
+        btn_layout=QHBoxLayout()
+        ok_btn=QPushButton("确定保存")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+
+        del_btn=QPushButton("🗑 删除此标注")
+        del_btn.setObjectName("deleteBtn")
+        del_btn.clicked.connect(self._on_delete_clicked)
+        btn_layout.addWidget(del_btn)
+
+        cancel_btn=QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet(f"background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_secondary']};")
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
 
     def _pick_color(self)->None:
         c=QColorDialog.getColor(QColor(self._temp_color),self,"选择标注颜色")
         if c.isValid(): self._temp_color=c.name(); self.color_btn.setStyleSheet(f"background-color:{self._temp_color};color:white;")
+
+    def _on_delete_clicked(self)->None:
+        """点击删除按钮: 设置标记并以Accepted状态关闭(由调用方执行实际删除)"""
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除这个标注吗？\n此操作可以撤销(Ctrl+Z)。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.should_delete = True
+            self.accept()
 
     def get_annotation(self)->Annotation:
         self.annotation.text=self.text_edit.toPlainText()
@@ -1001,12 +1043,13 @@ class AnnotationManagerDialog(QDialog):
 class DisplayWidget(QWidget):
     """
     谱面显示画布组件
-    功能: 渲染图片/PDF页面，叠加绘制标注层，支持双击添加/拖动移动标注
+    功能: 渲染图片/PDF页面，叠加绘制标注层，支持双击添加/拖动移动/悬停删除标注
     
     标注交互:
       - 双击空白处: 新建标注
-      - 双击已有标注: 编辑标注
+      - 双击已有标注: 编辑标注(含删除按钮)
       - 左键按住标注拖动: 移动标注位置(实时预览,松手保存+入撤销栈)
+      - 悬停标注: 显示×删除按钮，点击可快速删除
     """
 
     def __init__(self, parent: 'DisplayWindow' = None):
@@ -1016,12 +1059,16 @@ class DisplayWidget(QWidget):
         self.annotations: List[Annotation] = []
         self.setMinimumSize(600, 400)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMouseTracking(True)
+        self.setMouseTracking(True)  # 启用鼠标追踪(不按下也能接收moveEvent)
 
         # === 标注拖动状态 ===
         self._drag_ann_id: str = ""       # 当前拖动的标注ID(空=未拖动)
         self._drag_start_xy: Tuple[float,float] = (0.0,0.0)  # 拖动开始时的相对坐标
         self._drag_mouse_start: QPoint = QPoint()  # 拖动开始时鼠标屏幕坐标
+
+        # === 标注悬停状态(用于显示删除按钮) ===
+        self._hover_ann_id: str = ""       # 当前鼠标悬停的标注ID(空=未悬停)
+        self._delete_btn_rect: QRect = QRect()  # 删除按钮的屏幕区域(用于点击检测)
 
         # === 图片缓存(避免每帧重新scale，解决播放卡顿) ===
         self._cached_scaled: List[QPixmap] = []   # 缩放后的图片缓存
@@ -1154,11 +1201,11 @@ class DisplayWidget(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """
-        鼠标移动 - 拖动标注实时更新位置(视觉预览，不保存)
+        鼠标移动 - 拖动标注实时更新位置 + 悬停检测(显示删除按钮)
         
-        原理: 拖动过程中实时计算新的相对坐标(x,y)并更新标注位置，
-              触发repaint显示预览效果。松开鼠标后才真正保存。
-              这样拖动流畅不会频繁写入文件。
+        原理:
+          - 拖动中: 实时计算新的相对坐标(x,y)并更新标注位置
+          - 非拖动: 检测是否悬停在标注上，更新悬停状态以显示/隐藏删除按钮
         """
         if (self._drag_ann_id and
                 self.parent_window and self.parent_window.images):
@@ -1181,23 +1228,31 @@ class DisplayWidget(QWidget):
                     self.update()  # 重绘显示新位置
             event.accept()
             return
-        # 非拖动状态: 更新光标样式(悬停在标注上时显示手型)
+
+        # 非拖动状态: 更新光标样式 + 悬停检测(用于显示删除按钮)
         if self.parent_window and self.parent_window.images:
             ann = self._hit_annotation(event.x(), event.y())
             if ann:
                 self.setCursor(Qt.OpenHandCursor)
+                # 更新悬停状态(如果变化则重绘以显示删除按钮)
+                if self._hover_ann_id != ann.id:
+                    self._hover_ann_id = ann.id
+                    self.update()  # 触发重绘显示删除按钮
             else:
                 self.setCursor(Qt.ArrowCursor)
+                # 清除悬停状态(隐藏删除按钮)
+                if self._hover_ann_id:
+                    self._hover_ann_id = ""
+                    self.update()  # 触发重绘隐藏删除按钮
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """
-        鼠标释放 - 结束拖动，保存快照+持久化
+        鼠标释放 - 结束拖动/点击删除按钮，保存快照+持久化
         
-        原理: 松开鼠标时如果正在拖动标注，
-              1. 先保存当前状态快照到撤销栈
-              2. 标注位置已在拖动中实时更新，此时只需保存文件
-              3. 如果位置实际没变(误触)，不入撤销栈避免无意义记录
+        原理:
+          - 拖动结束: 保存位置变化到撤销栈和文件
+          - 非拖动但悬停状态: 检测是否点击了删除按钮区域
         """
         if event.button() == Qt.LeftButton and self._drag_ann_id:
             self.setCursor(Qt.ArrowCursor)
@@ -1214,6 +1269,24 @@ class DisplayWidget(QWidget):
             self._drag_ann_id = ""
             event.accept()
             return
+
+        # === 检测是否点击了删除按钮(非拖动状态下) ===
+        if event.button() == Qt.LeftButton and self._hover_ann_id and self._delete_btn_rect.contains(event.pos()):
+            if self.parent_window:
+                # 找到要删除的标注并执行删除
+                del_id = self._hover_ann_id
+                self.parent_window._anno_save_snapshot()  # 删除前保存快照(支持撤销)
+                self.parent_window.annotations = [
+                    a for a in self.parent_window.annotations if a.id != del_id
+                ]
+                self.parent_window._save_annotations()
+                self.set_annotations(self.parent_window.annotations)
+                # 清除悬停状态
+                self._hover_ann_id = ""
+                self._delete_btn_rect = QRect()
+            event.accept()
+            return
+
         super().mouseReleaseEvent(event)
 
     def paintEvent(self, event) -> None:
@@ -1260,15 +1333,31 @@ class DisplayWidget(QWidget):
         painter.end()
 
     def _draw_annotations(self,painter:QPainter)->None:
+        """
+        绘制所有标注 + 悬停时的删除按钮
+        """
         if not self.images or not self.annotations:return
         ww=self.width()
         base_y=-(self.parent_window.current_position if self.parent_window else 0)
         total_h=sum((img.height()*(ww-20)/img.width())+5 for img in self.images if not img.isNull())
+        # 重置删除按钮区域(会在_draw_one_ann中设置)
+        self._delete_btn_rect = QRect()
         for ann in self.annotations:
             sx=int(10+(ww-20)*ann.x); sy=int(base_y+total_h*ann.y)
-            if -60<sy<self.height()+60: self._draw_one_ann(painter,ann,sx,sy)
+            if -60<sy<self.height()+60: 
+                is_hover = (self._hover_ann_id == ann.id)
+                self._draw_one_ann(painter,ann,sx,sy,is_hover)
 
-    def _draw_one_ann(self,painter:QPainter,ann:Annotation,x:int,y:int)->None:
+    def _draw_one_ann(self,painter:QPainter,ann:Annotation,x:int,y:int,is_hover:bool=False)->None:
+        """
+        绘制单个标注(含悬停时显示的删除按钮)
+        
+        参数:
+            painter: QPainter绘图对象
+            ann: 要绘制的标注数据
+            x, y: 标注的屏幕坐标(左下角基准点)
+            is_hover: 是否处于鼠标悬停状态(True则绘制×删除按钮)
+        """
         font=QFont(ann.font_family,ann.font_size)
         if ann.is_bold:font.setWeight(QFont.Bold)
         painter.setFont(font)
@@ -1280,6 +1369,36 @@ class DisplayWidget(QWidget):
         painter.setPen(QColor(ann.color));painter.drawText(x,y,ann.text)
         painter.setBrush(QColor(ann.color));painter.setPen(Qt.NoPen)
         painter.drawEllipse(x-3,y+2,6,6)
+
+        # === 悬停时绘制×删除按钮 ===
+        if is_hover:
+            btn_size = 18  # 删除按钮大小(px)
+            btn_x = x + tw + pad + 4  # 按钮在标注文字右侧
+            btn_y = y - th - pad + 2   # 与标注垂直居中对齐
+            btn_rect = QRect(btn_x, btn_y, btn_size, btn_size)
+
+            # 记录按钮区域(用于mouseReleaseEvent点击检测)
+            self._delete_btn_rect = btn_rect
+
+            # 绘制按钮背景(红色圆形)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setBrush(QColor("#EF4444"))  # 红色背景
+            painter.setPen(QPen(QColor("#DC2626"), 1))  # 深红边框
+            painter.drawEllipse(btn_rect)
+
+            # 绘制×符号(白色两笔交叉线)
+            painter.setPen(QPen(QColor("#FFFFFF"), 2))  # 白色线条
+            margin = 5  # ×符号距离边缘的间距
+            # 第一条斜线(左上→右下)
+            painter.drawLine(
+                btn_x + margin, btn_y + margin,
+                btn_x + btn_size - margin, btn_y + btn_size - margin
+            )
+            # 第二条斜线(右上→左下)
+            painter.drawLine(
+                btn_x + btn_size - margin, btn_y + margin,
+                btn_x + margin, btn_y + btn_size - margin
+            )
 
     def _draw_audio_highlight(self, painter: QPainter)->None:
         """
@@ -1472,16 +1591,25 @@ class DisplayWidget(QWidget):
                 # 检测点击是否在标注区域内(基于字体大小估算范围)
                 hit_w=len(ann.text)*ann.font_size//2+20; hit_h=ann.font_size+16
                 if (sx-hit_w<=cx<=sx+hit_w) and (sy-hit_h<=cy<=sy+8):
-                    # 点击到已有标注 → 打开编辑对话框(集成全局撤销)
+                    # 点击到已有标注 → 打开编辑对话框(集成全局撤销+删除)
                     self.parent_window._anno_save_snapshot()  # 修改前保存快照
                     dlg=AnnotationEditDialog(self,annotation=ann)
                     if dlg.exec_()==QDialog.Accepted:
-                        updated=dlg.get_annotation()
-                        idx=next((i for i,a in enumerate(self.parent_window.annotations) if a.id==ann.id),None)
-                        if idx is not None:
-                            self.parent_window.annotations[idx]=updated
+                        if dlg.should_delete:
+                            # 用户点击了删除按钮 → 从列表移除该标注
+                            self.parent_window.annotations = [
+                                a for a in self.parent_window.annotations if a.id != ann.id
+                            ]
                             self.parent_window._save_annotations()
                             self.set_annotations(self.parent_window.annotations)
+                        else:
+                            # 正常保存修改
+                            updated=dlg.get_annotation()
+                            idx=next((i for i,a in enumerate(self.parent_window.annotations) if a.id==ann.id),None)
+                            if idx is not None:
+                                self.parent_window.annotations[idx]=updated
+                                self.parent_window._save_annotations()
+                                self.set_annotations(self.parent_window.annotations)
                     else:
                         # 取消编辑 → 撤销刚才保存的快照
                         if self.parent_window._undo_stack:
@@ -2770,10 +2898,18 @@ class DisplayWindow(QMainWindow):
         pass  # 可扩展实现缩放功能
 
     def _on_speed_changed(self,val:int)->None:
-        """速度改变"""
+        """
+        速度改变回调 - 更新base_speed参数
+        
+        原理(v1.6.0+): 定时器已改为固定33ms(30fps)，速度通过以下方式生效:
+          - 时间驱动模式(有音频): _tick()中 time_scale = base_speed / curve_speed
+          - 线性模式(无音频): _calculate_scroll_step()使用base_speed计算scroll_step
+          
+        注意: 不再调用timer.start(val)，因为那会把33ms定时器重置为350-700ms，
+              导致帧率从30fps骤降到1-3fps，播放条严重卡顿。
+        """
         self.base_speed=val
-        if self.timer.isActive():
-            self.timer.start(max(1,val))
+        # base_speed变化会在下一次_tick()自动生效，无需重启定时器
 
     def _on_progress_changed(self,pos:float)->None:
         """
