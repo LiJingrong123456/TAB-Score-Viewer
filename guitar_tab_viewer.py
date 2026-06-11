@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-09 (v1.7.0 - 点击位置非线性时间映射修复)
+最后修改: 2026-06-11 (v1.7.1 - 性能优化: 缓存/预提取列表/排序缓存/deepcopy替换)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -49,6 +49,7 @@ import json
 import math
 import copy
 import uuid
+import bisect
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -1166,8 +1167,15 @@ class DisplayWidget(QWidget):
         self._cache_width: int = 0                # 缓存时的画布宽度(宽度变化时失效)
         self._cache_dirty: bool = True            # 缓存是否需要重建
 
+        # === total_h缓存(避免4处重复计算总内容高度) ===
+        # total_h = sum(每张图片缩放后高度+5)，在_hit_annotation/_draw_annotations/
+        #          mouseMoveEvent/mouseDoubleClickEvent中都需要使用
+        self._cached_total_h: float = 0.0         # 缓存的总内容高度
+        self._cached_total_h_ww: int = 0          # 缓存时的画布宽度(宽度变化时失效)
+        self._total_h_dirty: bool = True           # total_h缓存是否需要重建
+
     def set_images(self, images: List[QPixmap]) -> None:
-        self.images = images; self._cache_dirty = True; self.update()
+        self.images = images; self._cache_dirty = True; self._total_h_dirty = True; self.update()
 
     def set_annotations(self, annotations: List[Annotation]) -> None:
         self.annotations = annotations; self.update()
@@ -1205,9 +1213,33 @@ class DisplayWidget(QWidget):
         self._cache_dirty = False
 
     def resizeEvent(self, event) -> None:
-        """窗口大小变化 → 图片缓存失效(需要重新缩放)"""
+        """窗口大小变化 → 图片缓存失效(需要重新缩放) + total_h缓存失效"""
         super().resizeEvent(event)
         self._cache_dirty = True
+        self._total_h_dirty = True
+
+    def _get_total_h(self) -> float:
+        """
+        获取总内容高度(带缓存)
+
+        原理: total_h = sum(每张图片缩放后高度 + 5px间距)，
+              在_hit_annotation/_draw_annotations/mouseMoveEvent/mouseDoubleClickEvent
+              中都需要此值。缓存避免4处重复的O(n)浮点计算。
+
+        失效时机: set_images() / resizeEvent() 时标记dirty
+        """
+        if not self._total_h_dirty and self._cached_total_h_ww == self.width():
+            return self._cached_total_h
+        ww = self.width()
+        if ww <= 20 or not self.images:
+            self._cached_total_h = 0.0; self._cached_total_h_ww = ww; self._total_h_dirty = False
+            return 0.0
+        sw = ww - 20
+        total = sum((img.height() * sw / img.width()) + 5 for img in self.images if not img.isNull())
+        self._cached_total_h = total
+        self._cached_total_h_ww = ww
+        self._total_h_dirty = False
+        return total
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """
@@ -1257,8 +1289,7 @@ class DisplayWidget(QWidget):
         ww = self.width()
         if ww <= 20:
             return None
-        total_h = sum((img.height() * (ww - 20) / img.width()) + 5
-                      for img in self.parent_window.images if not img.isNull())
+        total_h = self._get_total_h()
         if total_h <= 0:
             return None
         base_y = -self.parent_window.current_position
@@ -1370,7 +1401,7 @@ class DisplayWidget(QWidget):
                                     total_ms = self.parent_window._midi_converter.get_total_duration_ms(
                                         self.parent_window._gtp_song,
                                         self.parent_window.gtp_current_track
-                                )
+                                    )
                                 if total_ms > 0:
                                     target_ms = (pct / 100.0) * total_ms
                                 else:
@@ -1407,8 +1438,7 @@ class DisplayWidget(QWidget):
                 # 计算鼠标偏移量 → 映射到相对坐标变化
                 dx = event.x() - self._drag_mouse_start.x()
                 dy = event.y() - self._drag_mouse_start.y()
-                total_h = sum((img.height() * (ww - 20) / img.width()) + 5
-                              for img in self.parent_window.images if not img.isNull())
+                total_h = self._get_total_h()
                 if total_h > 0:
                     rel_dx = dx / (ww - 20)
                     rel_dy = dy / total_h
@@ -1532,7 +1562,7 @@ class DisplayWidget(QWidget):
         if not self.images or not self.annotations:return
         ww=self.width()
         base_y=-(self.parent_window.current_position if self.parent_window else 0)
-        total_h=sum((img.height()*(ww-20)/img.width())+5 for img in self.images if not img.isNull())
+        total_h=self._get_total_h()
         # 重置删除按钮区域(会在_draw_one_ann中设置)
         self._delete_btn_rect = QRect()
         for ann in self.annotations:
@@ -1785,7 +1815,7 @@ class DisplayWidget(QWidget):
 
         # === 先检测是否点击了已有标注(命中区域=bg_rect描边范围) ===
         if self.parent_window.annotations and ww>20:
-            total_h=sum((img.height()*(ww-20)/img.width())+5 for img in self.parent_window.images if not img.isNull())
+            total_h=self._get_total_h()
             base_y=-self.parent_window.current_position
             target_ann_id = None
             for ann in self.parent_window.annotations:
@@ -1830,7 +1860,7 @@ class DisplayWidget(QWidget):
         # === 未点击到任何标注 → 新建标注(使用专用创建对话框) ===
         rel_x=max(0,min(1,(cx-10)/(ww-20))) if ww>20 else 0
         if self.parent_window.images:
-            total_h=sum((img.height()*(ww-20)/img.width())+5 for img in self.parent_window.images if not img.isNull())
+            total_h=self._get_total_h()
             base_y=-self.parent_window.current_position
             rel_y=max(0,min(1,(cy-base_y)/total_h)) if total_h>0 else 0.5
         else:
@@ -1882,6 +1912,9 @@ class DisplayWindow(QMainWindow):
         self._redo_stack:List[List[Annotation]]=[]   # 重做栈(被撤销可恢复)
         self._UNDO_MAX_DEPTH=50                      # 最大撤销深度(防止内存膨胀)
         self.speed_curve:SpeedCurveConfig=SpeedCurveConfig()  # 速度曲线
+        # === 速度曲线排序缓存(避免每帧重新sorted) ===
+        self._cached_sorted_curve_pts:list=None  # 缓存的已排序points列表
+        self._cached_curve_pts_id:int=0          # 缓存时points的id(用于脏检测)
         self.loop_config:LoopConfig=LoopConfig()          # 循环配置
         self.total_scroll_distance:float=0.0   # 总可滚动距离
         self.play_time:float=0.0              # 已播放时间
@@ -2786,8 +2819,17 @@ class DisplayWindow(QMainWindow):
                 }
                 self._playhead_timeline.append(sentinel)
                 self._total_audio_duration_ms = sentinel['time_ms']
+
+            # === 性能优化: 预提取bisect关键排序列表 ===
+            # 原因: _update_playhead/_time_to_scroll_pos/_scroll_pos_to_time每帧(30fps)都需
+            #       对timeline做二分查找，之前每次都创建新列表 [e['time_ms'] for e in ...]，
+            #       造成O(n)内存分配+GC压力。现在一次性构建，后续直接复用。
+            self._timeline_times = [e['time_ms'] for e in self._playhead_timeline]
+            self._timeline_scroll_ys = [e['scroll_y'] for e in self._playhead_timeline]
         else:
             self._total_audio_duration_ms = 0.0
+            self._timeline_times = []
+            self._timeline_scroll_ys = []
     
     def _update_playhead(self, time_ms: float = None)->None:
         """
@@ -2811,10 +2853,8 @@ class DisplayWindow(QMainWindow):
             self._playhead_info = None
             return
         
-        # 二分查找: 找到 time_ms 对应的拍
-        import bisect
-        times = [e['time_ms'] for e in self._playhead_timeline]
-        idx = bisect.bisect_right(times, time_ms) - 1
+        # 二分查找: 找到 time_ms 对应的拍(使用预提取的排序列表，避免每帧O(n)分配)
+        idx = bisect.bisect_right(self._timeline_times, time_ms) - 1
         
         if idx < 0:
             # 还没到第一个拍
@@ -2875,10 +2915,8 @@ class DisplayWindow(QMainWindow):
         if time_ms >= self._playhead_timeline[-1]['time_ms']:
             return float(self.total_scroll_distance)
 
-        # 二分查找时间位置
-        import bisect
-        times = [e['time_ms'] for e in self._playhead_timeline]
-        idx = bisect.bisect_right(times, time_ms) - 1
+        # 二分查找时间位置(使用预提取的排序列表)
+        idx = bisect.bisect_right(self._timeline_times, time_ms) - 1
 
         if idx < 0:
             return 0.0
@@ -2934,10 +2972,8 @@ class DisplayWindow(QMainWindow):
         display_h = max(self.display_widget.height(), 100)
         raw_scroll_y = scroll_pos + display_h / 2
         
-        # 对scroll_y做二分查找(与_time_to_scroll_pos中对time_ms做二分查找对称)
-        import bisect
-        scroll_ys = [e['scroll_y'] for e in self._playhead_timeline]
-        idx = bisect.bisect_right(scroll_ys, raw_scroll_y) - 1
+        # 对scroll_y做二分查找(使用预提取的排序列表，与_time_to_scroll_pos对称)
+        idx = bisect.bisect_right(self._timeline_scroll_ys, raw_scroll_y) - 1
         
         if idx < 0:
             return self._playhead_timeline[0]['time_ms']
@@ -3078,12 +3114,22 @@ class DisplayWindow(QMainWindow):
             self._sync_page_input()
 
     def _get_curve_speed(self)->float:
-        """根据速度曲线获取当前时刻的速度值"""
+        """
+        根据速度曲线获取当前时刻的速度值(带排序缓存优化)
+        
+        性能优化: 之前每帧(30fps)都执行sorted()排序O(k log k)，
+                  现在通过id()检测points列表是否变化，仅在变化时重新排序。
+        """
         if not self.speed_curve.points or self.total_scroll_distance<=0:
             return self.base_speed
+        # 脏检测: points列表引用未变时复用缓存
+        current_id = id(self.speed_curve.points)
+        if current_id != self._cached_curve_pts_id:
+            self._cached_sorted_curve_pts = sorted(self.speed_curve.points, key=lambda p:p.position)
+            self._cached_curve_pts_id = current_id
+        pts = self._cached_sorted_curve_pts
         progress_pct=(self.current_position/self.total_scroll_distance)*100
         progress_pct=max(0,min(100,progress_pts:=progress_pct))
-        pts=sorted(self.speed_curve.points,key=lambda p:p.position)
         for i in range(len(pts)-1):
             p1,p2=pts[i],pts[i+1]
             if p1.position<=progress_pts<=p2.position:

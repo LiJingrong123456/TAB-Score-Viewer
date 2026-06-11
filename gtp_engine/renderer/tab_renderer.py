@@ -33,12 +33,11 @@
   - 内部依赖: gtp_engine.models.*, layout_engine.*, utils.constants
 
 创建日期: 2026-06-06
-最后更新: 2026-06-07 (v1.2.3: 技巧标签移至弦线上方+击弦弧线+滑音s+调弦简化+泛音虚线)
+最后更新: 2026-06-11 (v1.7.1 - 性能优化: deepcopy→copy浅拷贝替换)
 ============================================================
 """
 
 from typing import List, Optional
-import copy
 
 from PyQt5.QtGui import (
     QPainter, QPixmap, QFont, QPen, QColor,
@@ -156,7 +155,9 @@ class TabRenderer:
             for sys_idx, system in enumerate(page.systems):
                 if page.page_number == 1 and sys_idx == 0:
                     # 第一页第一行：整体向下偏移15px留白
-                    shifted = copy.deepcopy(system)
+                    # 性能优化: 用copy替代deepcopy(仅修改4个int属性，无需深拷贝嵌套的measures列表)
+                    import copy as _copy
+                    shifted = _copy.copy(system)
                     shifted.y_top += 15
                     shifted.y_tab_top += 15
                     shifted.y_tab_bottom += 15
