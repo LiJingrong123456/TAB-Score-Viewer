@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-09 (v1.6.5 - 修复推弦音高泄漏+点击跳转保护)
+最后修改: 2026-06-09 (v1.6.9 - seek静音+点击位置修正+×按钮区域扩展)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -1244,7 +1244,8 @@ class DisplayWidget(QWidget):
               使用与_draw_one_ann完全相同的bg_rect计算方式，
               检测鼠标是否落在标注的描边矩形范围内。
         
-        命中区域 = _draw_one_ann中的bg_rect(含padding+圆点)，即标注的完整可见区域
+        命中区域 = _draw_one_ann中的bg_rect(含padding+圆点) + 右侧×按钮预留空间
+                   (因为×按钮画在bg_rect右侧，鼠标移过去不能离开命中区域)
         
         参数:
             cx, cy: 鼠标在画布上的屏幕坐标(px)
@@ -1281,8 +1282,14 @@ class DisplayWidget(QWidget):
             bg_right = sx + tw + pad
             bg_bottom = sy + pad + 6  # 含圆点(drawEllipse(x-3,y+2,6,6))的高度
             
-            # 检测是否在bg_rect描边范围内
-            if (bg_left <= cx <= bg_right) and (bg_top <= cy <= bg_bottom):
+            # === 关键修复: 扩展右边界以包含×删除按钮 ===
+            # ×按钮位置: btn_x = x + tw + pad + 4, btn_size=18
+            # 所以需要额外预留约28px(间距4 + 按钮宽18 + 余量6)
+            btn_extra = 28
+            bg_right_extended = bg_right + btn_extra
+            
+            # 检测是否在扩展后的命中区域内(标注描边范围 + 右侧×按钮区域)
+            if (bg_left <= cx <= bg_right_extended) and (bg_top <= cy <= bg_bottom):
                 return ann
         return None
 
@@ -1310,44 +1317,62 @@ class DisplayWidget(QWidget):
                 return
             
             # === 未命中标注 → 点击谱面跳转到该位置并开始播放 ===
-            # 计算点击位置在总内容中的相对比例 → 映射到scroll_y
+            # 坐标系统说明:
+            #   current_position: 滚动偏移量(像素)，paintEvent中 base_y = -current_position
+            #   total_scroll_distance: 最大可滚动距离(像素) = 总内容高度 - 显示区域高度
+            #   两者都是像素单位，不需要比例转换！
+            #
+            # 点击位置计算:
+            #   event.y() = 鼠标在画布中的Y坐标(像素)
+            #   click_abs_y = 当前滚动偏移 + 鼠标Y = 点击处在总内容中的绝对Y坐标(像素)
+            #   new_position = click_abs_y - 屏幕中心偏移 = 使点击处显示在屏幕中央附近
             ww = self.width()
             if ww > 20:
-                # 计算总内容高度(与paintEvent中一致)
-                total_h = sum(
-                    (img.height() * (ww - 20) / img.width()) + 5
-                    for img in self.parent_window.images if not img.isNull()
-                )
-                if total_h > 0 and self.parent_window.total_scroll_distance > 0:
-                    # 点击Y坐标 + 当前滚动偏移 = 在总内容中的绝对Y位置
+                if self.parent_window.total_scroll_distance > 0:
+                    # 点击处的绝对内容Y坐标
                     click_abs_y = self.parent_window.current_position + event.y()
-                    # 映射到scroll_y范围[0, total_scroll_distance]
-                    new_position = click_abs_y * self.parent_window.total_scroll_distance / total_h
+                    # 将点击处定位到屏幕垂直中心位置(使点击的谱面区域居中显示)
+                    new_position = click_abs_y - (self.height() / 2)
+                    # 限制在有效范围内
                     new_position = max(0, min(new_position, self.parent_window.total_scroll_distance))
                     
-                    # 跳转到新位置
+                    # === 步骤1: 设置视觉位置和跳转目标(防止_tick覆盖) ===
                     self.parent_window.current_position = new_position
-                    # 设置点击跳转目标(防止_tick()用音频时间覆盖此位置)
                     self.parent_window._click_jump_target = new_position
                     self.parent_window.update_progress_display()
                     
-                    # 如果音频引擎可用，同步跳转音频时间
+                    # === 步骤2: 先处理音频seek(在start_playback之前!) ===
+                    # 直接调用seek而非_on_progress_changed，避免:
+                    #   a) _on_progress_changed覆写current_position
+                    #   b) _on_progress_changed触发display_widget.update()导致闪烁
+                    # 重要: seek必须在play()之前调用，这样play()启动的线程才能使用正确的start_offset
                     if (self.parent_window._synth_engine and 
                         self.parent_window._audio_enabled and
                         self.parent_window._midi_converter and
                         self.parent_window._gtp_song):
                         try:
                             pct = new_position / self.parent_window.total_scroll_distance * 100
-                            if hasattr(self.parent_window, '_on_progress_changed'):
-                                self.parent_window._on_progress_changed(pct)
+                            # 获取总时长
+                            if self.parent_window._audio_mode == "all":
+                                total_ms = self.parent_window._midi_converter.get_all_tracks_duration_ms(
+                                    self.parent_window._gtp_song)
+                            else:
+                                total_ms = self.parent_window._midi_converter.get_total_duration_ms(
+                                    self.parent_window._gtp_song,
+                                    self.parent_window.gtp_current_track
+                                )
+                            if total_ms > 0:
+                                target_ms = (pct / 100.0) * total_ms
+                                self.parent_window._synth_engine.seek(target_ms)
                         except Exception as e:
                             print(f"[ClickPlay] 音频跳转失败: {e}")
                     
-                    self.update()  # 立即更新显示
-                    
-                    # 自动开始播放(如果尚未播放)
+                    # === 步骤3: 最后启动播放(如果尚未播放) ===
+                    # 必须在seek之后! 这样play()使用seek设置好的_current_time_ms作为起点
                     if not self.parent_window.timer.isActive():
                         self.parent_window.toggle_playback()
+                    
+                    self.update()  # 立即更新显示
             
             event.accept()
             return

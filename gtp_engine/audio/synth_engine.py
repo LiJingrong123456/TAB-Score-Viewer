@@ -154,12 +154,17 @@ class SynthEngine:
     
     @property
     def current_time_ms(self) -> float:
-        """获取当前播放位置(毫秒)"""
+        """
+        获取当前播放位置(毫秒)
+        
+        计算公式: 从_start_time到现在的经过时间 - 暂停时间 + 初始偏移(seek位置)
+        重要: 必须加上_initial_time_offset，否则seek后的current_time_ms会从0开始而非从seek位置开始
+        """
         with self._lock:
             if self._is_playing and not self._is_paused:
-                # 实时计算：从开始时间到现在 - 暂停时间
+                # 实时计算：从开始时间到现在 - 暂停时间 + seek偏移
                 elapsed = (time.perf_counter() - self._start_time) * 1000.0
-                return elapsed - self._paused_duration
+                return elapsed - self._paused_duration + getattr(self, '_initial_time_offset', 0)
             return self._current_time_ms
     
     @property
@@ -456,6 +461,7 @@ class SynthEngine:
             self._ticks_per_beat = ticks_per_beat
             self._current_time_ms = 0.0
             self._paused_duration = 0.0
+            self._initial_time_offset = 0.0  # 初始化时间偏移
     
     def play(self) -> None:
         """
@@ -480,6 +486,8 @@ class SynthEngine:
             self._is_paused = False
             self._stop_flag = False
             self._pause_event.set()  # 清除暂停状态
+            # 重置初始偏移(由_play_loop根据_current_time_ms重新设置)
+            self._initial_time_offset = getattr(self, '_current_time_ms', 0) or 0
         
         # 启动播放线程
         self._play_thread = threading.Thread(target=self._play_loop, daemon=True)
@@ -524,16 +532,44 @@ class SynthEngine:
             self._pause_event.set()  # 确保线程不被阻塞
             self._current_time_ms = 0.0
             self._paused_duration = 0.0
+            self._initial_time_offset = 0.0  # 重置初始偏移
         
-        # 停止所有正在发声的音符
+        # 停止所有正在发声的音符(同时复位所有通道的pitch_bend)
         if self._synth:
             for ch in range(16):
+                # 复位所有通道的pitch_bend到中值8192(防止弯音泄漏)
+                try:
+                    self._synth.pitch_bend(ch, 8192)
+                except Exception:
+                    pass
                 for pitch in range(128):
                     self._synth.noteoff(ch, pitch)
         
         # 等待播放线程结束
         if self._play_thread and self._play_thread.is_alive():
             self._play_thread.join(timeout=2.0)
+    
+    def silence_all_notes(self) -> None:
+        """
+        静音所有正在发声的音符(不停止播放线程，仅清除当前声音)
+        
+        用途: seek跳转时调用，防止旧位置的音符与新位置的音符同时发声(双重声音)
+              与stop()的区别: stop()会完全停止播放并重置状态，
+                              silence_all_notes()仅清除声音，播放继续
+        """
+        if self._synth:
+            for ch in range(16):
+                # 复位该通道的pitch_bend到中值8192(防止残留弯音影响后续音符)
+                try:
+                    self._synth.pitch_bend(ch, 8192)
+                except Exception:
+                    pass
+                # 关闭该通道上所有正在发声的音符
+                for pitch in range(128):
+                    try:
+                        self._synth.noteoff(ch, pitch)
+                    except Exception:
+                        pass
     
     def seek(self, time_ms: float) -> None:
         """
@@ -550,11 +586,21 @@ class SynthEngine:
             was_playing = self._is_playing and not self._is_paused
             
             if was_playing:
+                # 先静音所有正在发声的音符(防止旧位置音符与新位置叠加=双重声音)
+                # 必须在设置_stop_flag之前调用，否则播放线程可能还在发新事件
+                self._lock.release()
+                try:
+                    self.silence_all_notes()
+                finally:
+                    self._lock.acquire()
+                
                 self._stop_flag = True
                 self._pause_event.set()
             
             self._current_time_ms = max(0, time_ms)
             self._paused_duration = 0.0
+            # 同步更新初始偏移，使 current_time_ms 属性立即返回正确值
+            self._initial_time_offset = self._current_time_ms
             
             if was_playing:
                 # 重新启动播放（从新位置开始）
@@ -602,6 +648,10 @@ class SynthEngine:
         # === 时间基准计算 ===
         ms_per_tick = 60000.0 / (self._bpm * self._ticks_per_beat)
         start_offset = self._current_time_ms  # 跳转后的起始偏移(毫秒)
+        
+        # 保存初始时间偏移，供 current_time_ms 属性使用
+        # 这样 seek 到 5000ms 后开始播放，current_time_ms 会返回 5000+elapsed 而非仅 elapsed
+        self._initial_time_offset = start_offset
         
         # 记录实际开始播放的系统时间
         with self._lock:

@@ -347,6 +347,36 @@ class MidiConverter:
                     actual_duration = int(beat_ticks * 0.5)  # 断奏缩短一半
                 
                 # === 生成 note_on 事件 ===
+                # 重要: 在note_on之前检查是否需要复位pitch_bend!
+                # 原因: MIDI Pitch Bend是通道级全局状态，一旦设置会影响后续所有同通道音符。
+                #       如果前一个音符有推弦且未正确复位，当前音符就会以错误音高发声。
+                # 策略: 检查当前音符是否需要"干净"的弯音状态(即当前音符没有推弦，
+                #       或有推弦但起始值为0)，如果是则在note_on前发送pitch_bend=8192复位。
+                needs_clean_bend = True  # 默认需要在note_on前复位
+                if note.bend and note.bend.value > 0:
+                    # 当前音符有推弦 → 检查推弦曲线起点是否为0(从原位开始推)
+                    if note.bend.points:
+                        first_val = note.bend.points[0]
+                        if isinstance(first_val, tuple):
+                            start_val = float(first_val[1])
+                        else:
+                            start_val = getattr(first_val, 'value', 0)
+                        if abs(start_val) < 5:  # 起点接近0 → 从原位开始，不需要预先复位
+                            needs_clean_bend = False
+                    else:
+                        # 无曲线点数据但max_value>0 → 推弦从原位开始
+                        needs_clean_bend = False
+                
+                if needs_clean_bend:
+                    # 在note_on前发送pitch_bend=8192复位，确保当前音符以正确音高开始
+                    events.append(MidiEvent(
+                        time=beat_tick,
+                        type="pitch_bend",
+                        channel=channel,
+                        pitch=8192,  # 无弯音中值
+                        velocity=0
+                    ))
+                
                 events.append(MidiEvent(
                     time=beat_tick,
                     type="note_on",
@@ -355,37 +385,26 @@ class MidiConverter:
                     velocity=velocity
                 ))
                 
-                # === 生成推弦(Pitch Bend)事件(如果该音符有推弦技巧) ===
-                # 调用开源项目: guitarpro (PyGuitarPro库) 解析的BendEffect数据
-                # MIDI Pitch Bend规范: 值范围0-16383, 中值8192=无弯音, 每半音≈8192
-                # BendData.value单位: 四分之一音(cent), 25=1/4音, 50=1/2音, 100=Full(全音)
+                # === 生成推弦(Pitch Bend)渐变事件序列 ===
+                # 
+                # 原理: MIDI Pitch Bend是瞬时值变化，只发一个事件会"咔"地突变到目标音高。
+                #       真实推弦效果需要发送多个中间值，从8192逐渐过渡到目标值。
                 #
-                # 重要: 无论是否有释放段(has_release)，都必须在note_off时复位pitch_bend到8192！
-                # 否则弯音状态会持续影响后续同通道的所有音符(导致后面音都变高/变低)
-                if note.bend and note.bend.value > 0:
-                    bend_value = self._bend_to_midi_pitch(note.bend)
-                    if bend_value != 8192:  # 非零弯音才生成事件
-                        events.append(MidiEvent(
-                            time=beat_tick + beat_ticks // 8,  # 推弦在音符开始后稍晚触发(更自然)
-                            type="pitch_bend",
-                            channel=channel,
-                            pitch=bend_value,  # MIDI弯音值(0-16383)
-                            velocity=0
-                        ))
-                        
-                        # 如果有释放段(推弦后回到原位)，在音符结束时生成释放事件
-                        if note.bend.has_release:
-                            events.append(MidiEvent(
-                                time=beat_tick + actual_duration - beat_ticks // 8,  # 音符结束前释放
-                                type="pitch_bend",
-                                channel=channel,
-                                pitch=8192,  # 回到无弯音状态(中值)
-                                velocity=0
-                            ))
+                # 调用开源项目: guitarpro (PyGuitarPro库) 解析的BendEffect数据
+                # BendData.points 包含曲线点 [(position, value), ...]:
+                #   position: 在音符时长的相对位置(0.0~1.0)
+                #   value:   四分之一音偏移量(0=无, 25=1/4, 50=1/2, 100=Full)
+                #
+                # 重要: 无论是否有释放段(has_release)，都必须在note_off后复位pitch_bend到8192！
+                #       否则弯音状态会持续影响后续同通道的所有音符
+                #
+                if note.bend and note.bend.value > 0 and note.bend.max_value > 0:
+                    self._generate_bend_events(
+                        events, beat_tick, actual_duration, beat_ticks,
+                        channel, note.bend
+                    )
                 
                 # === 生成 note_off 事件(在音符结束时触发) ===
-                # 注意: pitch_bend复位放在note_off之前或同时处理，
-                # 确保当前音符结束后弯音状态不影响下一个音符
                 events.append(MidiEvent(
                     time=beat_tick + actual_duration,
                     type="note_off",
@@ -393,19 +412,6 @@ class MidiConverter:
                     pitch=note.midi_pitch,
                     velocity=0  # note_off 的 velocity 固定为0
                 ))
-                
-                # === 关键修复: 始终在note_off后复位pitch_bend(防止影响后续音符) ===
-                # 即使没有has_release，也要复位！否则弯音会"泄漏"到后面的音符
-                if note.bend and note.bend.value > 0:
-                    # 仅当上面没有通过has_release发送过复位事件时才发送(避免重复)
-                    if not (note.bend.has_release):
-                        events.append(MidiEvent(
-                            time=beat_tick + actual_duration + 1,  # note_off之后1tick(确保先关音再复位)
-                            type="pitch_bend",
-                            channel=channel,
-                            pitch=8192,  # 强制回到无弯音状态(中值)
-                            velocity=0
-                        ))
             
             # 移动到下一拍
             beat_tick += beat_ticks
@@ -451,6 +457,130 @@ class MidiConverter:
         # 计算最终值并限制在有效范围内
         result = midi_center + midi_offset
         return max(0, min(result, 16383))  # 限制: 0 ≤ value ≤ 16383
+    
+    def _generate_bend_events(self, events: list, beat_tick: int, 
+                               actual_duration: int, beat_ticks: int,
+                               channel: int, bend_data) -> None:
+        """
+        生成推弦的渐变Pitch Bend事件序列
+        
+        原理: MIDI Pitch Bend是瞬时值变化，只发一个事件会"咔"地突变到目标音高。
+              真实推弦效果需要发送多个中间值，从8192逐渐过渡到目标值，
+              模拟吉他手推弦时音高平滑上升的过程。
+        
+        策略:
+          - 如果bend_data.points有曲线点数据 → 使用这些点生成渐变序列
+          - 如果没有points → 自动生成线性渐变(从0到max_value)
+          - 无论是否有释放段 → 在note_off时间点后强制发送pitch_bend=8192复位
+              (防止弯音状态泄漏到后续音符)
+        
+        参数:
+            events: MIDI事件列表(往里面append新事件)
+            beat_tick: 当前拍的起始tick位置
+            actual_duration: 音符实际时长(tick)
+            beat_ticks: 一拍的tick数
+            channel: MIDI通道
+            bend_data: BendData对象(含value/max_value/points/has_release属性)
+        """
+        midi_center = 8192  # MIDI无弯音中值
+        
+        # === 步骤1: 构建推弦曲线点序列 ===
+        # points格式: [(position, value), ...] position∈[0,1], value=四分之一音
+        curve_points = getattr(bend_data, 'points', None) or []
+        
+        if not curve_points:
+            # 无曲线点数据 → 自动生成线性渐变: (0,0) → (0.7, max_value) → (1.0, max_value)
+            max_val = bend_data.max_value or bend_data.value or 100
+            curve_points = [
+                (0.0, 0),           # 起始: 无弯音
+                (0.3, max_val * 0.5),# 30%处: 到达一半
+                (0.7, max_val),     # 70%处: 到达峰值
+            ]
+            # 检查是否有释放段
+            if bend_data.has_release:
+                curve_points.append((1.0, 0))  # 结束: 回到原位
+            else:
+                curve_points.append((1.0, max_val))  # 结束: 保持峰值
+        else:
+            # 有曲线点数据 → 使用原始点(确保起点和终点完整)
+            # 解析GTP的点数据: 可能是tuple(position,value)或对象
+            parsed_points = []
+            for pt in curve_points:
+                if isinstance(pt, tuple):
+                    parsed_points.append((float(pt[0]), float(pt[1])))
+                elif hasattr(pt, 'position') and hasattr(pt, 'value'):
+                    parsed_points.append((float(pt.position), float(pt.value)))
+            
+            if len(parsed_points) >= 2:
+                curve_points = parsed_points
+            else:
+                # 点数据不足 → 降级为自动生成
+                max_val = bend_data.max_value or bend_data.value or 100
+                curve_points = [(0.0, 0), (0.7, max_val), (1.0, max_val)]
+        
+        # === 步骤2: 将曲线点转换为MIDI pitch_bend事件 ===
+        # 最小间隔: 防止事件过于密集(至少10ms间隔，约30ticks@120BPM)
+        min_interval = max(beat_ticks // 16, 5)  # 至少1/16拍或5ticks
+        last_event_time = 0
+        
+        needs_reset = True  # 是否需要在note_off后复位(默认需要)
+        
+        for i, (pos, val) in enumerate(curve_points):
+            # 计算此点的绝对时间(tick)
+            point_time = beat_tick + int(actual_duration * pos)
+            
+            # 确保最小间隔
+            if i > 0 and (point_time - last_event_time) < min_interval:
+                continue
+            
+            # 四分之一音 → MIDI值
+            midi_val = self._cents_to_midi(val)
+            
+            events.append(MidiEvent(
+                time=point_time,
+                type="pitch_bend",
+                channel=channel,
+                pitch=midi_val,
+                velocity=0
+            ))
+            last_event_time = point_time
+            
+            # 如果最后一个点的value接近0，说明已有释放段
+            if i == len(curve_points) - 1 and abs(val) < 5:
+                needs_reset = False  # 已经回到原位了
+        
+        # === 步骤3: 强制复位(在note_off之后) ===
+        # 无论曲线是否包含释放段，都在音符结束后+2ticks发送一次8192复位
+        # 这是最安全的防线，防止任何情况下弯音泄漏到后续音符
+        reset_time = beat_tick + actual_duration + max(beat_ticks // 4, 2)
+        events.append(MidiEvent(
+            time=reset_time,
+            type="pitch_bend",
+            channel=channel,
+            pitch=midi_center,
+            velocity=0
+        ))
+    
+    def _cents_to_midi(self, cents: float) -> int:
+        """
+        将四分之一音(cent)值转换为MIDI Pitch Bend值
+        
+        参数:
+            cents: 四分之一音偏移量(正=升高, 负=降低)
+                    25=1/4半音, 50=1/2半音, 100=Full全音
+        
+        返回:
+            MIDI Pitch Bend值(0-16383, 中值8192=无弯音)
+        """
+        midi_center = 8192
+        if abs(cents) < 0.5:
+            return midi_center  # 接近0则返回中值
+        
+        # 转换公式: 每个四分之一音 = 81.92 MIDI单位
+        # Full(100) = 8192, Half(50) = 4096, Quarter(25) = 2048
+        midi_offset = int(cents * 81.92)
+        result = midi_center + midi_offset
+        return max(0, min(result, 16383))
     
     def _beat_duration_to_ticks(self, beat) -> int:
         """
