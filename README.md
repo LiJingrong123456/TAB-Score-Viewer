@@ -2,14 +2,14 @@
 
 [English](#english) | **中文**
 
-一个功能强大的吉他谱（TAB）查看器，支持多种格式文件浏览、自动滚动播放（30fps平滑）、速度曲线调节、文本标注、循环播放和音频合成。
+一个功能强大的吉他谱（TAB）查看器，基于 [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) 引擎，支持多种格式文件浏览、自动滚动播放（30fps平滑）、速度曲线调节、文本标注、循环播放和音频合成。
 
 ## 功能特性
 
 | 功能            | 说明                                                                   |
 | ------------- | -------------------------------------------------------------------- |
 | **多格式支持**     | PNG、JPG、JPEG、WEBP 图片格式；PDF 文档；GP3/GP4/GP5/GPX 吉他谱文件                  |
-| **GTP解析与渲染**  | 完整解析 Guitar Pro 文件，六线谱渲染引擎（含18种技巧符号），支持音轨切换                          |
+| **GTP解析与渲染**  | 基于 ApolloTab 引擎完整解析 Guitar Pro 文件，六线谱渲染引擎（含18种技巧符号），支持音轨切换      |
 | **音频播放**      | FluidSynth 合成引擎，SoundFont 音色，支持全轨并轨/单轨播放/关闭音频三种模式，推弦(Pitch Bend)渐变效果 |
 | **播放光标**      | 红色竖线跟随播放进度移动，当前小节高亮显示                                                |
 | **自动滚动播放**    | 30fps固定帧率平滑滚动，时间驱动模式（与音乐节奏同步，密集音符区自动加快）                              |
@@ -27,15 +27,20 @@
 | **GTP音轨选择**   | 下拉菜单切换音轨，即时重渲染，分轨独立标注                                                |
 | **深色主题**      | 现代化深色 UI，自定义组件风格                                                     |
 | **键盘快捷键**     | 空格播放/暂停、方向键调速、Ctrl+Z撤销/Ctrl+Y重做/ESC关闭                                |
+| **多语言界面**     | 支持中文(简体)/英文切换，翻译文件位于 locales/ 目录，设置中一键切换                          |
+| **应用图标**      | 自定义图标(icon.ico)，窗口图标 + 任务栏图标统一显示                                      |
+| **EXE打包**       | 支持 PyInstaller 一键打包为独立的 Windows 可执行程序（无需Python环境）                      |
 
 ## 快速开始
 
-### 环境要求
+### 方式一：从源码运行（需要 Python 环境）
+
+#### 环境要求
 
 - Python 3.8+
-- Windows / Linux(No MIDI audio)
+- Windows / Linux (Linux 无 MIDI 音频)
 
-### 安装
+#### 安装步骤
 
 ```bash
 # 1. 克隆或下载项目
@@ -53,8 +58,24 @@ source venv/bin/activate
 # 4. 安装依赖（使用国内镜像源）
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 5. 运行
+# 5. 安装 ApolloTab GTP引擎（从PyPI）
+pip install ApolloTab -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 6. 运行
 python guitar_tab_viewer.py
+```
+
+### 方式二：直接运行 EXE（无需 Python 环境）
+
+> 如果您不想安装 Python 环境，可以直接使用打包好的 EXE 程序。
+
+```bash
+# 从源码自行打包（需要先安装依赖，见方式一第1-4步）
+pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
+pyinstaller guitar_tab_viewer.spec
+
+# 运行打包好的程序
+dist/guitar_tab_viewer/guitar_tab_viewer.exe
 ```
 
 ### 使用方法
@@ -65,7 +86,7 @@ python guitar_tab_viewer.py
    - 单张图片：直接显示并播放
    - PDF：逐页渲染为图片拼接显示
    - 多张图片：按文件名排序后拼接连续显示
-   - GTP 文件：完整解析渲染为六线谱图像，支持音频播放、音轨切换、播放光标
+   - GTP 文件：通过 ApolloTab 引擎完整解析渲染为六线谱图像，支持音频播放、音轨切换、播放光标
 4. 使用工具栏和控制面板进行播放、调速、标注等操作
 
 ### 快捷键
@@ -99,23 +120,20 @@ python guitar_tab_viewer.py
 
 ```
 TAB Score Viewer/
-├── guitar_tab_viewer.py      # 主程序
+├── guitar_tab_viewer.py      # 主程序（含I18n国际化类、图标加载）
+├── guitar_tab_viewer.spec    # PyInstaller 打包配置（非单文件模式）
+├── icon.png                  # 应用图标源文件 (PNG, 2048x2048)
+├── icon.ico                  # 应用图标 (ICO多尺寸: 16/32/48/64/128/256)
 ├── README.md                 # 项目说明文档（本文件）
 ├── requirements.txt          # Python 依赖列表
 ├── LICENSE                   # 许可证文件 (MPL 2.0)
+├── locales/                  # 多语言翻译文件目录
+│   ├── zh_CN.json            # 简体中文翻译
+│   └── en_US.json            # 英文翻译
 ├── config/
 │   └── settings.json         # 用户设置（运行时自动生成）
 ├── data/
 │   └── annotations/          # 旧版标注数据存储（JSON格式，兼容保留）
-├── gtp_engine/               # GTP 解析与渲染引擎
-│   ├── __init__.py           # 库入口
-│   ├── audio/                # 音频模块
-│   │   ├── midi_converter.py # MIDI事件转换器（含推弦Pitch Bend支持）
-│   │   └── synth_engine.py   # FluidSynth合成引擎
-│   ├── models/               # 数据模型（song/track/measure/beat/note）
-│   ├── parser/               # GTP解析器
-│   ├── renderer/             # 六线谱渲染器 + 布局引擎
-│   └── utils/                # 常量定义
 ├── libfluidsynth-3.dll       # FluidSynth 动态库 (LGPL 2.1)
 ├── SDL3.dll                  # SDL3 动态库 (FluidSynth 依赖)
 ├── sndfile.dll               # libsndfile 动态库 (FluidSynth 依赖)
@@ -123,34 +141,106 @@ TAB Score Viewer/
 │   ├── 功能更新.md           # 功能更新记录
 │   ├── 开发文档.md           # 开发技术文档
 │   └── 实施文档.md           # 实施部署文档
-└── venv/                     # Python 虚拟环境
+└── venv/                     # Python 虚拟环境（不纳入版本控制）
 ```
 
 ## 技术栈
 
-- **GUI框架**: PyQt5 (Qt for Python)
-- **PDF处理**: PyMuPDF (fitz)
-- **图片处理**: Pillow (PIL)
-- **GTP解析**: pyguitarpro (Guitar Pro 文件解析)
-- **音频合成**: pyfluidsynth (FluidSynth MIDI 合成引擎)
-- **架构模式**: MVC 分离、观察者模式(信号槽)、工厂模式(Worker)、命令模式(撤销重做)
+| 类别 | 技术 | 说明 |
+|------|------|------|
+| **GUI框架** | PyQt5 >= 5.15 | Qt for Python，窗口/控件/信号槽/绘图 |
+| **PDF处理** | PyMuPDF >= 1.23 | PDF 解析与页面渲染 |
+| **图片处理** | Pillow >= 10.0 | PNG/JPG/WEBP 等图片格式解码 |
+| **GTP引擎** | [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) | Guitar Pro 文件解析 + 六线谱渲染 + 音频播放（独立库，可单独使用） |
+| **GTP底层解析** | pyguitarpro >= 0.11 | Guitar Pro 原始文件解析（ApolloTab 依赖） |
+| **音频合成** | pyfluidsynth >= 1.4.0 | FluidSynth MIDI 合成引擎（ApolloTab 依赖） |
+| **打包工具** | PyInstaller | Python → Windows EXE 打包 |
+
+### 架构模式
+
+- **MVC 分离**: SettingsWindow(视图/控制) + DisplayWidget(视图) + 数据模型(dataclass)
+- **观察者模式**: PyQt5 信号槽机制实现组件间通信
+- **工厂模式**: Worker 类统一封装异步任务
+- **命令模式**: 撤销/重做通过快照栈实现
+- **单例模式**: I18n 国际化管理器全局唯一实例
+- **外观模式**: GTPPlayer 封装 ApolloTab 引擎复杂操作
 - **异步处理**: QThreadPool + QRunnable 多线程加载
 
 ## 依赖库
 
 ```
-PyQt5>=5.15      # GUI框架
-PyMuPDF>=1.23    # PDF解析与渲染
-Pillow>=10.0     # 图片格式支持(WEBP等)
-pyguitarpro>=0.11  # Guitar Pro 文件解析
-pyfluidsynth>=1.4.0  # MIDI音频合成 (LGPL 2.1)
+# 核心依赖 (requirements.txt)
+PyQt5>=5.15              # GUI框架
+PyMuPDF>=1.23            # PDF解析与渲染
+Pillow>=10.0             # 图片格式支持(WEBP等)
+pyguitarpro>=0.11        # Guitar Pro 文件解析（ApolloTab依赖）
+pyfluidsynth>=1.4.0      # MIDI音频合成 (LGPL 2.1, ApolloTab依赖)
+
+# GTP引擎（独立安装）
+ApolloTab                # 吉他谱解析/渲染/音频播放引擎库
 ```
+
+## 关于 ApolloTab 引擎
+
+本项目 GTP（Guitar Pro）功能基于 [**ApolloTab**](https://github.com/Zhuwenqian/ApolloTab) 引擎构建。ApolloTab 是一个独立的 Python 库，提供：
+
+- **文件解析**: 完整支持 GP3/GP4/GP5/GPX 格式
+- **六线谱渲染**: QPainter 高质量绘制，18 种演奏技巧符号
+- **音频播放**: FluidSynth MIDI 合成，推弦渐变效果
+- **高度可配置**: 渲染参数全部可调（线宽/间距/颜色/字体）
+
+```bash
+# 单独安装 ApolloTab
+pip install ApolloTab
+
+# 作为独立库使用
+from ApolloTab import parse_gtp, render_gtp, SynthEngine
+song = parse_gtp("my_song.gp5")
+pages = render_gtp("my_song.gp5", track_index=0)
+```
+
+详见 [ApolloTab GitHub](https://github.com/Zhuwenqian/ApolloTab)。
+
+## EXE 打包说明
+
+### 打包原理
+
+使用 PyInstaller 的 **onedir（目录）模式** 将 Python 应用打包为 Windows 可执行程序：
+- 输出一个文件夹 `dist/guitar_tab_viewer/`，内含 exe 和所有依赖
+- 相比 onefile（单文件）模式，启动更快，无需解压
+- 图标文件 `icon.ico` 同时作为 exe 文件图标和运行时窗口/任务栏图标
+- 翻译文件(locales/)和音频DLL自动包含在输出目录中
+
+### 打包步骤
+
+```bash
+# 1. 确保已激活虚拟环境并安装所有依赖（含ApolloTab）
+# 2. 安装 PyInstaller
+pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 3. 执行打包（使用预配置的 spec 文件）
+pyinstaller guitar_tab_viewer.spec
+
+# 4. 运行打包结果
+dist\guitar_tab_viewer\guitar_tab_viewer.exe
+```
+
+### spec 配置说明 (`guitar_tab_viewer.spec`)
+
+| 配置项 | 值 | 说明 |
+|--------|-----|------|
+| 模式 | onedir (目录) | 非单文件，启动更快 |
+| 图标 | icon.ico | exe 文件图标 + 窗口/任务栏图标 |
+| 控制台 | False | 不显示命令行窗口（GUI应用） |
+| UPX压缩 | True | 减小体积（需安装UPX） |
+| 包含数据 | locales/, DLLs, icon.ico | 翻译文件/音频库/图标 |
+| 隐藏导入 | ApolloTab.* 等 | 动态导入模块显式声明 |
 
 ## 第三方组件许可证
 
 ### FluidSynth
 
-本项目使用 [FluidSynth](https://github.com/FluidSynth/fluidSynth) 作为音频合成引擎。
+本项目使用 [FluidSynth](https://github.com/FluidSynth/fluidSynth) 作为音频合成引擎（通过 ApolloTab 引擎调用）。
 
 - **许可证**: [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
 - **仓库地址**: <https://github.com/FluidSynth/fluidSynth>
@@ -158,6 +248,12 @@ pyfluidsynth>=1.4.0  # MIDI音频合成 (LGPL 2.1)
 - **用途**: 将 MIDI 事件合成音频输出，用于 GTP 吉他谱的音频播放功能（含推弦渐变效果）
 
 > FluidSynth 是一个开源的 MIDI 合成器，基于 SoundFont 技术，支持高质量的实时音频生成。
+
+### ApolloTab
+
+- **许可证**: [MPL 2.0](https://github.com/Zhuwenqian/ApolloTab/blob/main/LICENSE)
+- **仓库地址**: <https://github.com/Zhuwenqian/ApolloTab>
+- **用途**: GTP 文件解析、六线谱渲染、音频播放核心引擎
 
 ## 许可证
 
@@ -167,14 +263,14 @@ pyfluidsynth>=1.4.0  # MIDI音频合成 (LGPL 2.1)
 
 # English
 
-A powerful Guitar TAB score viewer with multi-format support, 30fps smooth auto-scroll playback, speed curve control, text annotations, loop playback, and audio synthesis.
+A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) engine, with multi-format support, 30fps smooth auto-scroll playback, speed curve control, text annotations, loop playback, audio synthesis, and multilingual UI.
 
 ## Features
 
 | Feature                      | Description                                                                                         |
 | ---------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Multi-format**             | PNG, JPG, JPEG, WEBP images; PDF documents; GP3/GP4/GP5/GPX Guitar Pro files                        |
-| **GTP Parsing & Rendering**  | Complete Guitar Pro file parser, TAB renderer with 18 technique symbols, track switching            |
+| **GTP Parsing & Rendering**  | Powered by ApolloTab engine: complete parser, TAB renderer with 18 technique symbols, track switching |
 | **Audio Playback**           | FluidSynth engine with SoundFont, All tracks / Single track / Mute modes, Pitch Bend gradual effect |
 | **Playhead**                 | Red vertical line following playback progress, current measure highlight                            |
 | **Auto-scroll**              | 30fps fixed-rate smooth scrolling, time-driven (synced with music rhythm)                           |
@@ -192,20 +288,42 @@ A powerful Guitar TAB score viewer with multi-format support, 30fps smooth auto-
 | **Track Selection**          | Dropdown to switch tracks, instant re-render, per-track annotations                                 |
 | **Dark Theme**               | Modern dark UI with custom components                                                               |
 | **Keyboard Shortcuts**       | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close                                         |
+| **Multilingual UI**          | Chinese (Simplified) / English, one-click switch in settings                                         |
+| **Application Icon**        | Custom icon (icon.ico) for window + taskbar                                                         |
+| **EXE Packaging**            | PyInstaller one-click packaging to standalone Windows executable                                    |
 
 ## Quick Start
 
+### Option 1: Run from Source (Requires Python)
+
+**Requirements:** Python 3.8+, Windows / Linux (No MIDI audio on Linux)
+
 ```bash
-#Create virtual environment
+# Create virtual environment
 python -m venv venv
 # Activate virtual environment
 .\venv\Scripts\activate   # Windows
 source venv/bin/activate   # Linux/Mac
-# Install requirements
+
+# Install dependencies
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# Install ApolloTab GTP engine (from PyPI)
+pip install ApolloTab -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # Run
 python guitar_tab_viewer.py
+```
+
+### Option 2: Run EXE Directly (No Python Required)
+
+```bash
+# Build from source (requires dependencies installed first, see Option 1 steps 1-4)
+pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
+pyinstaller guitar_tab_viewer.spec
+
+# Run packaged program
+dist/guitar_tab_viewer/guitar_tab_viewer.exe
 ```
 
 ## Shortcuts
@@ -221,12 +339,48 @@ python guitar_tab_viewer.py
 
 ## Tech Stack
 
-- **GUI**: PyQt5
-- **PDF**: PyMuPDF
-- **Image**: Pillow
-- **GTP Parsing**: pyguitarpro
-- **Audio**: pyfluidsynth (FluidSynth MIDI synthesis engine)
-- **Pattern**: MVC, Observer (signals), Factory (Workers), Command (undo/redo), Async (QThreadPool)
+| Category | Technology | Description |
+|----------|-----------|-------------|
+| **GUI** | PyQt5 >= 5.15 | Qt for Python framework |
+| **PDF** | PyMuPDF >= 1.23 | PDF parsing and rendering |
+| **Image** | Pillow >= 10.0 | PNG/JPG/WEBP decoding |
+| **GTP Engine** | [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) | Guitar Pro parsing, TAB rendering, audio playback (standalone library) |
+| **Audio** | pyfluidsynth >= 1.4.0 | FluidSynth MIDI synthesis (via ApolloTab) |
+| **Packaging** | PyInstaller | Python to Windows EXE |
+
+**Architecture Patterns**: MVC, Observer (signals), Factory (Workers), Command (undo/redo), Singleton (I18n), Facade (GTPPlayer), Async (QThreadPool)
+
+## About ApolloTab Engine
+
+GTP features are powered by the [**ApolloTab**](https://github.com/Zhuwenqian/ApolloTab) library — a standalone Python engine for parsing, rendering, and playing Guitar Pro tablature files.
+
+```bash
+# Install standalone
+pip install ApolloTab
+
+# Use as a library
+from ApolloTab import parse_gtp, render_gtp, SynthEngine
+song = parse_gtp("my_song.gp5")
+pages = render_gtp("my_song.gp5", track_index=0)
+```
+
+See [ApolloTab on GitHub](https://github.com/Zhuwenqian/ApolloTab) for details.
+
+## EXE Packaging
+
+Uses PyInstaller **onedir mode** (directory, not single-file):
+
+```bash
+pip install pyinstaller
+pyinstaller guitar_tab_viewer.spec
+dist/guitar_tab_viewer/guitar_tab_viewer.exe
+```
+
+Key settings:
+- Icon: `icon.ico` (exe file + window/taskbar icon)
+- No console window (GUI app)
+- Includes: locales/, audio DLLs, icon file
+- Hidden imports: ApolloTab modules
 
 ## License
 
@@ -236,10 +390,14 @@ This project is licensed under [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/)
 
 ### FluidSynth
 
-This project uses [FluidSynth](https://github.com/FluidSynth/fluidSynth) as the audio synthesis engine.
+Used via ApolloTab engine for MIDI audio synthesis.
 
 - **License**: [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
 - **Repository**: <https://github.com/FluidSynth/fluidSynth>
-- **Usage**: Precompiled DLL files in project root (`libfluidsynth-3.dll`, `SDL3.dll`, `sndfile.dll`)
-- **Purpose**: Convert MIDI events to audio output for GTP guitar score playback (with Pitch Bend gradual effect)
+- **Usage**: Precompiled DLLs in project root (`libfluidsynth-3.dll`, `SDL3.dll`, `sndfile.dll`)
 
+### ApolloTab
+
+- **License**: [MPL 2.0](https://github.com/Zhuwenqian/ApolloTab/blob/main/LICENSE)
+- **Repository**: <https://github.com/Zhuwenqian/ApolloTab>
+- **Purpose**: Core GTP parsing, rendering, and audio playback engine

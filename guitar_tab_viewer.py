@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-12 (v1.9.0 - 多语言支持: I18n国际化系统/JSON翻译文件/语言切换UI)
+最后修改: 2026-06-12 (v1.9.1 - 应用图标: icon.ico窗口图标+任务栏图标/PyInstaller打包支持)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -88,6 +88,29 @@ from PIL import Image as PILImage  # Pillow - 图片处理(含WEBP) (开源库)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "settings.json")
 ANNOTATION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "annotations")
+# 应用图标路径(开发模式: 脚本目录; 打包模式: exe所在目录)
+_APP_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ICON_PATH = os.path.join(_APP_BASE_DIR, "icon.ico")
+
+
+def get_app_icon() -> QIcon:
+    """
+    获取应用图标(QIcon对象)
+    原理: 兼容开发和PyInstaller打包两种运行模式
+      - 开发模式: 从脚本同目录读取icon.ico
+      - 打包模式(sys.frozen): 从exe所在目录读取icon.ico(非单文件模式数据在exe旁)
+    返回: QIcon对象，文件不存在时返回空 QIcon
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller打包模式: exe所在目录
+        base = os.path.dirname(sys.executable)
+    else:
+        # 开发模式: 脚本所在目录
+        base = _APP_BASE_DIR
+    ico_path = os.path.join(base, "icon.ico")
+    if os.path.exists(ico_path):
+        return QIcon(ico_path)
+    return QIcon()  # 文件不存在时返回空图标
 # 标注文件扩展名: 与源文件同目录，命名为 {源文件名}.anno.json
 # 例如: 晚安北京.gp4 → 晚安北京.gp4.anno.json
 ANNOTATION_EXT = ".anno.json"
@@ -2085,6 +2108,7 @@ class DisplayWindow(QMainWindow):
 
     def __init__(self, file_path, file_type: str, speed: int = 500):
         super().__init__()
+        self.setWindowIcon(get_app_icon())  # 设置窗口图标
         # 核心状态
         self.file_path=file_path; self.file_type=file_type
         self.base_speed:int=speed           # 基础速度(ms)
@@ -3960,6 +3984,7 @@ class SettingsWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(get_app_icon())  # 设置窗口图标
         self.display_window:Optional[DisplayWindow]=None
         self.current_directory:str=""
         self.is_loading:bool=False
@@ -4397,6 +4422,7 @@ if __name__ == '__main__':
     os.makedirs(ANNOTATION_DIR, exist_ok=True)
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色主题
+    app.setWindowIcon(get_app_icon())  # 设置全局应用图标(任务栏图标/窗口默认图标)
 
     # 初始化国际化系统 - 从配置文件加载已保存的语言设置
     saved_lang='zh_CN'
