@@ -6,34 +6,34 @@
 
 ## 功能特性
 
-| 功能 | 说明 |
-|------|------|
-| **多格式支持** | PNG、JPG、JPEG、WEBP 图片格式；PDF 文档；GP3/GP4/GP5/GPX 吉他谱文件 |
-| **GTP解析与渲染** | 完整解析 Guitar Pro 文件，六线谱渲染引擎（含18种技巧符号），支持音轨切换 |
-| **音频播放** | FluidSynth 合成引擎，SoundFont 音色，支持全轨并轨/单轨播放/关闭音频三种模式，推弦(Pitch Bend)渐变效果 |
-| **播放光标** | 红色竖线跟随播放进度移动，当前小节高亮显示 |
-| **自动滚动播放** | 30fps固定帧率平滑滚动，时间驱动模式（与音乐节奏同步，密集音符区自动加快） |
-| **速度控制** | 图片/PDF模式：1-500ms可调；GTP模式：由BPM自动驱动，隐藏手动控制 |
-| **速度曲线编辑器** | 贝塞尔曲线可视化编辑，预设模板（渐快/渐慢/先慢后快等），适用于变速练习（图片/PDF模式） |
-| **循环播放** | 不循环 / 全局循环 / A-B 区域循环三种模式 |
-| **文本标注系统** | 双击谱面任意位置添加演奏技巧说明，支持颜色、字体大小、粗体等样式，悬停显示删除按钮 |
-| **标注自动导入/导出** | 自动加载同名 `.anno.json` 文件，实时保存，支持分轨/分页 PNG/PDF A4导出（含标注） |
-| **标注全局撤销重做** | Ctrl+Z 撤销 / Ctrl+Y 重做，最大50步深度 |
-| **标注管理器** | 批量管理标注，支持新建/编辑/删除 |
-| **点击跳转播放** | 单击谱面任意位置自动跳转并开始播放 |
-| **页码导航** | PDF / 多图片模式底部显示页码输入框，直接跳转指定页面 |
-| **鼠标滚轮** | 滚轮滚动谱面，Ctrl 加速 / Shift 精细控制 |
-| **右键菜单** | 打开文件所在位置（Windows/Linux 兼容） |
-| **GTP音轨选择** | 下拉菜单切换音轨，即时重渲染，分轨独立标注 |
-| **深色主题** | 现代化深色 UI，自定义组件风格 |
-| **键盘快捷键** | 空格播放/暂停、方向键调速、Ctrl+Z撤销/Ctrl+Y重做/ESC关闭 |
+| 功能            | 说明                                                                   |
+| ------------- | -------------------------------------------------------------------- |
+| **多格式支持**     | PNG、JPG、JPEG、WEBP 图片格式；PDF 文档；GP3/GP4/GP5/GPX 吉他谱文件                  |
+| **GTP解析与渲染**  | 完整解析 Guitar Pro 文件，六线谱渲染引擎（含18种技巧符号），支持音轨切换                          |
+| **音频播放**      | FluidSynth 合成引擎，SoundFont 音色，支持全轨并轨/单轨播放/关闭音频三种模式，推弦(Pitch Bend)渐变效果 |
+| **播放光标**      | 红色竖线跟随播放进度移动，当前小节高亮显示                                                |
+| **自动滚动播放**    | 30fps固定帧率平滑滚动，时间驱动模式（与音乐节奏同步，密集音符区自动加快）                              |
+| **速度控制**      | 图片/PDF模式：1-500ms可调；GTP模式：由BPM自动驱动，隐藏手动控制                             |
+| **速度曲线编辑器**   | 贝塞尔曲线可视化编辑，预设模板（渐快/渐慢/先慢后快等），适用于变速练习（图片/PDF模式）                       |
+| **循环播放**      | 不循环 / 全局循环 / A-B 区域循环三种模式                                            |
+| **文本标注系统**    | 双击谱面任意位置添加演奏技巧说明，支持颜色、字体大小、粗体等样式，悬停显示删除按钮                            |
+| **标注自动导入/导出** | 自动加载同名 `.anno.json` 文件，实时保存，支持分轨/分页 PNG/PDF A4导出（含标注）                |
+| **标注全局撤销重做**  | Ctrl+Z 撤销 / Ctrl+Y 重做，最大50步深度                                        |
+| **标注管理器**     | 批量管理标注，支持新建/编辑/删除                                                    |
+| **点击跳转播放**    | 单击谱面任意位置自动跳转并开始播放                                                    |
+| **页码导航**      | PDF / 多图片模式底部显示页码输入框，直接跳转指定页面                                        |
+| **鼠标滚轮**      | 滚轮滚动谱面，Ctrl 加速 / Shift 精细控制                                          |
+| **右键菜单**      | 打开文件所在位置（Windows/Linux 兼容）                                           |
+| **GTP音轨选择**   | 下拉菜单切换音轨，即时重渲染，分轨独立标注                                                |
+| **深色主题**      | 现代化深色 UI，自定义组件风格                                                     |
+| **键盘快捷键**     | 空格播放/暂停、方向键调速、Ctrl+Z撤销/Ctrl+Y重做/ESC关闭                                |
 
 ## 快速开始
 
 ### 环境要求
 
 - Python 3.8+
-- Windows / Linux / Docker
+- Windows / Linux(No MIDI audio)
 
 ### 安装
 
@@ -70,30 +70,30 @@ python guitar_tab_viewer.py
 
 ### 快捷键
 
-| 快捷键 | 功能 |
-|--------|------|
-| `空格` | 播放 / 暂停 |
-| `↑` | 向上翻动谱面 |
-| `↓` | 向下翻动谱面 |
-| `←` | 减慢速度 |
-| `→` | 加快速度 |
-| `Ctrl+Z` | 标注撤销 |
-| `Ctrl+Y` | 标注重做 |
-| `ESC` | 关闭当前窗口 |
+| 快捷键      | 功能      |
+| -------- | ------- |
+| `空格`     | 播放 / 暂停 |
+| `↑`      | 向上翻动谱面  |
+| `↓`      | 向下翻动谱面  |
+| `←`      | 减慢速度    |
+| `→`      | 加快速度    |
+| `Ctrl+Z` | 标注撤销    |
+| `Ctrl+Y` | 标注重做    |
+| `ESC`    | 关闭当前窗口  |
 
 ### 鼠标操作
 
-| 操作 | 功能 |
-|------|------|
-| 滚轮 | 滚动谱面（默认30px/步） |
-| `Ctrl + 滚轮` | 快速滚动（100px/步） |
-| `Shift + 滚轮` | 精细滚动（10px/步） |
-| 单击谱面 | 跳转到点击位置并开始播放 |
-| 双击空白处 | 新建文本标注 |
-| 双击已有标注 | 编辑该标注 |
-| 进度条拖动 | 跳转播放位置 |
-| `Ctrl + 点击进度条` | 设置循环 A 点 |
-| `Shift + 点击进度条` | 设置循环 B 点 |
+| 操作              | 功能             |
+| --------------- | -------------- |
+| 滚轮              | 滚动谱面（默认30px/步） |
+| `Ctrl + 滚轮`     | 快速滚动（100px/步）  |
+| `Shift + 滚轮`    | 精细滚动（10px/步）   |
+| 单击谱面            | 跳转到点击位置并开始播放   |
+| 双击空白处           | 新建文本标注         |
+| 双击已有标注          | 编辑该标注          |
+| 进度条拖动           | 跳转播放位置         |
+| `Ctrl + 点击进度条`  | 设置循环 A 点       |
+| `Shift + 点击进度条` | 设置循环 B 点       |
 
 ## 项目结构
 
@@ -153,7 +153,7 @@ pyfluidsynth>=1.4.0  # MIDI音频合成 (LGPL 2.1)
 本项目使用 [FluidSynth](https://github.com/FluidSynth/fluidSynth) 作为音频合成引擎。
 
 - **许可证**: [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
-- **仓库地址**: https://github.com/FluidSynth/fluidSynth
+- **仓库地址**: <https://github.com/FluidSynth/fluidSynth>
 - **使用方式**: 预编译的 DLL 文件位于项目根目录（`libfluidsynth-3.dll`、`SDL3.dll`、`sndfile.dll`）
 - **用途**: 将 MIDI 事件合成音频输出，用于 GTP 吉他谱的音频播放功能（含推弦渐变效果）
 
@@ -163,7 +163,7 @@ pyfluidsynth>=1.4.0  # MIDI音频合成 (LGPL 2.1)
 
 本项目采用 [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/) 许可证。
 
----
+***
 
 # English
 
@@ -171,27 +171,27 @@ A powerful Guitar TAB score viewer with multi-format support, 30fps smooth auto-
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-format** | PNG, JPG, JPEG, WEBP images; PDF documents; GP3/GP4/GP5/GPX Guitar Pro files |
-| **GTP Parsing & Rendering** | Complete Guitar Pro file parser, TAB renderer with 18 technique symbols, track switching |
-| **Audio Playback** | FluidSynth engine with SoundFont, All tracks / Single track / Mute modes, Pitch Bend gradual effect |
-| **Playhead** | Red vertical line following playback progress, current measure highlight |
-| **Auto-scroll** | 30fps fixed-rate smooth scrolling, time-driven (synced with music rhythm) |
-| **Speed Control** | Image/PDF: 1-500ms range; GTP: BPM-driven, auto-hides manual controls |
-| **Speed Curve Editor** | Bezier curve visualization with preset templates (Image/PDF mode only) |
-| **Loop Playback** | No loop / Global loop / A-B region loop |
-| **Text Annotations** | Double-click to add notes with color/font/bold styles, hover to show delete button |
-| **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/PDF A4 export |
-| **Global Undo/Redo** | Ctrl+Z / Ctrl+Y, max 50 steps |
-| **Annotation Manager** | Batch management with create/edit/delete |
-| **Click-to-Play** | Click anywhere on score to jump and start playback |
-| **Page Navigation** | Page input box for PDF/multi-image mode |
-| **Mouse Wheel** | Scroll with Ctrl (fast) / Shift (fine) modifiers |
-| **Context Menu** | Open file location (Windows/Linux compatible) |
-| **Track Selection** | Dropdown to switch tracks, instant re-render, per-track annotations |
-| **Dark Theme** | Modern dark UI with custom components |
-| **Keyboard Shortcuts** | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close |
+| Feature                      | Description                                                                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Multi-format**             | PNG, JPG, JPEG, WEBP images; PDF documents; GP3/GP4/GP5/GPX Guitar Pro files                        |
+| **GTP Parsing & Rendering**  | Complete Guitar Pro file parser, TAB renderer with 18 technique symbols, track switching            |
+| **Audio Playback**           | FluidSynth engine with SoundFont, All tracks / Single track / Mute modes, Pitch Bend gradual effect |
+| **Playhead**                 | Red vertical line following playback progress, current measure highlight                            |
+| **Auto-scroll**              | 30fps fixed-rate smooth scrolling, time-driven (synced with music rhythm)                           |
+| **Speed Control**            | Image/PDF: 1-500ms range; GTP: BPM-driven, auto-hides manual controls                               |
+| **Speed Curve Editor**       | Bezier curve visualization with preset templates (Image/PDF mode only)                              |
+| **Loop Playback**            | No loop / Global loop / A-B region loop                                                             |
+| **Text Annotations**         | Double-click to add notes with color/font/bold styles, hover to show delete button                  |
+| **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/PDF A4 export                        |
+| **Global Undo/Redo**         | Ctrl+Z / Ctrl+Y, max 50 steps                                                                       |
+| **Annotation Manager**       | Batch management with create/edit/delete                                                            |
+| **Click-to-Play**            | Click anywhere on score to jump and start playback                                                  |
+| **Page Navigation**          | Page input box for PDF/multi-image mode                                                             |
+| **Mouse Wheel**              | Scroll with Ctrl (fast) / Shift (fine) modifiers                                                    |
+| **Context Menu**             | Open file location (Windows/Linux compatible)                                                       |
+| **Track Selection**          | Dropdown to switch tracks, instant re-render, per-track annotations                                 |
+| **Dark Theme**               | Modern dark UI with custom components                                                               |
+| **Keyboard Shortcuts**       | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close                                         |
 
 ## Quick Start
 
@@ -210,14 +210,14 @@ python guitar_tab_viewer.py
 
 ## Shortcuts
 
-| Key | Action |
-|-----|--------|
-| `Space` | Play / Pause |
+| Key       | Action           |
+| --------- | ---------------- |
+| `Space`   | Play / Pause     |
 | `↑` / `↓` | Scroll up / down |
-| `←` / `→` | Slower / Faster |
-| `Ctrl+Z` | Undo annotation|
-| `Ctrl+Y` | Redo annotation |
-| `ESC` | Close window |
+| `←` / `→` | Slower / Faster  |
+| `Ctrl+Z`  | Undo annotation  |
+| `Ctrl+Y`  | Redo annotation  |
+| `ESC`     | Close window     |
 
 ## Tech Stack
 
@@ -239,6 +239,7 @@ This project is licensed under [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/)
 This project uses [FluidSynth](https://github.com/FluidSynth/fluidSynth) as the audio synthesis engine.
 
 - **License**: [LGPL 2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
-- **Repository**: https://github.com/FluidSynth/fluidSynth
+- **Repository**: <https://github.com/FluidSynth/fluidSynth>
 - **Usage**: Precompiled DLL files in project root (`libfluidsynth-3.dll`, `SDL3.dll`, `sndfile.dll`)
 - **Purpose**: Convert MIDI events to audio output for GTP guitar score playback (with Pitch Bend gradual effect)
+

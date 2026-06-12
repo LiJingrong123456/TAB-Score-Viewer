@@ -278,29 +278,30 @@ class LoadContentWorker(QRunnable):
         """
         加载Guitar Pro文件(.gp3/.gp4/.gp5/.gpx/.gtp)
         
-        原理: 使用 gtp_engine 库（基于 PyGuitarPro）完整解析 GTP 文件，
-              并通过 QPainter 渲染为六线谱图像。
-              解析流程: .gp文件 → PyGuitarPro → GTPSong中介模型 → TabRenderer → QPixmap列表
+        原理: 使用 gtp_engine 库的 GTPPlayer 高级API完整处理 GTP 文件，
+              包括解析、渲染、音频初始化等。
+              GTPPlayer 封装了所有GTP相关逻辑，主程序只需简单调用。
         
         依赖库:
-          - guitarpro >= 0.11   # Guitar Pro 文件解析（开源项目: pyguitarpro）
-          - gtp_engine           # 本项目内置的渲染引擎库
+          - gtp_engine (含 guitarpro, PyQt5, pyfluidsynth)
         """
         images = []
         try:
-            # 使用 gtp_engine 进行完整解析和渲染
-            from gtp_engine.renderer import TabRenderer
+            # 使用 GTPPlayer 进行完整的加载和渲染
+            from ApolloTab import GTPPlayer
             
-            renderer = TabRenderer()
+            # 创建播放器实例并加载文件
+            player = GTPPlayer()
+            player.load(self.file_path)
             
-            # 进度报告：开始加载
-            self.signals.progress.emit(10)
+            # 渲染当前音轨（默认第0轨）
+            pixmaps = player.render_track(0)
             
-            # 解析并渲染（内部调用 parse_gtp + render）
-            pixmaps = renderer.render_from_file(self.file_path)
+            # 保存播放器实例到window（供后续音频/时间线功能使用）
+            self.window.gtp_player = player
             
-            # 将布局数据存储到window(供播放光标功能使用)
-            self.window._page_layouts = getattr(renderer, 'last_layouts', [])
+            # 捕获布局数据(播放光标功能依赖此数据)
+            self.window._page_layouts = player.last_layouts
             
             # 进度报告：完成
             self.signals.progress.emit(100)
@@ -308,9 +309,9 @@ class LoadContentWorker(QRunnable):
             images = pixmaps
             
         except ImportError as e:
-            # gtp_engine 或 guitarpro 未安装时，回退到信息展示图
+            # gtp_engine 或依赖未安装时，回退到信息展示图
             info_pixmap = self._create_gtp_info_image(
-                f"GTP引擎依赖缺失:\n{str(e)}\n\n请安装: pip install PyGuitarPro"
+                f"GTP引擎依赖缺失:\n{str(e)}\n\n请安装: pip install gtp-engine"
             )
             images.append(info_pixmap)
         except Exception as e:
@@ -1374,41 +1375,22 @@ class DisplayWidget(QWidget):
                     
                     # === 步骤2: 先处理音频seek(在start_playback之前!) ===
                     # 重要: seek必须在play()之前调用，这样play()启动的线程才能使用正确的start_offset
-                    if (self.parent_window._synth_engine and 
-                        self.parent_window._audio_enabled and
-                        self.parent_window._midi_converter and
-                        self.parent_window._gtp_song):
+                    if (self.parent_window.gtp_player and 
+                        self.parent_window.gtp_player.is_audio_ready):
                         try:
                             # === 使用反向时间线查找(非线性映射) ===
-                            # 原理: _build_playhead_timeline建立了time_ms↔scroll_y的非线性映射，
+                            # 原理: GTPPlayer.build_timeline建立了time_ms↔scroll_y的非线性映射，
                             #       不能用线性比例(pos/total*time)反推时间！
-                            #       必须用_scroll_pos_to_time()在timeline中对scroll_y做二分查找。
-                            # 
-                            # 为什么线性比例会"提前":
-                            #   密集区(16分音符): scroll_y大但time_ms少 → 线性比例高估时间 → 音频跳到后面
-                            #   用户感觉: 点击A处,音频从B处开始(B在A之后) → "提前了"
+                            #       必须用GTPPlayer.scroll_pos_to_time()在timeline中对scroll_y做二分查找。
                             
-                            if self.parent_window._playhead_timeline:
-                                # GTP模式: 用timeline反向查找(精确)
-                                target_ms = self.parent_window._scroll_pos_to_time(new_position)
-                            else:
-                                # 非GTP模式降级: 线性比例(图片/PDF文件无timeline)
-                                pct = new_position / self.parent_window.total_scroll_distance * 100
-                                if self.parent_window._audio_mode == "all":
-                                    total_ms = self.parent_window._midi_converter.get_all_tracks_duration_ms(
-                                        self.parent_window._gtp_song)
-                                else:
-                                    total_ms = self.parent_window._midi_converter.get_total_duration_ms(
-                                        self.parent_window._gtp_song,
-                                        self.parent_window.gtp_current_track
-                                    )
-                                if total_ms > 0:
-                                    target_ms = (pct / 100.0) * total_ms
-                                else:
-                                    target_ms = 0
+                            target_ms = self.parent_window.gtp_player.scroll_pos_to_time(
+                                new_position,
+                                self.parent_window.total_scroll_distance,
+                                self.parent_window.height()
+                            )
                             
                             if target_ms > 0:
-                                self.parent_window._synth_engine.seek(target_ms)
+                                self.parent_window.gtp_player.seek(target_ms)
                         except Exception as e:
                             print(f"[ClickPlay] 音频跳转失败: {e}")
                     
@@ -1921,17 +1903,14 @@ class DisplayWindow(QMainWindow):
 
         # GTP音轨选择状态（仅GTP文件时使用）
         self.gtp_track_combo=None             # 音轨下拉菜单控件
-        self.gtp_current_track:int=0          # 当前选中的音轨索引
-        self.gtp_file_path:str=""             # 当前GTP文件路径(用于切换音轨时重新渲染)
 
-        # === Phase 3: 音频播放引擎 ===
-        self._synth_engine=None               # FluidSynth合成器实例(SynthEngine)
-        self._midi_converter=None             # MIDI转换器(MidiConverter)
-        self._gtp_song=None                   # 当前加载的GTPSong对象(用于音频转换)
-        self._audio_events:List=[]            # 转换后的MIDI事件列表
-        self._audio_enabled:bool=True         # 音频开关(默认开启,用户可通过模式菜单关闭)
-        self._audio_mode:str="all"            # 音频模式: "all"=全轨并轨(默认), "current"=仅当前轨, "off"=关闭
-        self._track_channels:List[int]=[]     # 各音轨对应的MIDI通道号(全轨模式用)
+        # === Phase 3/4: GTP播放器（使用gtp_engine库的高级封装）===
+        # GTPPlayer 整合了解析/渲染/音频/时间线的完整功能
+        # 原来分散在主程序中的 _synth_engine/_midi_converter/_gtp_song/
+        # _audio_events/_playhead_timeline 等全部由 GTPPlayer 统一管理
+        from ApolloTab import GTPPlayer
+        self.gtp_player: Optional[GTPPlayer] = None  # 延迟初始化（加载GTP文件时创建）
+        
         self._current_highlight:tuple=None    # 当前高亮音符(midi_pitch, time_ms)
 
         # === Phase 3.5: 播放光标(Playhead) ===
@@ -1944,7 +1923,7 @@ class DisplayWindow(QMainWindow):
         self._playhead_info:tuple=None
 
         # === 播放光标时间线(必须在此初始化，否则图片/PDF模式会报AttributeError) ===
-        # 由_build_playhead_timeline()构建(GTP文件)，或保持空列表(非GTP文件降级为线性滚动)
+        # 由 GTPPlayer.build_timeline() 构建(GTP文件)，或保持空列表(非GTP文件降级为线性滚动)
         # 数据结构: List[dict]，每个元素包含 time_ms/scroll_y/page_idx/sys_idx/meas_idx/beat_idx/x_center
         self._playhead_timeline:list=[]  # 修复: 初始化空列表，防止_update_playhead()访问时报错
 
@@ -2030,7 +2009,6 @@ class DisplayWindow(QMainWindow):
 
         # 音频播放模式按钮（仅GTP文件显示，默认隐藏）
         # 3种模式: 全轨并轨(默认) / 仅当前轨 / 关闭音频
-        self._audio_mode = "all"          # 当前音频模式: "all"=全轨并轨, "current"=仅当前轨, "off"=关闭
         self.audio_btn = QToolButton()
         self.audio_btn.setText("🔊 全轨")
         self.audio_btn.setToolTip("点击切换音频模式\n全轨并轨 / 仅当前轨 / 关闭音频")
@@ -2233,10 +2211,11 @@ class DisplayWindow(QMainWindow):
         self.update_progress_display()
         self._update_page_display()  # 更新页码显示
 
-        # GTP文件：填充音轨选择下拉菜单 + 初始化音频引擎 + 隐藏手动速度控制
+        # GTP文件：填充音轨选择下拉菜单 + 初始化音频引擎 + 构建播放光标时间线 + 隐藏手动速度控制
         if self.file_type == 'gtp':
             self._populate_gtp_track_combo()
             self._init_audio_engine()  # Phase 3: 初始化音频播放引擎
+            self._build_playhead_timeline()  # Phase 3.5: 构建播放光标时间线(必须在init_audio之后)
             self.audio_btn.setVisible(True)  # 显示音频按钮
             # GTP模式: 隐藏手动速度控制(由BPM驱动，不需要ms/曲线控制)
             if hasattr(self, 'speed_spin'):
@@ -2269,15 +2248,20 @@ class DisplayWindow(QMainWindow):
         """
         填充GTP音轨下拉菜单
         
-        原理: 解析GTP文件获取所有音轨名称，填充到QComboBox中。
+        原理: 使用 GTPPlayer.get_all_tracks_info() 获取所有音轨信息，
+              然后填充到QComboBox中供用户选择。
               用户切换选项后触发重新渲染对应音轨的六线谱。
         
         注意: 此方法在主线程中调用（_on_content_loaded回调），解析操作很快（<50ms）
         """
         try:
-            from gtp_engine.parser import parse_gtp
-            song = parse_gtp(self.file_path)
-            self.gtp_file_path = self.file_path
+            # 检查GTP播放器是否可用
+            if not self.gtp_player or not self.gtp_player.song:
+                if self.gtp_track_combo:
+                    self.gtp_track_combo.setVisible(False)
+                return
+            
+            song = self.gtp_player.song
 
             # 阻断信号避免触发不必要的重新渲染
             self.gtp_track_combo.blockSignals(True)
@@ -2290,10 +2274,11 @@ class DisplayWindow(QMainWindow):
                 self.gtp_track_combo.addItem(display_name, userData=i)
 
             # 恢复之前的选择或默认第0个
-            if self.gtp_current_track < self.gtp_track_combo.count():
-                self.gtp_track_combo.setCurrentIndex(self.gtp_current_track)
+            current_idx = self.gtp_player.current_track
+            if current_idx < self.gtp_track_combo.count():
+                self.gtp_track_combo.setCurrentIndex(current_idx)
             else:
-                self.gtp_current_track = 0
+                self.gtp_player.current_track = 0
 
             self.gtp_track_combo.blockSignals(False)
             self.gtp_track_combo.setVisible(True)
@@ -2315,36 +2300,33 @@ class DisplayWindow(QMainWindow):
           不停止音频播放、不重置滚动位置、不重建MIDI事件。
           因为并轨模式下所有音轨的音频同时在播放。
         """
-        if index < 0 or not self.gtp_file_path:
+        if index < 0 or not self.gtp_player or not self.gtp_player.file_path:
             return
 
-        # === 切换分轨标注(在更新gtp_current_track之前调用) ===
-        old_track = self.gtp_current_track
+        # === 切换分轨标注(在更新current_track之前调用) ===
+        old_track = self.gtp_player.current_track
         if old_track != index:
             self._switch_track_annotations(old_track, index)
-            # _switch_track_annotations 内部已更新 self.gtp_current_track = index
+            # _switch_track_annotations 内部已更新 gtp_player.current_track = index
         else:
-            self.gtp_current_track = index
+            self.gtp_player.current_track = index
 
         # === 判断是否需要停止播放 ===
         # 仅在非并轨模式时停止（因为单轨模式音频与视觉绑定）
-        need_stop = (self._audio_mode != "all")
+        need_stop = (self.gtp_player.audio_mode != GTPPlayer.MODE_ALL)
         
         was_playing = self.timer.isActive()
         if need_stop and was_playing:
             self.stop_playback()
 
         try:
-            from gtp_engine.renderer import TabRenderer
-            renderer = TabRenderer()
-            pixmaps = renderer.render_from_file(
-                self.gtp_file_path,
-                track_index=index
-            )
+            # 使用 GTPPlayer 重新渲染新音轨
+            pixmaps = self.gtp_player.render_track(index)
+            
             self.images = pixmaps
             self.loaded_images = pixmaps
             # 捕获布局数据(播放光标功能依赖此数据)
-            self._page_layouts = getattr(renderer, 'last_layouts', [])
+            self._page_layouts = self.gtp_player.last_layouts
             self.display_widget.set_images(pixmaps)
             
             # 并轨模式: 保持当前播放位置不变（仅切换视觉）
@@ -2366,9 +2348,9 @@ class DisplayWindow(QMainWindow):
                 self.update_progress_display()
                 self.display_widget.update()
 
-            # Phase 3: 仅单轨模式才需要重建音频事件
-            if need_stop:
-                self._rebuild_audio_events()
+            # Phase 3/4: 仅单轨模式才需要重建音频事件（由GTPPlayer管理）
+            if need_stop and self.gtp_player.is_audio_ready:
+                self.gtp_player.rebuild_audio_events()
 
         except Exception as e:
             QMessageBox.warning(self, "音轨切换失败", f"无法渲染音轨 {index+1}:\n{str(e)}")
@@ -2382,8 +2364,10 @@ class DisplayWindow(QMainWindow):
         """更新显示内容"""
         self.file_path=file_path;self.file_type=file_type;self.base_speed=speed
         self._calculate_scroll_step(speed);self.annotations.clear()
-        # 重置GTP音轨状态（切换文件时清空）
-        self.gtp_current_track=0;self.gtp_file_path=""
+        # 重置GTP播放器状态（切换文件时清空）
+        if self.gtp_player:
+            self.gtp_player.shutdown()
+            self.gtp_player = None
         if self.gtp_track_combo:
             self.gtp_track_combo.setVisible(False)
         self._load_annotations();self.load_content_async()
@@ -2404,8 +2388,8 @@ class DisplayWindow(QMainWindow):
         # 使用固定30fps定时器(33ms)，不再用base_speed作为间隔
         self.timer.start(33)
         # Phase 3: 同时启动音频引擎
-        if self._synth_engine and self._audio_enabled:
-            self._synth_engine.play()
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            self.gtp_player.play()
         self.play_btn.setText("⏸ 暂停")
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['warning']};")
         self.stop_btn.setEnabled(True)
@@ -2415,17 +2399,17 @@ class DisplayWindow(QMainWindow):
         窗口关闭事件: 确保音频引擎完全停止释放资源
         
         原理: PyQt5 窗口关闭时默认只隐藏窗口，后台线程可能继续运行。
-              此方法在窗口销毁前强制停止 SynthEngine 播放线程和音频输出，
+              此方法在窗口销毁前强制停止 GTPPlayer 播放线程和音频输出，
               防止"关窗后声音仍在播放"的问题。
         """
         # 停止定时器和播放
         self.timer.stop()
         
-        # 强制停止音频引擎（释放所有发声音符 + 结束播放线程）
-        if self._synth_engine:
+        # 强制停止GTP播放器（释放所有发声音符 + 结束播放线程）
+        if self.gtp_player:
             try:
-                self._synth_engine.stop()
-                self._synth_engine.shutdown()
+                self.gtp_player.stop()
+                self.gtp_player.shutdown()
             except Exception:
                 pass
         
@@ -2436,90 +2420,45 @@ class DisplayWindow(QMainWindow):
         """停止播放"""
         self.timer.stop()
         self._click_jump_target = -1.0  # 清除点击跳转目标
-        # Phase 3: 同时停止音频引擎
-        if self._synth_engine and self._audio_enabled:
-            self._synth_engine.stop()
+        # Phase 3: 同时停止GTP播放器
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            self.gtp_player.stop()
         self.play_btn.setText("▶ 播放")
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['success']};")
         self.stop_btn.setEnabled(False)
 
     def _init_audio_engine(self)->None:
         """
-        Phase 3: 初始化音频播放引擎(GTP文件加载后调用)
+        Phase 3/4: 初始化音频播放引擎(GTP文件加载后调用)
         
-        原理:
-          1. 解析GTP文件获取 GTPSong 对象
-          2. 创建 MidiConverter 和 SynthEngine(FluidSynth)
-          3. 加载 SoundFont 音色文件
-          4. 根据当前音频模式(_audio_mode)转换MIDI事件:
-             - "all"(默认): 转换所有音轨，每轨独立MIDI通道
-             - "current":   仅转换当前选中音轨
-          5. 设置音符回调用于视觉高亮同步
-        
+        原理: 使用 GTPPlayer.init_audio() 统一初始化所有音频相关功能，
+              包括解析GTP文件、创建MIDI转换器、初始化FluidSynth合成器、
+              加载SoundFont音色、转换MIDI事件等。
+              
         注意: 此方法在 _on_content_loaded 中调用，仅对 GTP 文件生效。
               默认模式为"全轨并轨"，用户可通过按钮菜单切换。
               如果 fluidsynth 未安装会优雅降级（音频按钮显示为禁用状态）。
         """
-        try:
-            from gtp_engine.parser import parse_gtp
-            from gtp_engine.audio import MidiConverter, SynthEngine
-            
-            # === Step 1: 解析GTP文件获取Song对象 ===
-            self._gtp_song = parse_gtp(self.file_path)
-            
-            # === Step 2: 创建MIDI转换器 ===
-            self._midi_converter = MidiConverter()
-            
-            # === Step 3: 初始化FluidSynth合成器 ===
-            self._synth_engine = SynthEngine(gain=0.7)
-            
-            if not self._synth_engine.initialize():
-                self.audio_btn.setEnabled(False)
-                self.audio_btn.setToolTip("fluidsynth库未安装，无法使用音频播放")
-                return
-            
-            # 加载 SoundFont 音色文件
-            if not self._synth_engine.load_soundfont():
-                self.audio_btn.setEnabled(False)
-                self.audio_btn.setToolTip("未找到SoundFont文件")
-                return
-            
-            # === Step 4: 设置音符回调(视觉高亮同步) ===
-            self._synth_engine.set_note_callback(self._on_audio_note_played)
-            
-            # === Step 5: 根据模式转换并加载MIDI事件(统一走_rebuild_audio_events) ===
-            self._rebuild_audio_events()
-            
-            if not self._audio_events:
-                print("[Audio] 警告: 未生成MIDI事件(可能该轨道无音符)")
-                return
-            
-            # 打印就绪信息
-            mode_label = "全轨并轨" if self._audio_mode == "all" else f"仅当前轨"
-            duration_ms = (
-                self._midi_converter.get_all_tracks_duration_ms(self._gtp_song)
-                if self._audio_mode == "all"
-                else self._midi_converter.get_total_duration_ms(
-                    self._gtp_song, self.gtp_current_track
-                )
-            )
-            print(f"[Audio] 引擎就绪[{mode_label}]: "
-                  f"{len(self._audio_events)}个MIDI事件, "
-                  f"{len(self._track_channels)}个通道, "
-                  f"BPM={self._gtp_song.tempo}, "
-                  f"时长={duration_ms/1000:.1f}秒")
-            
-        except ImportError as e:
-            print(f"[Audio] 依赖库缺失: {e}")
+        if not self.gtp_player:
+            print("[Audio] 错误: GTP播放器未初始化")
             self.audio_btn.setEnabled(False)
-            self.audio_btn.setToolTip("请安装 pyfluidsynth: pip install pyfluidsynth")
-        except Exception as e:
-            print(f"[Audio] 初始化失败: {e}")
+            return
+        
+        # 设置音符回调(视觉高亮同步)
+        success = self.gtp_player.init_audio(note_callback=self._on_audio_note_played)
+        
+        if not success:
             self.audio_btn.setEnabled(False)
+            self.audio_btn.setToolTip("音频引擎初始化失败，请检查依赖库安装")
+            return
+        
+        # 更新时间线数据
+        self._playhead_timeline = self.gtp_player.playhead_timeline
+        self._total_audio_duration_ms = self.gtp_player.total_duration_ms
     
     def _set_audio_mode(self, mode: str)->None:
         """
-        Phase 3: 切换音频播放模式(3种模式)
+        Phase 3/4: 切换音频播放模式(3种模式)
         
         参数:
             mode: 目标模式
@@ -2527,19 +2466,39 @@ class DisplayWindow(QMainWindow):
               - "current": 仅当前轨 - 只播放当前选中音轨的音频
               - "off":     关闭音频 - 仅滚动播放，不输出声音
         
-        原理: 用户通过 🔊 按钮下拉菜单选择模式。
+        原理: 用户通过 🔊 按钮下拉菜单选择模式，委托给 GTPPlayer 处理。
               切换时如果正在播放会自动重建事件序列并继续播放。
         """
-        if self._audio_mode == mode:
-            return  # 模式未变，跳过
-        
-        old_mode = self._audio_mode
-        self._audio_mode = mode
-        
+        # 检查GTP播放器是否可用
+        if self.gtp_player:
+            old_mode = self.gtp_player.audio_mode
+            
+            # 委托给GTPPlayer处理模式切换
+            self.gtp_player.set_audio_mode(mode)
+            
+            # 更新UI状态
+            self._update_audio_button_ui(mode)
+            
+            # 重建播放光标时间线（如果布局数据可用）
+            if (self.images and self._page_layouts and 
+                mode != GTPPlayer.MODE_OFF):
+                display_w = max(self.display_widget.width() - 20, 100)
+                self.gtp_player.build_timeline(
+                    self._page_layouts, self.images, display_w
+                )
+                self._playhead_timeline = self.gtp_player.playhead_timeline
+                self._total_audio_duration_ms = self.gtp_player.total_duration_ms
+        else:
+            # 无GTP播放器时只更新UI
+            self._update_audio_button_ui(mode)
+    
+    def _update_audio_button_ui(self, mode: str) -> None:
+        """更新音频按钮的UI显示"""
         # 更新菜单项勾选状态
-        self._audio_action_all.setChecked(mode == "all")
-        self._audio_action_current.setChecked(mode == "current")
-        self._audio_action_off.setChecked(mode == "off")
+        if hasattr(self, '_audio_action_all'):
+            self._audio_action_all.setChecked(mode == "all")
+            self._audio_action_current.setChecked(mode == "current")
+            self._audio_action_off.setChecked(mode == "off")
         
         # 更新按钮文字和样式
         if mode == "all":
@@ -2548,27 +2507,15 @@ class DisplayWindow(QMainWindow):
                 f"QToolButton{{background-color:{THEME_COLORS['accent']};"
                 f"border-radius:4px;padding:4px 10px;}}"
             )
-            self._audio_enabled = True
         elif mode == "current":
             self.audio_btn.setText("🎸 当前轨")
             self.audio_btn.setStyleSheet(
                 f"QToolButton{{background-color:{THEME_COLORS['primary']};"
                 f"border-radius:4px;padding:4px 10px;}}"
             )
-            self._audio_enabled = True
         else:  # "off"
             self.audio_btn.setText("🔇 关闭")
             self.audio_btn.setStyleSheet("")
-            self._audio_enabled = False
-            # 立即停止音频但保持滚动
-            if self._synth_engine:
-                self._synth_engine.stop()
-        
-        print(f"[Audio] 模式切换: {old_mode} → {mode}")
-        
-        # 如果引擎已初始化，根据新模式重建事件
-        if self._synth_engine and mode != "off":
-            self._rebuild_audio_events()
     
     def _toggle_audio(self, checked: bool)->None:
         """保留兼容接口（已由 _set_audio_mode 替代）"""
@@ -2591,406 +2538,136 @@ class DisplayWindow(QMainWindow):
         if hasattr(self, 'display_widget'):
             self.display_widget.update()
     
-    def _rebuild_audio_events(self)->None:
-        """
-        Phase 3: 重新构建MIDI事件(切换音轨/切换音频模式时调用)
-        
-        根据当前音频模式决定转换范围:
-          - "all"模式: 转换所有音轨，每轨独立MIDI通道
-          - "current"模式: 仅转换当前选中音轨
-        """
-        if not self._gtp_song or not self._midi_converter:
-            return
-        
-        # 先停止正在播放的音频
-        if self._synth_engine:
-            self._synth_engine.stop()
-        
-        # === 根据模式选择转换方式 ===
-        if self._audio_mode == "all":
-            # 全轨并轨: 转换所有音轨
-            self._audio_events, self._track_channels = (
-                self._midi_converter.convert_all_tracks(self._gtp_song)
-            )
-            
-            # 为每个(非鼓轨)通道设置吉他音色
-            # 注意: 通道9是MIDI打击乐保留通道，需要设为鼓组bank
-            if self._synth_engine and self._track_channels:
-                for ch in set(self._track_channels):
-                    if ch == 9:
-                        # 鼓组: Bank MSB=128 (Percussion) + Program=0 (Standard Kit)
-                        try:
-                            self._synth_engine.set_drum_kit(ch, kit=0)
-                        except Exception:
-                            pass
-                    else:
-                        # 旋律乐器: 吉他音色
-                        try:
-                            self._synth_engine.set_instrument(ch, 27)  # 27=Clean Electric Guitar
-                        except Exception:
-                            pass
-        else:
-            # 仅当前轨: 只转换当前选中的音轨
-            self._track_channels = []
-            self._audio_events = self._midi_converter.convert(
-                self._gtp_song, track_index=self.gtp_current_track
-            )
-        
-        # 重新加载到合成器
-        if self._synth_engine and self._audio_events:
-            self._synth_engine.load_events(
-                self._audio_events,
-                bpm=self._gtp_song.tempo,
-                ticks_per_beat=480
-            )
-            
-            # 打印日志
-            mode_label = "全轨并轨" if self._audio_mode == "all" else f"仅当前轨(#{self.gtp_current_track+1})"
-            print(f"[Audio] 事件重建[{mode_label}]: {len(self._audio_events)}个事件, "
-                  f"{len(self._track_channels)}个通道")
-        
-        # 构建播放光标时间线(依赖布局数据+音频事件)
-        self._build_playhead_timeline()
-
     def _build_playhead_timeline(self)->None:
         """
-        构建播放光标时间线 - 将每个拍(Beat)映射到其音频时间、屏幕X坐标和滚动Y位置
+        构建播放光标时间线 - 委托给 GTPPlayer 处理
         
-        原理:
-          遍历所有页面的布局数据(PageLayout→SystemLayout→MeasureLayout→BeatLayout)，
-          结合GTP歌曲的BPM和时间签名，计算每个拍对应的音频时间位置(ms)，
-          生成一个按时间排序的时间线索引。
-          
-        核心改进: 每个拍同时记录scroll_y(在总内容中的Y偏移)，
-        使滚动位置可以由音乐时间驱动，而非线性恒速滚动。
-        这样在音符密集区(16分/32分音符)播放条自动加快，
-        在稀疏区(全音符/二分音符)自动减慢，与实际音乐节奏同步。
-        
-        数据结构 _playhead_timeline:
-          List[dict], 每个元素包含:
-            - time_ms:   该拍的起始音频时间(毫秒)
-            - scroll_y:  该拍在总内容中的Y位置(像素)，用于时间→滚动映射
-            - page_idx:  所在页面索引
-            - sys_idx:   所在系统(行)索引
-            - meas_idx:  所在小节索引
-            - beat_idx:  该小节内的拍索引
-            - x_center:  该拍的中心X坐标(原始渲染分辨率)
-            - x_start:   该拍的起始X坐标
-            - x_end:     该拍的结束X坐标
-        
-        使用方式:
-          - _update_playhead(time_ms): 二分查找定位当前拍(X坐标高亮)
-          - _time_to_scroll_pos(time_ms): 二分查找+插值获取对应滚动Y位置
+        原理: 调用 GTPPlayer.build_timeline() 生成时间线索引，
+              将每个拍(Beat)映射到其音频时间、屏幕X坐标和滚动Y位置。
+              
+        注意: 此方法已迁移到 gtp_engine/player.py 中的 GTPPlayer 类，
+              主程序仅作为薄封装层调用。
         """
-        self._playhead_timeline = []
-        
-        if not self._page_layouts or not self._gtp_song:
+        if not self.gtp_player or not self.images or not self._page_layouts:
             return
         
-        # 获取BPM(取第一个tempo标记, 默认120)
-        bpm = 120
-        if hasattr(self._gtp_song, 'tempo_changes') and self._gtp_song.tempo_changes:
-            bpm = self._gtp_song.tempo_changes[0].value if self._gtp_song.tempo_changes[0].value > 0 else 120
-        elif hasattr(self._gtp_song, 'tempo') and self._gtp_song.tempo > 0:
-            bpm = self._gtp_song.tempo
+        # 使用 display_widget 宽度作为显示区域宽度（scroll_area 可能尚未初始化）
+        display_w = max(self.display_widget.width() - 20, 100)  # 减去左右边距，最小100px
         
-        # 每毫秒对应的tick数
-        ticks_per_beat = 480
-        ms_per_tick = 60000.0 / (bpm * ticks_per_beat)
+        # 委托给GTPPlayer构建时间线
+        timeline = self.gtp_player.build_timeline(
+            self._page_layouts, 
+            self.images, 
+            display_w
+        )
         
-        current_time_ticks = 0
-        current_time_ms = 0.0
-
-        # 计算每页的缩放高度和缩放比(用于累计scroll_y，与paintEvent一致)
-        ww = self.display_widget.width() if self.display_widget.width() > 100 else 800
-        draw_w = ww - 20
-        page_heights = []  # 每页缩放后的高度
-        page_scales = []   # 每页的缩放比(width_ratio)
-        for img in self.images:
-            if not img.isNull():
-                ratio = draw_w / img.width() if img.width() > 0 else 1
-                page_heights.append(img.height() * ratio + 5)
-                page_scales.append(ratio)
-            else:
-                page_heights.append(0)
-                page_scales.append(1)
-        
-        cumulative_y = 0.0  # 累计Y偏移(所有之前页面的总高度)
-        
-        for page_idx, page in enumerate(self._page_layouts):
-            page_base_y = cumulative_y  # 当前页的起始Y
-            page_scale_ratio = page_scales[page_idx] if page_idx < len(page_scales) else 1
-            
-            if page_idx < len(page_heights):
-                cumulative_y += page_heights[page_idx]
-            
-            for sys_idx, system in enumerate(page.systems):
-                for meas_idx, m_layout in enumerate(system.measures):
-                    measure = m_layout.measure
-                    
-                    # 获取该小节的时值信息
-                    if hasattr(measure, 'time_signature'):
-                        ts = measure.time_signature
-                        numerator = getattr(ts, 'numerator', 4)
-                        denominator = getattr(ts, 'denominator', 4)
-                    else:
-                        numerator, denominator = 4, 4
-                    
-                    measure_ticks = int(numerator * ticks_per_beat * 4 / max(denominator, 1))
-                    
-                    beats_in_measure = m_layout.beats
-                    if not beats_in_measure:
-                        current_time_ticks += measure_ticks
-                        current_time_ms = current_time_ticks * ms_per_tick
-                        continue
-                    
-                    n_beats = len(beats_in_measure)
-                    tick_per_beat = measure_ticks // max(n_beats, 1)
-                    
-                    for beat_idx, b_layout in enumerate(beats_in_measure):
-                        # === 精确scroll_y: 每个拍有独立递增的Y位置 ===
-                        # 将该系统内的拍均匀分布在该系统的渲染区域内，
-                        # scroll_y = 页面基Y + (系统顶部Y + 拍在系统内的相对位置) * 缩放比
-                        # 这样同一系统内不同拍的scroll_y不同，滚动会随时间连续变化
-                        sys_beats_count = sum(len(m.beats) for m in system.measures)
-                        beats_before = sum(len(m2.beats) for m2 in system.measures[:meas_idx]) + beat_idx
-                        rel_pos = beats_before / max(sys_beats_count, 1)
-                        sys_h_render = max(system.y_tab_bottom - system.y_tab_top, 1)
-
-                        scroll_y = (
-                            page_base_y
-                            + (system.y_tab_top + rel_pos * sys_h_render) * page_scale_ratio
-                        )
-                        
-                        entry = {
-                            'time_ms': current_time_ms,
-                            'scroll_y': scroll_y,
-                            'page_idx': page_idx,
-                            'sys_idx': sys_idx,
-                            'meas_idx': meas_idx,
-                            'beat_idx': beat_idx,
-                            'x_center': b_layout.x_center,
-                            'x_start': b_layout.x_start,
-                            'x_end': b_layout.x_end,
-                            'y_top': system.y_tab_top,
-                            'y_bottom': system.y_tab_bottom,
-                        }
-                        self._playhead_timeline.append(entry)
-                        
-                        current_time_ticks += tick_per_beat
-                        current_time_ms = current_time_ticks * ms_per_tick
-        
-        # === 后处理: 确保scroll_y严格单调递增 + 可选哨兵 ===
-        if self._playhead_timeline:
-            # 强制单调递增(防止布局数据异常导致回退)
-            prev_y = -1.0
-            for entry in self._playhead_timeline:
-                if entry['scroll_y'] <= prev_y:
-                    entry['scroll_y'] = prev_y + 0.5  # 最小增量保证递增
-                prev_y = entry['scroll_y']
-            
-            self._total_audio_duration_ms = self._playhead_timeline[-1]['time_ms']
-
-            # 总内容高度(与 _calculate_total_distance 完全一致)
-            # cumulative_y 已包含每张图片高度+5，最后一张的+5需减去
-            total_content_h = max(cumulative_y - 5, 0)
-            
-            last_entry = self._playhead_timeline[-1]
-            last_scroll_y = last_entry['scroll_y']
-            last_time_ms = last_entry['time_ms']
-            remaining_h = total_content_h - last_scroll_y
-
-            # 仅当剩余空白区域超过一个系统的高度时才加哨兵
-            # 避免末尾"多走一截"
-            if remaining_h > 50:  # 至少50px空白才值得加哨兵
-                first = self._playhead_timeline[0]
-                elapsed_y = last_scroll_y - first['scroll_y']
-                elapsed_t = max(last_time_ms - first['time_ms'], 1)
-                avg_speed = elapsed_y / elapsed_t
-                estimated_remaining_ms = remaining_h / max(avg_speed, 0.01)
-
-                sentinel = {
-                    'time_ms': last_time_ms + estimated_remaining_ms,
-                    'scroll_y': float(total_content_h),
-                    'page_idx': len(self._page_layouts) - 1,
-                    'sys_idx': 0, 'meas_idx': 0, 'beat_idx': 0,
-                    'x_center': 0, 'x_start': 0, 'x_end': 0,
-                    'y_top': 0, 'y_bottom': 0,
-                }
-                self._playhead_timeline.append(sentinel)
-                self._total_audio_duration_ms = sentinel['time_ms']
-
-            # === 性能优化: 预提取bisect关键排序列表 ===
-            # 原因: _update_playhead/_time_to_scroll_pos/_scroll_pos_to_time每帧(30fps)都需
-            #       对timeline做二分查找，之前每次都创建新列表 [e['time_ms'] for e in ...]，
-            #       造成O(n)内存分配+GC压力。现在一次性构建，后续直接复用。
-            self._timeline_times = [e['time_ms'] for e in self._playhead_timeline]
-            self._timeline_scroll_ys = [e['scroll_y'] for e in self._playhead_timeline]
-        else:
-            self._total_audio_duration_ms = 0.0
-            self._timeline_times = []
-            self._timeline_scroll_ys = []
+        # 更新主程序的时间线数据
+        self._playhead_timeline = timeline
+        self._total_audio_duration_ms = self.gtp_player.total_duration_ms
     
     def _update_playhead(self, time_ms: float = None)->None:
         """
-        根据当前播放时间更新光标位置
+        根据当前播放时间更新光标位置 - 委托给 GTPPlayer 处理
         
         参数:
-            time_ms: 当前音频时间(毫秒)。None则从synth_engine获取。
+            time_ms: 当前音频时间(毫秒)。None则从GTPPlayer获取。
         
         更新 self._playhead_info 为:
             (page_idx, sys_idx, meas_idx, beat_idx, x_in_page, progress_in_beat)
         其中 progress_in_beat ∈ [0,1) 表示当前拍内的进度。
+        
+        注意: 此方法已迁移到 gtp_engine/player.py 中的 GTPPlayer 类，
+              主程序仅作为薄封装层调用。
         """
-        if not self._playhead_timeline:
-            self._playhead_info = None
-            return
-        
-        # 获取当前时间
-        if time_ms is None and self._synth_engine:
-            time_ms = self._synth_engine.current_time_ms
-        if time_ms is None:
-            self._playhead_info = None
-            return
-        
-        # 二分查找: 找到 time_ms 对应的拍(使用预提取的排序列表，避免每帧O(n)分配)
-        idx = bisect.bisect_right(self._timeline_times, time_ms) - 1
-        
-        if idx < 0:
-            # 还没到第一个拍
-            entry = self._playhead_timeline[0]
-            self._playhead_info = (
-                entry['page_idx'], entry['sys_idx'], entry['meas_idx'],
-                -1, entry['x_start'], 0.0
-            )
-        elif idx >= len(self._playhead_timeline) - 1:
-            # 已超过最后一个拍
-            entry = self._playhead_timeline[-1]
-            self._playhead_info = (
-                entry['page_idx'], entry['sys_idx'], entry['meas_idx'],
-                entry['beat_idx'], entry['x_end'], 1.0
-            )
+        if self.gtp_player:
+            # 委托给GTPPlayer处理
+            info = self.gtp_player.update_playhead(time_ms)
+            self._playhead_info = info
         else:
-            # 在两个拍之间 → 插值计算精确X坐标
-            curr = self._playhead_timeline[idx]
-            next_e = self._playhead_timeline[idx + 1]
-            
-            dt = next_e['time_ms'] - curr['time_ms']
-            if dt > 0:
-                progress = (time_ms - curr['time_ms']) / dt
-            else:
-                progress = 0.0
-            
-            # X坐标线性插值
-            x_pos = curr['x_center'] + progress * (next_e['x_center'] - curr['x_center'])
-            
-            self._playhead_info = (
-                curr['page_idx'], curr['sys_idx'], curr['meas_idx'],
-                curr['beat_idx'], x_pos, progress
-            )
-
+            self._playhead_info = None
+    
     def _time_to_scroll_pos(self, time_ms: float)->float:
         """
-        根据音频时间(ms)计算对应的滚动Y位置
+        根据音频时间计算对应的滚动Y位置 - 委托给 GTPPlayer 处理
         
-        原理:
-          在 _playhead_timeline 中二分查找当前时间对应的拍，
-          通过线性插值获取精确的scroll_y值。
-          这使得滚动位置随音符时值自动变化：
-          - 音符密集区(16/32分音符): 相同时间→更大scroll_y变化 → 滚动更快
-          - 音符稀疏区(全/二分音符): 相同时间→更小scroll_y变化 → 滚动更慢
-          
         参数:
-            time_ms: 当前音频播放时间(毫秒)
-        
+            time_ms: 当前音频时间(毫秒)
+            
         返回:
-            对应的滚动Y位置(像素)，范围 [0, total_scroll_distance]
+            对应的滚动Y位置(像素)
         """
-        if not self._playhead_timeline or self.total_scroll_distance <= 0:
-            return 0.0
-
-        # 边界处理
-        if time_ms <= 0:
-            return 0.0
-        if time_ms >= self._playhead_timeline[-1]['time_ms']:
-            return float(self.total_scroll_distance)
-
-        # 二分查找时间位置(使用预提取的排序列表)
-        idx = bisect.bisect_right(self._timeline_times, time_ms) - 1
-
-        if idx < 0:
-            return 0.0
-        if idx >= len(self._playhead_timeline) - 1:
-            return float(self.total_scroll_distance)
-
-        # 线性插值
-        curr = self._playhead_timeline[idx]
-        next_e = self._playhead_timeline[idx + 1]
-        dt = next_e['time_ms'] - curr['time_ms']
-        if dt <= 0:
-            return curr['scroll_y']
-        t = (time_ms - curr['time_ms']) / dt
-        scroll_y = curr['scroll_y'] + t * (next_e['scroll_y'] - curr['scroll_y'])
-
-        # 映射到显示区域(减去可视区域高度的一半，让光标居中)
-        display_h = max(self.display_widget.height(), 100)
-        centered_pos = max(0, scroll_y - display_h / 2)
-
-        return min(centered_pos, float(self.total_scroll_distance))
+        if self.gtp_player:
+            return self.gtp_player.time_to_scroll_pos(
+                time_ms, 
+                self.total_scroll_distance, 
+                self.display_widget.height()
+            )
+        return 0.0
     
     def _scroll_pos_to_time(self, scroll_pos: float) -> float:
         """
-        根据滚动Y位置反推对应的音频时间(ms) — _time_to_scroll_pos的逆运算
-        
-        原理:
-          在 _playhead_timeline 中对 scroll_y 做二分查找，
-          通过线性插值获取精确的 time_ms 值。
-          这是 _time_to_scroll_pos() 的完全对称逆操作。
-        
-        为什么不能用线性比例 (pos/total * total_time)?
-          因为 scroll_y 与 time_ms 的关系是非线性的：
-          - 音符密集区(16/32分音符): 相同时间内scroll_y变化大 → 每像素对应少时间
-          - 音符稀疏区(全/二分音符): 相同时间内scroll_y变化小 → 每像素对应多时间
-          用线性比例会在密集区高估时间(音频跳到点击位置后面)，导致"提前"感
+        根据滚动Y位置反推对应的音频时间 - 委托给 GTPPlayer 处理
         
         参数:
-            scroll_pos: 滚动位置(像素)，格式与current_position一致(已减去display_h/2的居中值)
-        
+            scroll_pos: 滚动位置(像素)
+            
         返回:
             对应的音频时间(毫秒)
         """
-        if not self._playhead_timeline or self.total_scroll_distance <= 0:
-            return 0.0
+        if self.gtp_player:
+            return self.gtp_player.scroll_pos_to_time(
+                scroll_pos, 
+                self.total_scroll_distance, 
+                self.display_widget.height()
+            )
+        return 0.0
+    
+    # ========== 标注功能 ==========
+    
+    def _switch_track_annotations(self, old_track: int, new_track: int) -> None:
+        """切换音轨时保存/加载对应音轨的标注数据"""
+        # 保存旧音轨的标注
+        if old_track >= 0:
+            self._save_track_annotations(old_track)
         
-        # 边界处理
-        if scroll_pos <= 0:
-            return 0.0
-        if scroll_pos >= self.total_scroll_distance:
-            return self._total_audio_duration_ms
+        # 更新当前音轨索引
+        self.gtp_player.current_track = new_track
         
-        # 将居中位置还原为原始scroll_y(与_time_to_scroll_pos中的操作相反)
-        display_h = max(self.display_widget.height(), 100)
-        raw_scroll_y = scroll_pos + display_h / 2
+        # 加载新音轨的标注
+        self._load_track_annotations(new_track)
+    
+    def _save_track_annotations(self, track_index: int) -> None:
+        """保存指定音轨的标注数据到文件"""
+        if not self.annotations:
+            return
         
-        # 对scroll_y做二分查找(使用预提取的排序列表，与_time_to_scroll_pos对称)
-        idx = bisect.bisect_right(self._timeline_scroll_ys, raw_scroll_y) - 1
+        # 构建文件路径
+        base_name = os.path.splitext(os.path.basename(self.file_path))[0]
+        ann_file = os.path.join("annotations", f"{base_name}_track{track_index}.json")
         
-        if idx < 0:
-            return self._playhead_timeline[0]['time_ms']
-        if idx >= len(self._playhead_timeline) - 1:
-            return self._playhead_timeline[-1]['time_ms']
+        # 保存到文件
+        try:
+            os.makedirs("annotations", exist_ok=True)
+            with open(ann_file, 'w', encoding='utf-8') as f:
+                json.dump(self.annotations, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[标注] 保存失败: {e}")
+    
+    def _load_track_annotations(self, track_index: int) -> None:
+        """加载指定音轨的标注数据"""
+        base_name = os.path.splitext(os.path.basename(self.file_path))[0]
+        ann_file = os.path.join("annotations", f"{base_name}_track{track_index}.json")
         
-        # 线性插值(与_time_to_scroll_pos对称)
-        curr = self._playhead_timeline[idx]
-        next_e = self._playhead_timeline[idx + 1]
-        dy = next_e['scroll_y'] - curr['scroll_y']
-        if dy <= 0:
-            return curr['time_ms']
-        t = (raw_scroll_y - curr['scroll_y']) / dy
-        time_ms = curr['time_ms'] + t * (next_e['time_ms'] - curr['time_ms'])
-        
-        return time_ms
-
+        if os.path.exists(ann_file):
+            try:
+                with open(ann_file, 'r', encoding='utf-8') as f:
+                    self.annotations = json.load(f)
+            except Exception as e:
+                print(f"[标注] 加载失败: {e}")
+                self.annotations = []
+        else:
+            self.annotations = []
+    
     def _tick(self)->None:
         """
         播放定时器回调 - 每帧执行(已优化: 时间驱动滚动+图片缓存+节流UI)
@@ -3004,16 +2681,16 @@ class DisplayWindow(QMainWindow):
           1. 图片缩放缓存: paintEvent使用预缓存的scaled图片，避免每帧重新scale(CPU密集)
           2. UI节流: 进度条位置每帧更新(轻量)，页码同步/标签每3帧更新一次
         """
-        # === 判断是否使用时间驱动滚动(有音频引擎 + 有时间线) ===
+        # === 判断是否使用时间驱动滚动(有GTP播放器 + 有时间线) ===
         use_time_scroll = (
-            self._synth_engine is not None
-            and hasattr(self._synth_engine, 'current_time_ms')
+            self.gtp_player is not None
+            and self.gtp_player.is_audio_ready
             and len(self._playhead_timeline) >= 2
         )
 
         if use_time_scroll:
             # --- 时间驱动模式: 滚动位置由音乐时间决定 ---
-            audio_time_ms = self._synth_engine.current_time_ms
+            audio_time_ms = self.gtp_player.current_time_ms
             # 用速度曲线调整时间流逝速度(曲线加速=时间变快)
             if self.speed_curve.is_enabled and len(self.speed_curve.points) >= 2:
                 curve_speed = self._get_curve_speed()
@@ -3051,14 +2728,14 @@ class DisplayWindow(QMainWindow):
             if should_loop:
                 if self.loop_config.loop_type == 'all':
                     self.current_position = 0; self.play_time = 0
-                    if self._synth_engine:
-                        self._synth_engine.seek(0)
+                    if self.gtp_player:
+                        self.gtp_player.seek(0)
                 elif self.loop_config.loop_type == 'region':
                     start_pct = self.loop_config.start_position
                     target_time = total_dur * start_pct / 100
                     self.current_position = self.total_scroll_distance * start_pct / 100
-                    if self._synth_engine:
-                        self._synth_engine.seek(target_time)
+                    if self.gtp_player:
+                        self.gtp_player.seek(target_time)
             elif effective_time >= total_dur:
                 self.current_position = self.total_scroll_distance
                 self.stop_playback()
@@ -3283,20 +2960,14 @@ class DisplayWindow(QMainWindow):
             self.display_widget.update()
             
             # === 音频同步跳转 ===
-            # 仅在音频引擎已初始化且启用时执行seek
-            if self._synth_engine and self._audio_enabled and self._midi_converter and self._gtp_song:
+            # 仅在GTP播放器已初始化且启用时执行seek
+            if self.gtp_player and self.gtp_player.is_audio_ready:
                 try:
-                    # 获取当前模式的总时长
-                    if self._audio_mode == "all":
-                        total_ms = self._midi_converter.get_all_tracks_duration_ms(self._gtp_song)
-                    else:
-                        total_ms = self._midi_converter.get_total_duration_ms(
-                            self._gtp_song, self.gtp_current_track
-                        )
+                    total_ms = self.gtp_player.total_duration_ms
                     
                     if total_ms > 0:
                         target_ms = (pos / 100.0) * total_ms
-                        self._synth_engine.seek(target_ms)
+                        self.gtp_player.seek(target_ms)
                 except Exception as e:
                     print(f"[Audio] seek失败: {e}")
 
@@ -3377,8 +3048,8 @@ class DisplayWindow(QMainWindow):
         """
         if isinstance(self.file_path, str) and self.file_path:
             # GTP多轨文件: 文件名后追加 .t{track_idx}
-            if self.gtp_file_path:
-                return f"{self.file_path}.t{self.gtp_current_track}{ANNOTATION_EXT}"
+            if self.gtp_player and self.gtp_player.is_loaded:
+                return f"{self.file_path}.t{self.gtp_player.current_track}{ANNOTATION_EXT}"
             # 非GTP/单轨文件: 直接追加 .anno.json
             return self.file_path + ANNOTATION_EXT
         # 回退: 多图模式等无法确定源文件时，用旧路径
@@ -3472,8 +3143,9 @@ class DisplayWindow(QMainWindow):
             pass
 
         # 3. 加载目标轨标注(优先内存 > 文件 > 空列表)
-        # 先更新gtp_current_track到新轨道，以便_get_annotation_file_path返回正确路径
-        self.gtp_current_track = new_track
+        # 先更新GTP播放器的当前音轨索引
+        if self.gtp_player:
+            self.gtp_player.current_track = new_track
 
         if new_track in self._annotations_by_track and self._annotations_by_track[new_track]:
             # 内存中有缓存
@@ -3586,9 +3258,9 @@ class DisplayWindow(QMainWindow):
         dlg = ExportDialog(
             parent=self,
             src_name=os.path.basename(self.file_path) if isinstance(self.file_path, str) else "谱面",
-            is_gtp=bool(self.gtp_file_path),
+            is_gtp=bool(self.gtp_player and self.gtp_player.is_loaded),
             gtp_track_count=self.gtp_track_combo.count() if self.gtp_track_combo else 0,
-            current_track=self.gtp_current_track,
+            current_track=self.gtp_player.current_track if self.gtp_player else 0,
             total_pages=len([i for i in self.images if not i.isNull()])
         )
         if dlg.exec_() != QDialog.Accepted:
@@ -3664,12 +3336,12 @@ class DisplayWindow(QMainWindow):
             imgs, anns, label = self._get_page_range_images(page_mode)
             items.append((imgs, anns, ""))
 
-        elif track_mode == "all" and self.gtp_file_path:
-            from gtp_engine.renderer import TabRenderer
+        elif track_mode == "all" and self.gtp_player and self.gtp_player.is_loaded:
+            from ApolloTab.renderer import TabRenderer
             renderer = TabRenderer()
             for t_idx in range(self.gtp_track_combo.count()):
                 try:
-                    pixmaps = renderer.render_from_file(self.gtp_file_path, track_index=t_idx)
+                    pixmaps = renderer.render_from_file(self.gtp_player.file_path, track_index=t_idx)
                     valid_pixmaps = [p for p in pixmaps if not p.isNull()]
                     if page_mode[0] == "range":
                         valid_pixmaps = valid_pixmaps[page_mode[1]-1:page_mode[2]]
@@ -3680,11 +3352,11 @@ class DisplayWindow(QMainWindow):
                     print(f"警告: 渲染轨道{t_idx}失败: {e}")
 
         elif isinstance(track_mode, list):
-            from gtp_engine.renderer import TabRenderer
+            from ApolloTab.renderer import TabRenderer
             renderer = TabRenderer()
             for t_idx in track_mode:
                 try:
-                    pixmaps = renderer.render_from_file(self.gtp_file_path, track_index=t_idx)
+                    pixmaps = renderer.render_from_file(self.gtp_player.file_path, track_index=t_idx)
                     valid_pixmaps = [p for p in pixmaps if not p.isNull()]
                     if page_mode[0] == "range":
                         valid_pixmaps = valid_pixmaps[page_mode[1]-1:page_mode[2]]
@@ -3708,10 +3380,11 @@ class DisplayWindow(QMainWindow):
         """加载指定轨道的标注(从文件或内存缓存)"""
         if track_idx in self._annotations_by_track and self._annotations_by_track[track_idx]:
             return [Annotation(**asdict(a)) for a in self._annotations_by_track[track_idx]]
-        old_track = self.gtp_current_track
-        self.gtp_current_track = track_idx
-        fpath = self._get_annotation_file_path()
-        self.gtp_current_track = old_track
+        if self.gtp_player:
+            old_track = self.gtp_player.current_track
+            self.gtp_player.current_track = track_idx
+            fpath = self._get_annotation_file_path()
+            self.gtp_player.current_track = old_track
         if os.path.exists(fpath):
             try:
                 with open(fpath, 'r', encoding='utf-8') as f:
