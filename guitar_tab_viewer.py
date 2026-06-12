@@ -23,7 +23,7 @@
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
 
 创建日期: 2026-06-06
-最后修改: 2026-06-11 (v1.7.1 - 性能优化: 缓存/预提取列表/排序缓存/deepcopy替换)
+最后修改: 2026-06-12 (v1.9.0 - 多语言支持: I18n国际化系统/JSON翻译文件/语言切换UI)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -35,10 +35,11 @@
 兼容性: Windows / Linux / Docker (所有路径使用相对路径)
 
 项目结构:
-  guitar_tab_viewer.py   - 主程序(本文件)
+  guitar_tab_viewer.py   - 主程序(本文件，含I18n国际化类)
+  locales/               - 翻译文件目录(zh_CN.json/en_US.json)
   gtp_engine/            - GTP渲染引擎库(解析+渲染六线谱)
-  config/settings.json   - 用户配置(运行时自动生成)
-  data/annotations/      - 旧版标注数据存储(JSON格式，兼容保留)
+  config/settings.json   - 用户配置(含语言设置,运行时自动生成)
+  data/annotations/      - 标注数据存储(JSON格式)
   readme/                - 项目文档目录
 ============================================================
 """
@@ -142,6 +143,221 @@ class SpeedCurvePoint:
     """速度曲线控制点"""
     position: float = 0.0   # 位置百分比 (0-100)
     speed: float = 50.0     # 速度值
+
+
+# ============================================================
+# 国际化(I18n) - 多语言支持
+# ============================================================
+
+class I18n:
+    """
+    国际化翻译管理器（单例模式）
+    
+    功能:
+      1. 从 locales/ 目录加载JSON翻译文件(如 zh_CN.json, en_US.json)
+      2. 提供 t(key, **kwargs) 方法获取翻译文本，支持 {} 占位符格式化
+      3. 支持运行时语言切换，切换后通过 language_changed 信号通知UI刷新
+      4. 缺失翻译自动回退到中文(zh_CN)，确保UI不会出现空白字符串
+    
+    使用方式:
+      # 获取翻译文本
+      text = I18n.t("app.title")                    # 无占位符
+      text = I18n.t("messages.export_success_msg",  # 带占位符
+                   fmt="PDF", path="/tmp/a.pdf", count=3)
+      
+      # 切换语言
+      I18n.set_language("en_US")
+    
+    翻译文件格式 (locales/xx_XX.json):
+      {
+        "_meta": {"language": "zh_CN", "name": "简体中文"},
+        "app": {"title": "..."},
+        "toolbar": {"zoom": "缩放:", ...},
+        ...
+      }
+    
+    调整说明:
+      - 新增语言: 在 locales/ 下新建 xx_XX.json 文件即可
+      - 新增翻译项: 同时更新所有语言的JSON文件中的对应key
+      - 缺失key: 自动回退到zh_CN的值，控制台打印警告
+    """
+    
+    _instance = None           # 单例实例
+    _translations: dict = {}   # 当前加载的翻译字典 {key: value}
+    _current_lang: str = ""    # 当前语言代码 (如 "zh_CN", "en_US")
+    _locales_dir: str = ""     # 翻译文件目录路径
+    
+    # 语言切换信号 - 连接此信号可在语言变更时刷新UI
+    language_changed = None  # 类型: pyqtSignal(str)，延迟初始化（需在QApplication之后）
+    
+    def __new__(cls):
+        """单例模式 - 全程只创建一个实例"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        """初始化国际化管理器"""
+        if self._initialized:
+            return
+        self._initialized = True
+        
+        # 翻译文件目录: 项目根目录下的 locales/ 文件夹
+        # 使用相对路径，兼容 Windows/Linux/Docker
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self._locales_dir = os.path.join(base_dir, "locales")
+        
+        # 默认使用中文
+        self._current_lang = "zh_CN"
+        self._translations = {}
+        
+        # 加载默认语言翻译
+        self._load_language(self._current_lang)
+    
+    @classmethod
+    def t(cls, key: str, **kwargs) -> str:
+        """
+        获取翻译文本（类方法，可直接通过 I18n.t() 调用）
+        
+        参数:
+            key: 翻译键名，支持点号分隔的嵌套访问 (如 "app.title", "control_panel.play_btn")
+            **kwargs: 占位符参数，用于 .format() 格式化
+        
+        返回:
+            翻译后的文本字符串。如果key缺失则回退到中文，中文也缺失则返回原始key
+        
+        示例:
+            I18n.t("app.title")  → "TAB Score Viewer - 吉他谱查看器" (中文)
+            I18n.t("app.title")  → "TAB Score Viewer - Guitar Tab Viewer" (英文)
+            I18n.t("messages.track_switch_fail_msg", index=1, error="xxx")
+                          → "无法渲染音轨 1:\nxxx"
+        """
+        instance = cls()
+        
+        # 按点号分割key，逐级查找嵌套字典
+        value = instance._translations
+        for part in key.split('.'):
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                # 当前语言找不到 → 回退到中文
+                fallback = instance._get_fallback(key)
+                if fallback is not None:
+                    value = fallback
+                else:
+                    # 中文也没有 → 返回key本身并警告
+                    print(f"[I18n] 缺失翻译 key='{key}' (lang={instance._current_lang})")
+                    return key
+        
+        # 如果结果是字符串且有占位符参数，进行格式化
+        if isinstance(value, str) and kwargs:
+            try:
+                return value.format(**kwargs)
+            except (KeyError, IndexError) as e:
+                print(f"[I18n] 格式化失败 key='{key}', error={e}")
+                return value
+        
+        return value if isinstance(value, str) else str(value)
+    
+    @classmethod
+    def set_language(cls, lang_code: str) -> bool:
+        """
+        切换当前语言（类方法）
+        
+        参数:
+            lang_code: 目标语言代码，如 "zh_CN", "en_US"
+                     必须与 locales/ 下的JSON文件名(不含扩展名)一致
+        
+        返回:
+            True 切换成功, False 失败(语言文件不存在)
+        
+        注意: 切换成功后会发射 language_changed 信号，
+              UI组件应连接此信号以刷新显示文本。
+        """
+        instance = cls()
+        if lang_code == instance._current_lang:
+            return True  # 相同语言无需切换
+        
+        success = instance._load_language(lang_code)
+        if success:
+            old_lang = instance._current_lang
+            instance._current_lang = lang_code
+            print(f"[I18n] 语言已切换: {old_lang} → {lang_code}")
+            
+            # 发射语言变更信号（通知UI刷新）
+            if instance.language_changed is not None:
+                try:
+                    instance.language_changed.emit(lang_code)
+                except Exception:
+                    pass
+            return True
+        else:
+            print(f"[I18n] 语言文件不存在: {lang_code}.json")
+            return False
+    
+    @classmethod
+    def current_language(cls) -> str:
+        """获取当前语言代码"""
+        return cls()._current_lang
+    
+    @classmethod
+    def available_languages(cls) -> list:
+        """
+        获取所有可用语言列表
+        
+        返回:
+            [(code, name), ...] 如 [("zh_CN", "简体中文"), ("en_US", "English")]
+        """
+        instance = cls()
+        languages = []
+        if os.path.isdir(instance._locales_dir):
+            for fname in sorted(os.listdir(instance._locales_dir)):
+                if fname.endswith('.json'):
+                    code = fname[:-5]  # 去掉 ".json"
+                    fpath = os.path.join(instance._locales_dir, fname)
+                    try:
+                        with open(fpath, 'r', encoding='utf-8') as f:
+                            meta = json.load(f).get('_meta', {})
+                            name = meta.get('name', code)
+                            languages.append((code, name))
+                    except Exception:
+                        languages.append((code, code))
+        return languages
+    
+    def _load_language(self, lang_code: str) -> bool:
+        """加载指定语言的翻译文件"""
+        filepath = os.path.join(self._locales_dir, f"{lang_code}.json")
+        if not os.path.exists(filepath):
+            return False
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                self._translations = json.load(f)
+            # 移除元数据键（不影响翻译查找）
+            self._translations.pop('_meta', None)
+            return True
+        except Exception as e:
+            print(f"[I18n] 加载语言文件失败 '{filepath}': {e}")
+            return False
+    
+    def _get_fallback(self, key: str):
+        """回退到中文(zh_CN)查找翻译"""
+        if self._current_lang == "zh_CN":
+            return None  # 已经是中文，无需回退
+        filepath = os.path.join(self._locales_dir, "zh_CN.json")
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                zh_data = json.load(f)
+            zh_data.pop('_meta', None)
+            value = zh_data
+            for part in key.split('.'):
+                if isinstance(value, dict) and part in value:
+                    value = value[part]
+                else:
+                    return None
+            return value
+        except Exception:
+            return None
 
 
 @dataclass
@@ -589,7 +805,7 @@ class SpeedCurveEditor(QDialog):
         self.init_ui()
 
     def init_ui(self) -> None:
-        self.setWindowTitle("速度曲线编辑器")
+        self.setWindowTitle(I18n.t("speed_curve.window_title"))
         self.setMinimumSize(680, 480)
         self.setStyleSheet(f"""
             QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
@@ -606,7 +822,7 @@ class SpeedCurveEditor(QDialog):
 
         # 启用开关
         top_row = QHBoxLayout()
-        self.enable_check = QCheckBox("启用速度曲线模式")
+        self.enable_check = QCheckBox(I18n.t("speed_curve.enable_check"))
         self.enable_check.setChecked(self.curve_config.is_enabled)
         self.enable_check.stateChanged.connect(self._on_enable_changed)
         top_row.addWidget(self.enable_check)
@@ -614,7 +830,7 @@ class SpeedCurveEditor(QDialog):
         layout.addLayout(top_row)
 
         # 曲线画布
-        canvas_group = QGroupBox("速度曲线 (点击添加控制点，拖动调整，右键删除)")
+        canvas_group = QGroupBox(I18n.t("speed_curve.canvas_group"))
         canvas_layout = QVBoxLayout(canvas_group)
         self.canvas_widget = _SpeedCurveCanvas(self, self.curve_config)
         self.canvas_widget.setMinimumHeight(280)
@@ -623,25 +839,22 @@ class SpeedCurveEditor(QDialog):
         layout.addWidget(canvas_group)
 
         # 预设按钮
-        btn_group = QGroupBox("预设曲线")
+        btn_group = QGroupBox(I18n.t("speed_curve.preset_group"))
         btn_layout = QHBoxLayout(btn_group)
-        for name, fn in [("线性", self._preset_linear), ("渐入", self._preset_ease_in),
-                         ("渐出", self._preset_ease_out), ("渐入渐出", self._preset_ease_in_out)]:
+        for name, fn in [(I18n.t("speed_curve.preset_linear"), self._preset_linear), (I18n.t("speed_curve.preset_ease_in"), self._preset_ease_in),
+                         (I18n.t("speed_curve.preset_ease_out"), self._preset_ease_out), (I18n.t("speed_curve.preset_ease_in_out"), self._preset_ease_in_out)]:
             btn = QPushButton(name)
             btn.clicked.connect(fn)
             btn.setMaximumWidth(75)
             btn_layout.addWidget(btn)
-        clear_btn = QPushButton("清除全部")
+        clear_btn = QPushButton(I18n.t("speed_curve.clear_all"))
         clear_btn.setStyleSheet(f"background-color: {THEME_COLORS['danger']};")
         clear_btn.clicked.connect(self._clear_all)
         btn_layout.addWidget(clear_btn)
         layout.addWidget(btn_group)
 
         # 说明
-        hint = QLabel(
-            "提示: X轴=播放进度(%) | Y轴=速度值(ms)\n"
-            "Y值越小=播放越快。适合制作渐入/渐出等变速效果用于练习。"
-        )
+        hint = QLabel(I18n.t("speed_curve.hint"))
         hint.setStyleSheet(f"color: {THEME_COLORS['text_muted']}; font-size: 11px;")
         layout.addWidget(hint)
 
@@ -833,13 +1046,13 @@ class AnnotationCreateDialog(QDialog):
         super().__init__(parent)
         self.annotation = Annotation(
             id=f"ann_{uuid.uuid4().hex[:8]}", x=x, y=y,
-            text="新标注-双击编辑修改内容"
+            text=I18n.t("annotation_create.default_text")
         )
         self._temp_color = self.annotation.color
         self.init_ui()
 
     def init_ui(self)->None:
-        self.setWindowTitle("新建标注"); self.setFixedSize(420,360)
+        self.setWindowTitle(I18n.t("annotation_create.window_title")); self.setFixedSize(420,360)
         self.setStyleSheet(f"""
             QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
             QLabel {{ color: {THEME_COLORS['text_primary']}; font-family: 'Microsoft YaHei'; }}
@@ -855,41 +1068,41 @@ class AnnotationCreateDialog(QDialog):
         layout=QVBoxLayout(self)
         
         # 位置信息(只读显示)
-        pg=QGroupBox("位置坐标"); pl=QHBoxLayout(pg)
-        pl.addWidget(QLabel(f"X: {self.annotation.x:.1%}  Y: {self.annotation.y:.1%}")); layout.addWidget(pg)
+        pg=QGroupBox(I18n.t("annotation_create.position_group")); pl=QHBoxLayout(pg)
+        pl.addWidget(QLabel(I18n.t("annotation_create.coord_display", x=self.annotation.x, y=self.annotation.y))); layout.addWidget(pg)
         
         # 标注内容
-        tg=QGroupBox("标注内容"); tl=QVBoxLayout(tg)
+        tg=QGroupBox(I18n.t("annotation_create.content_group")); tl=QVBoxLayout(tg)
         self.text_edit=QTextEdit(); self.text_edit.setPlainText(self.annotation.text)
-        self.text_edit.setPlaceholderText("输入演奏技巧说明..."); tl.addWidget(self.text_edit); layout.addWidget(tg)
+        self.text_edit.setPlaceholderText(I18n.t("annotation_create.placeholder")); tl.addWidget(self.text_edit); layout.addWidget(tg)
         
         # 字体设置
-        fg=QGroupBox("字体"); fl=QHBoxLayout(fg)
-        fl.addWidget(QLabel("大小:")); self.font_size_spin=QSpinBox()
+        fg=QGroupBox(I18n.t("annotation_create.font_group")); fl=QHBoxLayout(fg)
+        fl.addWidget(QLabel(I18n.t("annotation_create.size_label"))); self.font_size_spin=QSpinBox()
         self.font_size_spin.setRange(8,72); self.font_size_spin.setValue(self.annotation.font_size); fl.addWidget(self.font_size_spin)
-        self.bold_check=QCheckBox("加粗"); self.bold_check.setChecked(self.annotation.is_bold); fl.addWidget(self.bold_check)
+        self.bold_check=QCheckBox(I18n.t("annotation_create.bold_check")); self.bold_check.setChecked(self.annotation.is_bold); fl.addWidget(self.bold_check)
         fl.addStretch(); layout.addWidget(fg)
         
         # 颜色选择
-        cg=QGroupBox("颜色"); cl=QHBoxLayout(cg)
-        self.color_btn=QPushButton("选择颜色"); self.color_btn.clicked.connect(self._pick_color)
+        cg=QGroupBox(I18n.t("annotation_create.color_group")); cl=QHBoxLayout(cg)
+        self.color_btn=QPushButton(I18n.t("annotation_create.color_btn")); self.color_btn.clicked.connect(self._pick_color)
         self.color_btn.setStyleSheet(f"background-color:{self.annotation.color};color:white;")
         cl.addWidget(self.color_btn); cl.addStretch(); layout.addWidget(cg)
 
         # 按钮区域: 确定 / 取消 (无删除按钮，因为是新建)
         btn_layout=QHBoxLayout()
-        ok_btn=QPushButton("✓ 创建标注")
+        ok_btn=QPushButton(I18n.t("annotation_create.create_btn"))
         ok_btn.clicked.connect(self.accept)
         btn_layout.addWidget(ok_btn)
 
-        cancel_btn=QPushButton("取消")
+        cancel_btn=QPushButton(I18n.t("annotation_create.cancel_btn"))
         cancel_btn.clicked.connect(self.reject)
         cancel_btn.setStyleSheet(f"background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_secondary']};")
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
     def _pick_color(self)->None:
-        c=QColorDialog.getColor(QColor(self._temp_color),self,"选择标注颜色")
+        c=QColorDialog.getColor(QColor(self._temp_color),self,I18n.t("annotation_create.color_dialog_title"))
         if c.isValid(): self._temp_color=c.name(); self.color_btn.setStyleSheet(f"background-color:{self._temp_color};color:white;")
 
     def get_annotation(self)->Annotation:
@@ -924,14 +1137,14 @@ class AnnotationEditDialog(QDialog):
         super().__init__(parent)
         self.annotation = annotation or Annotation(
             id=f"ann_{uuid.uuid4().hex[:8]}", x=0.1, y=0.1,
-            text="双击谱面可快速添加标注"
+            text=I18n.t("annotation_edit.default_text")
         )
         self._temp_color=self.annotation.color
         self.should_delete = False  # 标记用户是否点击了删除按钮
         self.init_ui()
 
     def init_ui(self)->None:
-        self.setWindowTitle("编辑标注"); self.setFixedSize(420,400)
+        self.setWindowTitle(I18n.t("annotation_edit.window_title")); self.setFixedSize(420,400)
         self.setStyleSheet(f"""
             QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
             QLabel {{ color: {THEME_COLORS['text_primary']}; font-family: 'Microsoft YaHei'; }}
@@ -947,47 +1160,47 @@ class AnnotationEditDialog(QDialog):
             QPushButton#deleteBtn:hover {{ background-color: #DC2626; }}
         """)
         layout=QVBoxLayout(self)
-        pg=QGroupBox("位置坐标"); pl=QHBoxLayout(pg)
-        pl.addWidget(QLabel(f"X: {self.annotation.x:.1%}  Y: {self.annotation.y:.1%}")); layout.addWidget(pg)
-        tg=QGroupBox("标注内容"); tl=QVBoxLayout(tg)
+        pg=QGroupBox(I18n.t("annotation_edit.position_group")); pl=QHBoxLayout(pg)
+        pl.addWidget(QLabel(I18n.t("annotation_edit.coord_display", x=self.annotation.x, y=self.annotation.y))); layout.addWidget(pg)
+        tg=QGroupBox(I18n.t("annotation_edit.content_group")); tl=QVBoxLayout(tg)
         self.text_edit=QTextEdit(); self.text_edit.setPlainText(self.annotation.text)
-        self.text_edit.setPlaceholderText("输入演奏技巧说明..."); tl.addWidget(self.text_edit); layout.addWidget(tg)
-        fg=QGroupBox("字体"); fl=QHBoxLayout(fg)
-        fl.addWidget(QLabel("大小:")); self.font_size_spin=QSpinBox()
+        self.text_edit.setPlaceholderText(I18n.t("annotation_edit.placeholder")); tl.addWidget(self.text_edit); layout.addWidget(tg)
+        fg=QGroupBox(I18n.t("annotation_edit.font_group")); fl=QHBoxLayout(fg)
+        fl.addWidget(QLabel(I18n.t("annotation_edit.size_label"))); self.font_size_spin=QSpinBox()
         self.font_size_spin.setRange(8,72); self.font_size_spin.setValue(self.annotation.font_size); fl.addWidget(self.font_size_spin)
-        self.bold_check=QCheckBox("加粗"); self.bold_check.setChecked(self.annotation.is_bold); fl.addWidget(self.bold_check)
+        self.bold_check=QCheckBox(I18n.t("annotation_edit.bold_check")); self.bold_check.setChecked(self.annotation.is_bold); fl.addWidget(self.bold_check)
         fl.addStretch(); layout.addWidget(fg)
-        cg=QGroupBox("颜色"); cl=QHBoxLayout(cg)
-        self.color_btn=QPushButton("选择颜色"); self.color_btn.clicked.connect(self._pick_color)
+        cg=QGroupBox(I18n.t("annotation_edit.color_group")); cl=QHBoxLayout(cg)
+        self.color_btn=QPushButton(I18n.t("annotation_edit.color_btn")); self.color_btn.clicked.connect(self._pick_color)
         self.color_btn.setStyleSheet(f"background-color:{self.annotation.color};color:white;")
         cl.addWidget(self.color_btn); cl.addStretch(); layout.addWidget(cg)
 
         # 按钮区域: 确定 / 删除 / 取消 (编辑模式特有删除按钮)
         btn_layout=QHBoxLayout()
-        ok_btn=QPushButton("确定保存")
+        ok_btn=QPushButton(I18n.t("annotation_edit.save_btn"))
         ok_btn.clicked.connect(self.accept)
         btn_layout.addWidget(ok_btn)
 
-        del_btn=QPushButton("🗑 删除此标注")
+        del_btn=QPushButton(I18n.t("annotation_edit.delete_btn"))
         del_btn.setObjectName("deleteBtn")
         del_btn.clicked.connect(self._on_delete_clicked)
         btn_layout.addWidget(del_btn)
 
-        cancel_btn=QPushButton("取消")
+        cancel_btn=QPushButton(I18n.t("annotation_edit.cancel_btn"))
         cancel_btn.clicked.connect(self.reject)
         cancel_btn.setStyleSheet(f"background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_secondary']};")
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
     def _pick_color(self)->None:
-        c=QColorDialog.getColor(QColor(self._temp_color),self,"选择标注颜色")
+        c=QColorDialog.getColor(QColor(self._temp_color),self,I18n.t("annotation_edit.color_dialog_title"))
         if c.isValid(): self._temp_color=c.name(); self.color_btn.setStyleSheet(f"background-color:{self._temp_color};color:white;")
 
     def _on_delete_clicked(self)->None:
         """点击删除按钮: 设置标记并以Accepted状态关闭(由调用方执行实际删除)"""
         reply = QMessageBox.question(
-            self, "确认删除",
-            "确定要删除这个标注吗？\n此操作可以撤销(Ctrl+Z)。",
+            self, I18n.t("messages.delete_confirm_title"),
+            I18n.t("messages.delete_confirm_msg"),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -1022,7 +1235,7 @@ class AnnotationManagerDialog(QDialog):
         self.init_ui()
 
     def init_ui(self)->None:
-        self.setWindowTitle("标注管理器"); self.setMinimumSize(550,400)
+        self.setWindowTitle(I18n.t("annotation_manager.window_title")); self.setMinimumSize(550,400)
         self.setStyleSheet(f"""
             QDialog{{background-color:{THEME_COLORS['bg_primary']};}}
             QLabel{{color:{THEME_COLORS['text_primary']};font-family:'Microsoft YaHei';}}
@@ -1036,14 +1249,14 @@ class AnnotationManagerDialog(QDialog):
             QPushButton#delBtn:hover{{background-color:#DC2626;}}
         """)
         layout=QVBoxLayout(self)
-        title=QLabel(f"标注列表({len(self.annotations)}个)")
+        title=QLabel(I18n.t("annotation_manager.list_title", count=len(self.annotations)))
         title.setStyleSheet(f"font-size:15px;font-weight:bold;color:{THEME_COLORS['primary_light']};")
         layout.addWidget(title)
         self.list_widget=QListWidget(); self._populate_list()
         self.list_widget.itemDoubleClicked.connect(self._edit_item); layout.addWidget(self.list_widget)
         bl=QHBoxLayout()
-        for txt,slot,st in[("+ 新增",self._add_new,""),("编辑",lambda:self._edit_item(self.list_widget.currentItem()), ""),
-                             ("删除",self._delete_item,"#delBtn"),("清空",self._clear_all,"#delBtn")]:
+        for txt,slot,st in[(I18n.t("annotation_manager.add_btn"),self._add_new,""),(I18n.t("annotation_manager.edit_btn"),lambda:self._edit_item(self.list_widget.currentItem()), ""),
+                             (I18n.t("annotation_manager.delete_btn"),self._delete_item,"#delBtn"),(I18n.t("annotation_manager.clear_btn"),self._clear_all,"#delBtn")]:
             b=QPushButton(txt)
             if st:b.setObjectName(st)
             b.clicked.connect(slot);bl.addWidget(b)
@@ -1124,7 +1337,7 @@ class AnnotationManagerDialog(QDialog):
             self.annotationsChanged.emit(self.annotations)
 
     def _clear_all(self)->None:
-        if QMessageBox.question(self,"确认","清空所有标注?",QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
+        if QMessageBox.question(self,I18n.t("messages.clear_all_confirm_title"),I18n.t("messages.clear_all_confirm_msg"),QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
             self._save_snapshot()
             self.annotations.clear();self._populate_list();self.annotationsChanged.emit(self.annotations)
 
@@ -1503,7 +1716,7 @@ class DisplayWidget(QWidget):
             painter.setPen(QColor(THEME_COLORS['text_muted']))
             painter.setFont(QFont("Microsoft YaHei",15))
             painter.drawText(self.rect(),Qt.AlignCenter,
-                "请打开吉他谱文件\n支持: PNG,JPG,JPEG,WEBP,PDF,GP3/GP4/GP5/GPX")
+                I18n.t("messages.open_file_hint"))
             painter.end(); return
 
         ww=self.width()
@@ -1534,7 +1747,7 @@ class DisplayWidget(QWidget):
             painter.fillRect(self.rect(),QColor(0,0,0,120))
             painter.setPen(QColor(THEME_COLORS['primary']))
             painter.setFont(QFont("Microsoft YaHei",18))
-            painter.drawText(self.rect(),Qt.AlignCenter,"加载中...")
+            painter.drawText(self.rect(),Qt.AlignCenter,I18n.t("messages.loading"))
         painter.end()
 
     def _draw_annotations(self,painter:QPainter)->None:
@@ -1940,7 +2153,7 @@ class DisplayWindow(QMainWindow):
 
     def init_ui(self)->None:
         """初始化用户界面"""
-        self.setWindowTitle('TAB Score Viewer - 吉他谱查看器')
+        self.setWindowTitle(I18n.t("app.title"))
         self.setGeometry(150,80,1100,850)
         self._apply_theme()
 
@@ -1995,8 +2208,8 @@ class DisplayWindow(QMainWindow):
         tb=QHBoxLayout();tb.setSpacing(10)
 
         # 文件名
-        fname=os.path.basename(self.file_path) if isinstance(self.file_path,str) else "多张图片"
-        self.file_label=QLabel(f"📄 {fname}")
+        fname=os.path.basename(self.file_path) if isinstance(self.file_path,str) else I18n.t("app.multi_images")
+        self.file_label=QLabel(I18n.t("toolbar.file_label", name=fname))
         self.file_label.setStyleSheet(f"font-size:14px;font-weight:bold;color:{THEME_COLORS['primary_light']};")
         tb.addWidget(self.file_label)
 
@@ -2010,16 +2223,16 @@ class DisplayWindow(QMainWindow):
         # 音频播放模式按钮（仅GTP文件显示，默认隐藏）
         # 3种模式: 全轨并轨(默认) / 仅当前轨 / 关闭音频
         self.audio_btn = QToolButton()
-        self.audio_btn.setText("🔊 全轨")
-        self.audio_btn.setToolTip("点击切换音频模式\n全轨并轨 / 仅当前轨 / 关闭音频")
+        self.audio_btn.setText(I18n.t("toolbar.audio_all"))
+        self.audio_btn.setToolTip(I18n.t("toolbar.audio_tooltip"))
         self.audio_btn.setPopupMode(QToolButton.InstantPopup)  # 点击即弹出菜单
         self.audio_btn.setVisible(False)  # 非GTP文件时隐藏
         
         # 创建下拉菜单
         audio_menu = QMenu(self)
-        self._audio_action_all = QAction("🔊 全轨并轨", self, checkable=True, checked=True)
-        self._audio_action_current = QAction("🎸 仅当前轨", self, checkable=True)
-        self._audio_action_off = QAction("🔇 关闭音频", self, checkable=True)
+        self._audio_action_all = QAction(I18n.t("toolbar.audio_all_menu"), self, checkable=True, checked=True)
+        self._audio_action_current = QAction(I18n.t("toolbar.audio_current_menu"), self, checkable=True)
+        self._audio_action_off = QAction(I18n.t("toolbar.audio_off_menu"), self, checkable=True)
         
         self._audio_action_all.triggered.connect(lambda: self._set_audio_mode("all"))
         self._audio_action_current.triggered.connect(lambda: self._set_audio_mode("current"))
@@ -2034,7 +2247,7 @@ class DisplayWindow(QMainWindow):
         tb.addStretch()
 
         # 缩放滑块
-        tb.addWidget(QLabel("缩放:"))
+        tb.addWidget(QLabel(I18n.t("toolbar.zoom")))
         self.zoom_slider=ModernSlider(Qt.Horizontal,'primary')
         self.zoom_slider.setRange(50,200);self.zoom_slider.setValue(100)
         self.zoom_slider.setMaximumWidth(120)
@@ -2042,18 +2255,18 @@ class DisplayWindow(QMainWindow):
         tb.addWidget(self.zoom_slider)
 
         # 标注按钮
-        self.annotation_btn=ModernButton("📝 标注",'accent')
+        self.annotation_btn=ModernButton(I18n.t("toolbar.annotation_btn"),'accent')
         self.annotation_btn.clicked.connect(self._open_annotation_manager)
         tb.addWidget(self.annotation_btn)
 
         # 导出按钮(A4 PNG/PDF，含标注)
-        self.export_btn=ModernButton("💾 导出",'primary')
-        self.export_btn.setToolTip("导出当前谱面(含标注)为A4图片或PDF")
+        self.export_btn=ModernButton(I18n.t("toolbar.export_btn"),'primary')
+        self.export_btn.setToolTip(I18n.t("toolbar.export_tooltip"))
         self.export_btn.clicked.connect(self._export_to_a4)
         tb.addWidget(self.export_btn)
 
         # 速度曲线按钮
-        self.curve_btn=ModernButton("📊 速度曲线",'primary')
+        self.curve_btn=ModernButton(I18n.t("toolbar.curve_btn"),'primary')
         self.curve_btn.clicked.connect(self._open_speed_curve_editor)
         tb.addWidget(self.curve_btn)
 
@@ -2065,44 +2278,44 @@ class DisplayWindow(QMainWindow):
         layout=QVBoxLayout(panel);layout.setSpacing(10)
 
         # === 播放控制 ===
-        pg=QGroupBox("播放控制");pl=QVBoxLayout(pg)
+        pg=QGroupBox(I18n.t("control_panel.playback_control"));pl=QVBoxLayout(pg)
         btn_row=QHBoxLayout()
-        self.play_btn=ModernButton("▶ 播放",'success');self.play_btn.clicked.connect(self.toggle_playback)
-        self.stop_btn=ModernButton("⏹ 停止",'danger');self.stop_btn.clicked.connect(self.stop_playback);self.stop_btn.setEnabled(False)
+        self.play_btn=ModernButton(I18n.t("control_panel.play_btn"),'success');self.play_btn.clicked.connect(self.toggle_playback)
+        self.stop_btn=ModernButton(I18n.t("control_panel.stop_btn"),'danger');self.stop_btn.clicked.connect(self.stop_playback);self.stop_btn.setEnabled(False)
         btn_row.addWidget(self.play_btn);btn_row.addWidget(self.stop_btn);pl.addLayout(btn_row)
 
         # 循环模式
-        loop_row=QHBoxLayout();loop_row.addWidget(QLabel("循环:"))
+        loop_row=QHBoxLayout();loop_row.addWidget(QLabel(I18n.t("control_panel.loop_label")))
         self.loop_combo=QComboBox()
-        self.loop_combo.addItems(["不循环","全局循环","区域循环(A-B)"])
+        self.loop_combo.addItems([I18n.t("control_panel.loop_no_loop"),I18n.t("control_panel.loop_global"),I18n.t("control_panel.loop_ab")])
         self.loop_combo.currentIndexChanged.connect(self._on_loop_mode_changed)
         loop_row.addWidget(self.loop_combo);pl.addLayout(loop_row)
 
         # A-B点按钮
         ab_row=QHBoxLayout()
-        self.set_a_btn=ModernButton("设A点",'warning');self.set_a_btn.clicked.connect(lambda:self._set_ab_point('a'))
-        self.set_b_btn=ModernButton("设B点",'warning');self.set_b_btn.clicked.connect(lambda:self._set_ab_point('b'))
-        self.clear_ab_btn=ModernButton("清除AB",'text_muted');self.clear_ab_btn.clicked.connect(self._clear_ab_points)
+        self.set_a_btn=ModernButton(I18n.t("control_panel.set_a_btn"),'warning');self.set_a_btn.clicked.connect(lambda:self._set_ab_point('a'))
+        self.set_b_btn=ModernButton(I18n.t("control_panel.set_b_btn"),'warning');self.set_b_btn.clicked.connect(lambda:self._set_ab_point('b'))
+        self.clear_ab_btn=ModernButton(I18n.t("control_panel.clear_ab_btn"),'text_muted');self.clear_ab_btn.clicked.connect(self._clear_ab_points)
         ab_row.addWidget(self.set_a_btn);ab_row.addWidget(self.set_b_btn);ab_row.addWidget(self.clear_ab_btn)
         pl.addLayout(ab_row)
         layout.addWidget(pg)
 
         # === 速度控制(非GTP文件显示，GTP文件由BPM驱动自动隐藏) ===
-        self.speed_group_box=QGroupBox("播放速度");sl=QVBoxLayout(self.speed_group_box)
-        sr=QHBoxLayout();sr.addWidget(QLabel("速度:"))
+        self.speed_group_box=QGroupBox(I18n.t("control_panel.speed_group"));sl=QVBoxLayout(self.speed_group_box)
+        sr=QHBoxLayout();sr.addWidget(QLabel(I18n.t("control_panel.speed_label")))
         self.speed_spin=QSpinBox();self.speed_spin.setRange(350,700)
-        self.speed_spin.setValue(self.base_speed);self.speed_spin.setSuffix(" ms")
+        self.speed_spin.setValue(self.base_speed);self.speed_spin.setSuffix(I18n.t("control_panel.speed_suffix"))
         self.speed_spin.valueChanged.connect(self._on_speed_changed)
         sr.addWidget(self.speed_spin);sl.addLayout(sr)
 
-        self.curve_status_label=QLabel("速度曲线: 未启用")
+        self.curve_status_label=QLabel(I18n.t("control_panel.curve_status_disabled"))
         self.curve_status_label.setStyleSheet(f"color:{THEME_COLORS['text_muted']};font-size:11px;")
         sl.addWidget(self.curve_status_label)
         layout.addWidget(self.speed_group_box)  # 使用实例变量以便动态控制可见性
 
         # === 状态信息 ===
-        ig=QGroupBox("状态信息");il=QVBoxLayout(ig)
-        self.position_label=QLabel("位置: 0.0%");self.time_label=QLabel("时间: 00:00")
+        ig=QGroupBox(I18n.t("control_panel.status_info"));il=QVBoxLayout(ig)
+        self.position_label=QLabel(I18n.t("control_panel.position_label", pct="0.0"));self.time_label=QLabel(I18n.t("control_panel.time_label", time="00:00"))
         il.addWidget(self.position_label);il.addWidget(self.time_label)
         self.ab_info_label=QLabel("")
         self.ab_info_label.setStyleSheet(f"color:{THEME_COLORS['accent']};font-size:11px;")
@@ -2110,10 +2323,8 @@ class DisplayWindow(QMainWindow):
         layout.addWidget(ig)
 
         # 快捷键帮助
-        hg=QGroupBox("快捷键");hl=QVBoxLayout(hg)
-        help_txt=QLabel(
-            "空格: 播放/暂停\n↑↓: 调整位置\n←→: 微调速度\nESC: 关闭\n双击谱面: 添加标注"
-        )
+        hg=QGroupBox(I18n.t("control_panel.shortcut_group"));hl=QVBoxLayout(hg)
+        help_txt=QLabel(I18n.t("control_panel.shortcut_help"))
         help_txt.setStyleSheet(f"color:{THEME_COLORS['text_muted']};font-size:11px;")
         hl.addWidget(help_txt);layout.addWidget(hg)
         layout.addStretch()
@@ -2353,12 +2564,12 @@ class DisplayWindow(QMainWindow):
                 self.gtp_player.rebuild_audio_events()
 
         except Exception as e:
-            QMessageBox.warning(self, "音轨切换失败", f"无法渲染音轨 {index+1}:\n{str(e)}")
+            QMessageBox.warning(self, I18n.t("messages.track_switch_fail"), I18n.t("messages.track_switch_fail_msg", index=index+1, error=str(e)))
 
     def _on_content_load_error(self,msg:str)->None:
         """加载失败回调"""
         self.is_loading=False
-        QMessageBox.critical(self,"加载错误",f"无法加载文件:\n{msg}")
+        QMessageBox.critical(self,I18n.t("messages.load_error"),I18n.t("messages.load_error_msg", msg=msg))
 
     def update_content(self,file_path,file_type:str,speed:int)->None:
         """更新显示内容"""
@@ -2390,7 +2601,7 @@ class DisplayWindow(QMainWindow):
         # Phase 3: 同时启动音频引擎
         if self.gtp_player and self.gtp_player.is_audio_ready:
             self.gtp_player.play()
-        self.play_btn.setText("⏸ 暂停")
+        self.play_btn.setText(I18n.t("control_panel.pause_btn"))
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['warning']};")
         self.stop_btn.setEnabled(True)
 
@@ -2423,7 +2634,7 @@ class DisplayWindow(QMainWindow):
         # Phase 3: 同时停止GTP播放器
         if self.gtp_player and self.gtp_player.is_audio_ready:
             self.gtp_player.stop()
-        self.play_btn.setText("▶ 播放")
+        self.play_btn.setText(I18n.t("control_panel.play_btn"))
         self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['success']};")
         self.stop_btn.setEnabled(False)
 
@@ -2449,7 +2660,7 @@ class DisplayWindow(QMainWindow):
         
         if not success:
             self.audio_btn.setEnabled(False)
-            self.audio_btn.setToolTip("音频引擎初始化失败，请检查依赖库安装")
+            self.audio_btn.setToolTip(I18n.t("toolbar.audio_error_tooltip"))
             return
         
         # 更新时间线数据
@@ -2502,19 +2713,19 @@ class DisplayWindow(QMainWindow):
         
         # 更新按钮文字和样式
         if mode == "all":
-            self.audio_btn.setText("🔊 全轨")
+            self.audio_btn.setText(I18n.t("toolbar.audio_all"))
             self.audio_btn.setStyleSheet(
                 f"QToolButton{{background-color:{THEME_COLORS['accent']};"
                 f"border-radius:4px;padding:4px 10px;}}"
             )
         elif mode == "current":
-            self.audio_btn.setText("🎸 当前轨")
+            self.audio_btn.setText(I18n.t("toolbar.audio_current"))
             self.audio_btn.setStyleSheet(
                 f"QToolButton{{background-color:{THEME_COLORS['primary']};"
                 f"border-radius:4px;padding:4px 10px;}}"
             )
         else:  # "off"
-            self.audio_btn.setText("🔇 关闭")
+            self.audio_btn.setText(I18n.t("toolbar.audio_off"))
             self.audio_btn.setStyleSheet("")
     
     def _toggle_audio(self, checked: bool)->None:
@@ -2778,7 +2989,7 @@ class DisplayWindow(QMainWindow):
             self._tick_counter = 0
         self._tick_counter += 1
         
-        self.position_label.setText(f"位置: {pct:.1f}%")
+        self.position_label.setText(I18n.t("control_panel.position_label", pct=f"{pct:.1f}"))
         self.progress_bar.blockSignals(True)
         self.progress_bar.position = pct
         self.progress_bar.blockSignals(False)
@@ -2895,7 +3106,7 @@ class DisplayWindow(QMainWindow):
             pct=(self.current_position/self.total_scroll_distance)*100
         else:
             pct=0
-        self.position_label.setText(f"位置: {pct:.1f}%")
+        self.position_label.setText(I18n.t("control_panel.position_label", pct=f"{pct:.1f}"))
         self.progress_bar.blockSignals(True)
         self.progress_bar.position=pct
         self.progress_bar.blockSignals(False)
@@ -2984,7 +3195,7 @@ class DisplayWindow(QMainWindow):
         self.loop_config.loop_type=modes[idx]
         self.loop_config.is_enabled=(idx>0)
         if idx==2 and self.loop_config.end_position<self.loop_config.start_position:
-            self.ab_info_label.setText("请先设置A点和B点")
+            self.ab_info_label.setText(I18n.t("ab_info.ab_set_both"))
         elif idx==0:
             self.progress_bar.clear_region()
             self.ab_info_label.setText("")
@@ -3251,13 +3462,13 @@ class DisplayWindow(QMainWindow):
           4. PNG: 每页保存独立文件; PDF: 单文件多页
         """
         if not self.images or all(img.isNull() for img in self.images):
-            QMessageBox.warning(self, "无法导出", "当前没有可导出的谱面内容")
+            QMessageBox.warning(self, I18n.t("messages.export_no_content"), I18n.t("messages.export_no_content_msg"))
             return
 
         # 弹出导出对话框
         dlg = ExportDialog(
             parent=self,
-            src_name=os.path.basename(self.file_path) if isinstance(self.file_path, str) else "谱面",
+            src_name=os.path.basename(self.file_path) if isinstance(self.file_path, str) else I18n.t("app.score_name"),
             is_gtp=bool(self.gtp_player and self.gtp_player.is_loaded),
             gtp_track_count=self.gtp_track_combo.count() if self.gtp_track_combo else 0,
             current_track=self.gtp_player.current_track if self.gtp_player else 0,
@@ -3278,7 +3489,7 @@ class DisplayWindow(QMainWindow):
             # export_items: List[ExportItem] = [(images_list, annotations_list, track_label), ...]
 
             if not export_items or not any(item[0] for item in export_items):
-                QMessageBox.warning(self, "无法导出", "没有可导出的内容")
+                QMessageBox.warning(self, I18n.t("messages.export_no_content"), I18n.t("messages.export_no_data"))
                 return
 
             # === Step 2: 执行导出 ===
@@ -3304,20 +3515,18 @@ class DisplayWindow(QMainWindow):
             fmt_name = "PDF" if fmt == "pdf" else "PNG"
             mode_desc = ""
             if track_mode == "all":
-                mode_desc = f"(全部{self.gtp_track_combo.count()}轨)"
+                mode_desc = I18n.t("messages.export_mode_all", count=self.gtp_track_combo.count())
             elif isinstance(track_mode, list):
-                mode_desc = f"(轨道 {', '.join(str(t+1) for t in track_mode)})"
+                mode_desc = I18n.t("messages.export_mode_tracks", tracks=', '.join(str(t+1) for t in track_mode))
 
             QMessageBox.information(
-                self, "导出成功",
-                f"已导出为 {fmt_name} 格式:\n{save_path}\n\n"
-                f"共 {total_files} 个文件{mode_desc}\n"
-                f"尺寸: A4 (210mm × 297mm @300dpi)\n包含: 谱面图像 + 全部标注"
+                self, I18n.t("messages.export_success"),
+                I18n.t("messages.export_success_msg", fmt=fmt_name, path=save_path, count=total_files, mode=mode_desc)
             )
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "导出失败", f"导出过程中出错:\n{str(e)}")
+            QMessageBox.critical(self, I18n.t("messages.export_fail"), I18n.t("messages.export_fail_msg", error=str(e)))
 
     def _collect_export_data(self, track_mode, page_mode)->list:
         """
@@ -3678,20 +3887,20 @@ class ExportDialog(QDialog):
         self.total_pages = total_pages
         self.format_choice = "png"; self.track_mode = "current"
         self.page_mode = "all"; self.save_path = ""
-        self.setWindowTitle("导出谱面(A4)"); self.setMinimumWidth(420)
+        self.setWindowTitle(I18n.t("export_dialog.window_title")); self.setMinimumWidth(420)
         self._setup_ui()
 
     def _setup_ui(self)->None:
         lo = QVBoxLayout(self); lo.setSpacing(12)
         # 格式
-        fg = QGroupBox("导出格式"); fl = QHBoxLayout(fg)
-        self.fmt_png = QRadioButton("PNG 图片(每页一张)"); self.fmt_pdf = QRadioButton("PDF 文档(单文件)")
+        fg = QGroupBox(I18n.t("export_dialog.format_group")); fl = QHBoxLayout(fg)
+        self.fmt_png = QRadioButton(I18n.t("export_dialog.fmt_png")); self.fmt_pdf = QRadioButton(I18n.t("export_dialog.fmt_pdf"))
         self.fmt_png.setChecked(True); fl.addWidget(self.fmt_png); fl.addWidget(self.fmt_pdf); lo.addWidget(fg)
         # 轨道(GTP多轨时显示)
         if self.is_gtp and self.gtp_track_count > 1:
-            tg = QGroupBox(f"音轨选择(共{self.gtp_track_count}轨)"); tl = QVBoxLayout(tg)
-            self.tk_cur = QRadioButton("仅当前轨道"); self.tk_all = QRadioButton("全部轨道(按顺序拼接)")
-            self.tk_sel = QRadioButton("指定轨道:")
+            tg = QGroupBox(I18n.t("export_dialog.track_group", count=self.gtp_track_count)); tl = QVBoxLayout(tg)
+            self.tk_cur = QRadioButton(I18n.t("export_dialog.track_current")); self.tk_all = QRadioButton(I18n.t("export_dialog.track_all"))
+            self.tk_sel = QRadioButton(I18n.t("export_dialog.track_select"))
             self.tk_cur.setChecked(True); self.tk_sel.toggled.connect(lambda c: self._ck.setVisible(c))
             tl.addWidget(self.tk_cur); tl.addWidget(self.tk_all)
             sr = QHBoxLayout(); sr.addWidget(self.tk_sel)
@@ -3703,15 +3912,15 @@ class ExportDialog(QDialog):
         else:
             self.tk_all = None; self.tk_sel = None; self.tks = []; self.tk_cur = None
         # 页码
-        pg = QGroupBox(f"页码范围(共{self.total_pages}页)"); pl = QVBoxLayout(pg)
-        self.pg_all = QRadioButton("全部页面"); self.pg_rng = QRadioButton("指定范围:")
+        pg = QGroupBox(I18n.t("export_dialog.page_group", total=self.total_pages)); pl = QVBoxLayout(pg)
+        self.pg_all = QRadioButton(I18n.t("export_dialog.page_all")); self.pg_rng = QRadioButton(I18n.t("export_dialog.page_range"))
         self.pg_all.setChecked(True); self.pg_rng.toggled.connect(lambda c: self._pw.setVisible(c))
         pl.addWidget(self.pg_all)
         rl = QHBoxLayout(); rl.addWidget(self.pg_rng)
         self._ps = QSpinBox(); self._ps.setRange(1,max(1,self.total_pages)); self._ps.setValue(1)
         self._pe = QSpinBox(); self._pe.setRange(1,max(1,self.total_pages)); self._pe.setValue(self.total_pages)
-        rl.addWidget(QLabel("第")); rl.addWidget(self._ps); rl.addWidget(QLabel(" 到 "))
-        rl.addWidget(self._pe); rl.addWidget(QLabel(" 页")); rl.addStretch()
+        rl.addWidget(QLabel(I18n.t("export_dialog.page_from"))); rl.addWidget(self._ps); rl.addWidget(QLabel(I18n.t("export_dialog.page_to")))
+        rl.addWidget(self._pe); rl.addWidget(QLabel(I18n.t("export_dialog.page_unit"))); rl.addStretch()
         self._pw = QWidget(); rw = QHBoxLayout(self._pw); rw.setContentsMargins(0,0,0,0); rw.addLayout(rl)
         self._pw.setVisible(False); pl.addWidget(self._pw); lo.addWidget(pg)
         # 按钮
@@ -3724,7 +3933,7 @@ class ExportDialog(QDialog):
             if self.tk_all and self.tk_all.isChecked(): self.track_mode = "all"
             elif self.tk_sel and self.tk_sel.isChecked():
                 self.track_mode = [i for i,c in enumerate(self.tks) if c.isChecked()]
-                if not self.track_mode: QMessageBox.warning(self,"提示","请至少选一个轨道"); return
+                if not self.track_mode: QMessageBox.warning(self,"提示",I18n.t("messages.select_track_hint")); return
             else: self.track_mode = "current"
         else: self.track_mode = "current"
         if hasattr(self,'pg_rng') and self.pg_rng.isChecked():
@@ -3733,8 +3942,8 @@ class ExportDialog(QDialog):
             self.page_mode = ("range", s, e)
         else: self.page_mode = "all"
         ext = ".pdf" if self.format_choice=="pdf" else ".png"
-        fp,_ = QFileDialog.getSaveFileName(self,"保存导出文件",f"{os.path.splitext(self.src_name)[0]}_annotated{ext}",
-                                           f"{'PDF文档' if self.format_choice=='pdf' else 'PNG图片'} (*{ext})")
+        fp,_ = QFileDialog.getSaveFileName(self,I18n.t("export_dialog.save_title"),f"{os.path.splitext(self.src_name)[0]}_annotated{ext}",
+                                           f"{I18n.t('export_dialog.file_filter_pdf') if self.format_choice=='pdf' else I18n.t('export_dialog.file_filter_png')} (*{ext})")
         if not fp: return
         self.save_path = fp; super().accept()
 
@@ -3759,7 +3968,7 @@ class SettingsWindow(QMainWindow):
         self.init_ui()
         self._apply_theme()  # 应用深色主题
 
-        loading_item=QListWidgetItem("正在初始化...")
+        loading_item=QListWidgetItem(I18n.t("settings_window.loading_init"))
         loading_item.setFlags(loading_item.flags() & ~Qt.ItemIsEnabled)
         self.file_list.addItem(loading_item)
 
@@ -3768,7 +3977,7 @@ class SettingsWindow(QMainWindow):
 
     def init_ui(self)->None:
         """初始化UI"""
-        self.setWindowTitle('TAB Score Viewer - 设置')
+        self.setWindowTitle(I18n.t("app.settings_title"))
         self.setGeometry(100,100,800,600)
 
         central=QWidget();self.setCentralWidget(central)
@@ -3776,8 +3985,8 @@ class SettingsWindow(QMainWindow):
 
         # 文件夹选择
         folder_layout=QHBoxLayout()
-        self.folder_label=QLabel('未选择文件夹')
-        self.folder_button=QPushButton('选择文件夹')
+        self.folder_label=QLabel(I18n.t("settings_window.folder_not_selected"))
+        self.folder_button=QPushButton(I18n.t("settings_window.folder_btn"))
         self.folder_button.clicked.connect(self.select_folder)
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_button)
@@ -3785,20 +3994,20 @@ class SettingsWindow(QMainWindow):
 
         # 速度控制
         speed_layout=QHBoxLayout()
-        speed_layout.addWidget(QLabel('播放速度:'))
+        speed_layout.addWidget(QLabel(I18n.t("settings_window.speed_label")))
         self.speed_slider=QSlider(Qt.Horizontal)
         self.speed_value_label=QLabel('50')
         self.speed_slider.valueChanged.connect(self._update_speed_value)
         speed_layout.addWidget(self.speed_slider)
         speed_layout.addWidget(self.speed_value_label)
 
-        speed_layout.addWidget(QLabel('最小:'))
+        speed_layout.addWidget(QLabel(I18n.t("settings_window.min_label")))
         self.min_speed_edit=QLineEdit('50')
         self.min_speed_edit.setMaximumWidth(50)
         self.min_speed_edit.editingFinished.connect(self._update_speed_range)
         speed_layout.addWidget(self.min_speed_edit)
 
-        speed_layout.addWidget(QLabel('最大:'))
+        speed_layout.addWidget(QLabel(I18n.t("settings_window.max_label")))
         self.max_speed_edit=QLineEdit('200')
         self.max_speed_edit.setMaximumWidth(50)
         self.max_speed_edit.editingFinished.connect(self._update_speed_range)
@@ -3806,14 +4015,29 @@ class SettingsWindow(QMainWindow):
 
         main_layout.addLayout(speed_layout)
 
+        # 语言选择
+        lang_layout=QHBoxLayout()
+        lang_layout.addWidget(QLabel(I18n.t("settings_window.language_label")))
+        self.lang_combo=QComboBox()
+        for code,name in I18n.available_languages():
+            self.lang_combo.addItem(name, code)
+        # 从配置恢复语言选择
+        saved_lang=self._load_saved_language()
+        idx=self.lang_combo.findData(saved_lang)
+        if idx>=0: self.lang_combo.setCurrentIndex(idx)
+        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
+        lang_layout.addWidget(self.lang_combo)
+        lang_layout.addStretch()
+        main_layout.addLayout(lang_layout)
+
         # 文件列表
-        file_list_label=QLabel('文件列表:')
+        file_list_label=QLabel(I18n.t("settings_window.file_list_label"))
         search_layout=QHBoxLayout()
-        search_layout.addWidget(QLabel('搜索:'))
+        search_layout.addWidget(QLabel(I18n.t("settings_window.search_label")))
         self.search_edit=QLineEdit()
-        self.search_edit.setPlaceholderText('输入文件名搜索...')
+        self.search_edit.setPlaceholderText(I18n.t("settings_window.search_placeholder"))
         self.search_edit.returnPressed.connect(self.filter_file_list)
-        self.clear_search_btn=QPushButton('清除')
+        self.clear_search_btn=QPushButton(I18n.t("settings_window.search_clear"))
         self.clear_search_btn.clicked.connect(self.clear_search)
         search_layout.addWidget(self.search_edit)
         search_layout.addWidget(self.clear_search_btn)
@@ -3903,16 +4127,41 @@ class SettingsWindow(QMainWindow):
             cfg={'last_folder':self.current_directory,
                  'last_speed':self.speed_slider.value(),
                  'min_range':int(self.min_speed_edit.text()),
-                 'max_range':int(self.max_speed_edit.text())}
+                 'max_range':int(self.max_speed_edit.text()),
+                 'language':I18n.current_language()}
             os.makedirs(os.path.dirname(CONFIG_FILE),exist_ok=True)
             with open(CONFIG_FILE,'w',encoding='utf-8') as f:
                 json.dump(cfg,f,ensure_ascii=False,indent=2)
         except Exception as e:
             print(f"保存配置失败: {e}")
 
+    def _load_saved_language(self)->str:
+        """从配置文件加载已保存的语言设置"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE,'r',encoding='utf-8') as f:
+                    cfg=json.load(f)
+                    return cfg.get('language','zh_CN')
+        except Exception:
+            pass
+        return 'zh_CN'
+
+    def _on_language_changed(self,index:int)->None:
+        """语言切换处理 - 切换语言并刷新UI"""
+        lang_code=self.lang_combo.itemData(index)
+        if not lang_code or lang_code==I18n.current_language():
+            return
+        # 执行语言切换
+        I18n.set_language(lang_code)
+        # 保存语言设置
+        self.save_config()
+        # 提示用户重启应用以完全生效(部分静态文本需重建窗口才能更新)
+        QMessageBox.information(self,I18n.t("settings_window.language_switch_title"),
+                                I18n.t("settings_window.language_switch_msg"))
+
     def select_folder(self)->None:
         """选择文件夹"""
-        folder=QFileDialog.getExistingDirectory(self,"选择文件夹","",QFileDialog.ShowDirsOnly)
+        folder=QFileDialog.getExistingDirectory(self,I18n.t("settings_window.folder_dialog_title"),"",QFileDialog.ShowDirsOnly)
         if folder:
             self.current_directory=folder
             self.folder_label.setText(folder)
@@ -3922,7 +4171,7 @@ class SettingsWindow(QMainWindow):
     def load_file_list_async(self,folder:str)->None:
         """异步加载文件列表"""
         self.is_loading=True;self.file_list.clear()
-        item=QListWidgetItem("正在加载...");item.setFlags(item.flags()&~Qt.ItemIsEnabled)
+        item=QListWidgetItem(I18n.t("settings_window.loading_files"));item.setFlags(item.flags()&~Qt.ItemIsEnabled)
         self.file_list.addItem(item)
         pool=QThreadPool.globalInstance()
         worker=LoadFileListWorker(folder)
@@ -3937,9 +4186,9 @@ class SettingsWindow(QMainWindow):
         self._loaded_files=result  # 接收并存储加载结果
 
         if self.current_directory and self.current_directory!=os.path.dirname(self.current_directory):
-            up=QListWidgetItem("[返回上一级]")
+            up=QListWidgetItem(I18n.t("settings_window.parent_dir"))
             up.setData(Qt.UserRole,os.path.dirname(self.current_directory));up.setData(Qt.UserRole+1,True)
-            self.file_list.addItem(up);self.original_items.append(("[返回上一级]",os.path.dirname(self.current_directory),True))
+            self.file_list.addItem(up);self.original_items.append((I18n.t("settings_window.parent_dir"),os.path.dirname(self.current_directory),True))
 
         for name,fpath,is_dir in self._loaded_files:
             item=QListWidgetItem(name)
@@ -3952,15 +4201,15 @@ class SettingsWindow(QMainWindow):
         """加载错误处理 - 区分目录错误与一般错误"""
         self.is_loading=False;self.file_list.clear()
         # 添加空状态提示
-        empty_item=QListWidgetItem("文件夹为空或无法访问");empty_item.setFlags(empty_item.flags()&~Qt.ItemIsEnabled)
+        empty_item=QListWidgetItem(I18n.t("settings_window.empty_folder"));empty_item.setFlags(empty_item.flags()&~Qt.ItemIsEnabled)
         self.file_list.addItem(empty_item)
         # 根据错误类型给出不同提示
         if "目录不存在" in msg or "路径不是文件夹" in msg:
-            QMessageBox.warning(self,"目录不可用",f"{msg}\n\n请点击「选择文件夹」重新选择。")
+            QMessageBox.warning(self,I18n.t("settings_window.dir_unavailable_title"),I18n.t("settings_window.dir_unavailable_msg", msg=msg))
         elif "无权限" in msg:
-            QMessageBox.warning(self,"权限不足",f"{msg}\n\n请检查文件夹权限或选择其他目录。")
+            QMessageBox.warning(self,I18n.t("settings_window.permission_denied_title"),I18n.t("settings_window.permission_denied_msg", msg=msg))
         else:
-            QMessageBox.critical(self,"加载错误",f"加载失败:\n{msg}")
+            QMessageBox.critical(self,I18n.t("messages.load_error"),I18n.t("messages.load_error_msg", msg=msg))
 
     def _update_speed_value(self,value:int)->None:
         """速度值改变"""
@@ -3991,7 +4240,7 @@ class SettingsWindow(QMainWindow):
         fpath=item.data(Qt.UserRole);is_dir=item.data(Qt.UserRole+1)
         if is_dir:
             self.is_loading=True;self.file_list.clear()
-            li=QListWidgetItem("正在进入...");li.setFlags(li.flags()&~Qt.ItemIsEnabled)
+            li=QListWidgetItem(I18n.t("settings_window.loading_entering"));li.setFlags(li.flags()&~Qt.ItemIsEnabled)
             self.file_list.addItem(li)
             self.current_directory=fpath;self.folder_label.setText(fpath)
             self.load_file_list_async(fpath);self.save_config()
@@ -4018,20 +4267,20 @@ class SettingsWindow(QMainWindow):
         fpath=item.data(Qt.UserRole);is_dir=item.data(Qt.UserRole+1) or False
         menu=QMenu(self)
         if is_dir:
-            menu.addAction('播放此文件夹中所有图片',lambda:self.play_all_images(fpath))
-            menu.addAction('进入文件夹',lambda:self.on_file_double_clicked(item))
+            menu.addAction(I18n.t("settings_window.context_play_all"),lambda:self.play_all_images(fpath))
+            menu.addAction(I18n.t("settings_window.context_enter_folder"),lambda:self.on_file_double_clicked(item))
             menu.addSeparator()
-            menu.addAction('在资源管理器中打开',lambda:self.open_file_location(fpath))
+            menu.addAction(I18n.t("settings_window.context_open_location"),lambda:self.open_file_location(fpath))
         else:
-            menu.addAction('查看文件',lambda:self.on_file_double_clicked(item))
+            menu.addAction(I18n.t("settings_window.context_view_file"),lambda:self.on_file_double_clicked(item))
             ext=os.path.splitext(fpath)[1].lower()
             if ext in SUPPORTED_IMAGE_EXTENSIONS:
-                menu.addAction('播放当前图片',lambda:self.show_display([fpath],'images'))
+                menu.addAction(I18n.t("settings_window.context_play_image"),lambda:self.show_display([fpath],'images'))
                 src=self.original_items if not self.is_searching else []
-                menu.addAction('播放全部图片',lambda:self.play_all_images(os.path.dirname(fpath)))
+                menu.addAction(I18n.t("settings_window.context_play_all_images"),lambda:self.play_all_images(os.path.dirname(fpath)))
             menu.addSeparator()
             # 通用：任何文件都可在资源管理器中定位
-            menu.addAction('在资源管理器中打开',lambda:self.open_file_location(fpath))
+            menu.addAction(I18n.t("settings_window.context_open_location"),lambda:self.open_file_location(fpath))
         menu.exec_(self.file_list.mapToGlobal(pos))
 
     def open_file_location(self,fpath:str)->None:
@@ -4056,7 +4305,7 @@ class SettingsWindow(QMainWindow):
             abs_path = os.path.abspath(fpath) if fpath else ""
             
             if not os.path.exists(abs_path):
-                QMessageBox.warning(self,'无法定位',f'文件/文件夹不存在:\n{abs_path}')
+                QMessageBox.warning(self,I18n.t("settings_window.locate_fail_title"),I18n.t("settings_window.locate_fail_msg", path=abs_path))
                 return
             
             if platform.system() == 'Windows':
@@ -4077,7 +4326,7 @@ class SettingsWindow(QMainWindow):
                     except (FileNotFoundError, subprocess.TimeoutExpired):
                         continue
         except Exception as e:
-            QMessageBox.warning(self,'无法打开',f'无法打开文件位置:\n{str(e)}')
+            QMessageBox.warning(self,I18n.t("settings_window.open_fail_title"),I18n.t("settings_window.open_fail_msg", error=str(e)))
 
     def play_all_images(self,directory:str)->None:
         """播放文件夹内所有图片"""
@@ -4148,5 +4397,17 @@ if __name__ == '__main__':
     os.makedirs(ANNOTATION_DIR, exist_ok=True)
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色主题
+
+    # 初始化国际化系统 - 从配置文件加载已保存的语言设置
+    saved_lang='zh_CN'
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE,'r',encoding='utf-8') as f:
+                cfg=json.load(f)
+                saved_lang=cfg.get('language','zh_CN')
+    except Exception:
+        pass
+    I18n.set_language(saved_lang)
+
     settings = SettingsWindow()
     sys.exit(app.exec_())
