@@ -259,6 +259,24 @@ dist\guitar_tab_viewer\guitar_tab_viewer.exe
 
 本项目采用 [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/) 许可证。
 
+## 作者
+
+**Zhuwenqian** — 一个14岁的中国男孩
+
+TAB Score Viewer 与 [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) 引擎均为同一作者开发。
+
+### 联系方式
+
+| 方式 | 信息 |
+|------|------|
+| Email | zhuwenqianchina@outlook.com / 3784385007@qq.com |
+| QQ | 3784385007 |
+| Bilibili | [访问主页](https://space.bilibili.com/1299073087?) |
+
+### AI 辅助声明
+
+本项目代码由 **AI（Claude / GLM）辅助生成**，作者负责架构设计、功能规划、代码审查与整合。AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。
+
 ***
 
 # English
@@ -401,3 +419,21 @@ Used via ApolloTab engine for MIDI audio synthesis.
 - **License**: [MPL 2.0](https://github.com/Zhuwenqian/ApolloTab/blob/main/LICENSE)
 - **Repository**: <https://github.com/Zhuwenqian/ApolloTab>
 - **Purpose**: Core GTP parsing, rendering, and audio playback engine
+
+## Author
+
+**Zhuwenqian** — A 14-year-old boy from China
+
+Both TAB Score Viewer and the [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) engine are developed by the same author.
+
+### Contact
+
+| Method | Info |
+|--------|------|
+| Email | zhuwenqianchina@outlook.com / 3784385007@qq.com |
+| QQ | 3784385007 |
+| Bilibili | [Visit Profile](https://space.bilibili.com/1299073087?) |
+
+### AI Assistance Disclosure
+
+The code in this project is **AI-assisted (Claude / GLM)**. The author is responsible for architecture design, feature planning, code review, and integration. AI tools significantly improved development efficiency, but all core design decisions were made by a human.
