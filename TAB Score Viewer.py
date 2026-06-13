@@ -4264,7 +4264,18 @@ class DisplayWindow(QMainWindow):
             ry = 0
             for scaled_img, sh in scaled_info:
                 if ry + sh > ps and ry < pe:
-                    p.drawPixmap(margin, margin + (ry - ps), scaled_img)
+                    # 计算图片在当前页面内的可见区域(修复跨页溢出bug)
+                    # 原理: 当一张图跨越页底边界时，只绘制在页面范围内的部分，
+                    #       避免第1页底部出现第2页的内容
+                    src_top = max(0, ps - ry)                    # 源图裁剪顶部(跳过上一页已绘部分)
+                    src_bottom = min(sh, pe - ry)               # 源图裁剪底部(不超出本页底边)
+                    src_h = src_bottom - src_top                # 实际绘制高度
+                    dst_y = margin + (ry - ps) + src_top        # 目标画布Y坐标
+                    p.drawPixmap(
+                        QRect(margin, dst_y, draw_w, src_h),   # 目标矩形(限制在本页范围内)
+                        scaled_img,
+                        QRect(0, src_top, draw_w, src_h)       # 源矩形(只取可见部分)
+                    )
                 ry += sh + 5
 
             # 绘制标注(临时替换self.annotations以支持传入的annotations列表)
@@ -4333,7 +4344,16 @@ class DisplayWindow(QMainWindow):
             ry = 0
             for scaled_img, sh in scaled_info:
                 if ry + sh > ps and ry < pe:
-                    p.drawPixmap(margin, margin + (ry-ps), scaled_img)
+                    # 同PNG导出: 裁剪跨页溢出内容，避免下一页内容出现在当前页底部
+                    src_top = max(0, ps - ry)
+                    src_bottom = min(sh, pe - ry)
+                    src_h = src_bottom - src_top
+                    dst_y = margin + (ry - ps) + src_top
+                    p.drawPixmap(
+                        QRect(margin, dst_y, draw_w, src_h),
+                        scaled_img,
+                        QRect(0, src_top, draw_w, src_h)
+                    )
                 ry += sh + 5
 
             # 绘制标注
