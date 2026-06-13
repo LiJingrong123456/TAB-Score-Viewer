@@ -9,7 +9,7 @@
 | 功能            | 说明                                                                   |
 | ------------- | -------------------------------------------------------------------- |
 | **多格式支持**     | PNG、JPG、JPEG、WEBP 图片格式；PDF 文档；GP3/GP4/GP5/GPX 吉他谱文件                  |
-| **GTP解析与渲染**  | 基于 ApolloTab 引擎完整解析 Guitar Pro 文件，六线谱渲染引擎（含18种技巧符号），支持音轨切换      |
+| **GTP解析与渲染**  | 基于 ApolloTab 引擎完整解析 Guitar Pro 文件，六线谱渲染引擎（含18种技巧符号），支持音轨切换           |
 | **音频播放**      | FluidSynth 合成引擎，SoundFont 音色，支持全轨并轨/单轨播放/关闭音频三种模式，推弦(Pitch Bend)渐变效果 |
 | **播放光标**      | 红色竖线跟随播放进度移动，当前小节高亮显示                                                |
 | **自动滚动播放**    | 30fps固定帧率平滑滚动，时间驱动模式（与音乐节奏同步，密集音符区自动加快）                              |
@@ -27,9 +27,9 @@
 | **GTP音轨选择**   | 下拉菜单切换音轨，即时重渲染，分轨独立标注                                                |
 | **深色主题**      | 现代化深色 UI，自定义组件风格                                                     |
 | **键盘快捷键**     | 空格播放/暂停、方向键调速、Ctrl+Z撤销/Ctrl+Y重做/ESC关闭                                |
-| **多语言界面**     | 支持中文(简体)/英文切换，翻译文件位于 locales/ 目录，设置中一键切换                          |
-| **应用图标**      | 自定义图标(icon.ico)，窗口图标 + 任务栏图标统一显示                                      |
-| **EXE打包**       | 支持 PyInstaller 一键打包为独立的 Windows 可执行程序（无需Python环境）                      |
+| **多语言界面**     | 支持中文(简体)/英文切换，翻译文件位于 locales/ 目录，设置中一键切换                             |
+| **应用图标**      | 自定义图标(icon.ico)，窗口图标 + 任务栏图标统一显示                                     |
+| **EXE打包**     | 支持 PyInstaller 一键打包为独立的 Windows 可执行程序（无需Python环境）                    |
 
 ## 快速开始
 
@@ -146,15 +146,15 @@ TAB Score Viewer/
 
 ## 技术栈
 
-| 类别 | 技术 | 说明 |
-|------|------|------|
-| **GUI框架** | PyQt5 >= 5.15 | Qt for Python，窗口/控件/信号槽/绘图 |
-| **PDF处理** | PyMuPDF >= 1.23 | PDF 解析与页面渲染 |
-| **图片处理** | Pillow >= 10.0 | PNG/JPG/WEBP 等图片格式解码 |
-| **GTP引擎** | [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) | Guitar Pro 文件解析 + 六线谱渲染 + 音频播放（独立库，可单独使用） |
-| **GTP底层解析** | pyguitarpro >= 0.11 | Guitar Pro 原始文件解析（ApolloTab 依赖） |
-| **音频合成** | pyfluidsynth >= 1.4.0 | FluidSynth MIDI 合成引擎（ApolloTab 依赖） |
-| **打包工具** | PyInstaller | Python → Windows EXE 打包 |
+| 类别          | 技术                                                   | 说明                                        |
+| ----------- | ---------------------------------------------------- | ----------------------------------------- |
+| **GUI框架**   | PyQt5 >= 5.15                                        | Qt for Python，窗口/控件/信号槽/绘图                |
+| **PDF处理**   | PyMuPDF >= 1.23                                      | PDF 解析与页面渲染                               |
+| **图片处理**    | Pillow >= 10.0                                       | PNG/JPG/WEBP 等图片格式解码                      |
+| **GTP引擎**   | [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) | Guitar Pro 文件解析 + 六线谱渲染 + 音频播放（独立库，可单独使用） |
+| **GTP底层解析** | pyguitarpro >= 0.11                                  | Guitar Pro 原始文件解析（ApolloTab 依赖）           |
+| **音频合成**    | pyfluidsynth >= 1.4.0                                | FluidSynth MIDI 合成引擎（ApolloTab 依赖）        |
+| **打包工具**    | PyInstaller                                          | Python → Windows EXE 打包                   |
 
 ### 架构模式
 
@@ -175,14 +175,12 @@ PyMuPDF>=1.23            # PDF解析与渲染
 Pillow>=10.0             # 图片格式支持(WEBP等)
 pyguitarpro>=0.11        # Guitar Pro 文件解析（ApolloTab依赖）
 pyfluidsynth>=1.4.0      # MIDI音频合成 (LGPL 2.1, ApolloTab依赖)
-
-# GTP引擎（独立安装）
-ApolloTab                # 吉他谱解析/渲染/音频播放引擎库
+apollotab>=0.2.4         # 吉他谱解析/渲染/音频播放引擎库
 ```
 
 ## 关于 ApolloTab 引擎
 
-本项目 GTP（Guitar Pro）功能基于 [**ApolloTab**](https://github.com/Zhuwenqian/ApolloTab) 引擎构建。ApolloTab 是一个独立的 Python 库，提供：
+本项目 GTP（Guitar Pro）功能基于 **[ApolloTab](https://github.com/Zhuwenqian/ApolloTab)** 引擎构建。ApolloTab 是一个独立的 Python 库，提供：
 
 - **文件解析**: 完整支持 GP3/GP4/GP5/GPX 格式
 - **六线谱渲染**: QPainter 高质量绘制，18 种演奏技巧符号
@@ -206,7 +204,8 @@ pages = render_gtp("my_song.gp5", track_index=0)
 ### 打包原理
 
 使用 PyInstaller 的 **onedir（目录）模式** 将 Python 应用打包为 Windows 可执行程序：
-- 输出一个文件夹 `dist/guitar_tab_viewer/`，内含 exe 和所有依赖
+
+- 输出一个文件夹 `dist/TAB Score Viewer/`，内含 exe 和所有依赖
 - 相比 onefile（单文件）模式，启动更快，无需解压
 - 图标文件 `icon.ico` 同时作为 exe 文件图标和运行时窗口/任务栏图标
 - 翻译文件(locales/)和音频DLL自动包含在输出目录中
@@ -222,19 +221,19 @@ pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
 pyinstaller guitar_tab_viewer.spec
 
 # 4. 运行打包结果
-dist\guitar_tab_viewer\guitar_tab_viewer.exe
+dist\TAB Score Viewer\TAB Score Viewer.exe
 ```
 
-### spec 配置说明 (`guitar_tab_viewer.spec`)
+### spec 配置说明 (`TAB Score Viewer.spec`)
 
-| 配置项 | 值 | 说明 |
-|--------|-----|------|
-| 模式 | onedir (目录) | 非单文件，启动更快 |
-| 图标 | icon.ico | exe 文件图标 + 窗口/任务栏图标 |
-| 控制台 | False | 不显示命令行窗口（GUI应用） |
-| UPX压缩 | True | 减小体积（需安装UPX） |
-| 包含数据 | locales/, DLLs, icon.ico | 翻译文件/音频库/图标 |
-| 隐藏导入 | ApolloTab.* 等 | 动态导入模块显式声明 |
+| 配置项   | 值                        | 说明                  |
+| ----- | ------------------------ | ------------------- |
+| 模式    | onedir (目录)              | 非单文件，启动更快           |
+| 图标    | icon.ico                 | exe 文件图标 + 窗口/任务栏图标 |
+| 控制台   | False                    | 不显示命令行窗口（GUI应用）     |
+| UPX压缩 | True                     | 减小体积（需安装UPX）        |
+| 包含数据  | locales/, DLLs, icon.ico | 翻译文件/音频库/图标         |
+| 隐藏导入  | ApolloTab.\* 等           | 动态导入模块显式声明          |
 
 ## 第三方组件许可证
 
@@ -261,21 +260,21 @@ dist\guitar_tab_viewer\guitar_tab_viewer.exe
 
 ## 作者
 
-**Zhuwenqian** — 一个14岁的中国男孩
+**Zhu Wenqian** — 一个14岁的中国男孩
 
 TAB Score Viewer 与 [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) 引擎均为同一作者开发。
 
 ### 联系方式
 
-| 方式 | 信息 |
-|------|------|
-| Email | zhuwenqianchina@outlook.com / 3784385007@qq.com |
-| QQ | 3784385007 |
-| Bilibili | [访问主页](https://space.bilibili.com/1299073087?) |
+| 方式       | 信息                                                  |
+| -------- | --------------------------------------------------- |
+| Email    | <zhuwenqianchina@outlook.com> / <3784385007@qq.com> |
+| QQ       | 3784385007                                          |
+| Bilibili | [访问主页](https://space.bilibili.com/1299073087?)      |
 
 ### AI 辅助声明
 
-本项目代码由 **AI（Claude / GLM）辅助生成**，作者负责架构设计、功能规划、代码审查与整合。AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。
+本项目代码由 **AI（GLM-5V-Turbo）辅助生成**，作者负责架构设计、功能规划、代码审查与整合。AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。
 
 ***
 
@@ -285,30 +284,30 @@ A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhu
 
 ## Features
 
-| Feature                      | Description                                                                                         |
-| ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| **Multi-format**             | PNG, JPG, JPEG, WEBP images; PDF documents; GP3/GP4/GP5/GPX Guitar Pro files                        |
+| Feature                      | Description                                                                                           |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Multi-format**             | PNG, JPG, JPEG, WEBP images; PDF documents; GP3/GP4/GP5/GPX Guitar Pro files                          |
 | **GTP Parsing & Rendering**  | Powered by ApolloTab engine: complete parser, TAB renderer with 18 technique symbols, track switching |
-| **Audio Playback**           | FluidSynth engine with SoundFont, All tracks / Single track / Mute modes, Pitch Bend gradual effect |
-| **Playhead**                 | Red vertical line following playback progress, current measure highlight                            |
-| **Auto-scroll**              | 30fps fixed-rate smooth scrolling, time-driven (synced with music rhythm)                           |
-| **Speed Control**            | Image/PDF: 1-500ms range; GTP: BPM-driven, auto-hides manual controls                               |
-| **Speed Curve Editor**       | Bezier curve visualization with preset templates (Image/PDF mode only)                              |
-| **Loop Playback**            | No loop / Global loop / A-B region loop                                                             |
-| **Text Annotations**         | Double-click to add notes with color/font/bold styles, hover to show delete button                  |
-| **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/PDF A4 export                        |
-| **Global Undo/Redo**         | Ctrl+Z / Ctrl+Y, max 50 steps                                                                       |
-| **Annotation Manager**       | Batch management with create/edit/delete                                                            |
-| **Click-to-Play**            | Click anywhere on score to jump and start playback                                                  |
-| **Page Navigation**          | Page input box for PDF/multi-image mode                                                             |
-| **Mouse Wheel**              | Scroll with Ctrl (fast) / Shift (fine) modifiers                                                    |
-| **Context Menu**             | Open file location (Windows/Linux compatible)                                                       |
-| **Track Selection**          | Dropdown to switch tracks, instant re-render, per-track annotations                                 |
-| **Dark Theme**               | Modern dark UI with custom components                                                               |
-| **Keyboard Shortcuts**       | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close                                         |
-| **Multilingual UI**          | Chinese (Simplified) / English, one-click switch in settings                                         |
-| **Application Icon**        | Custom icon (icon.ico) for window + taskbar                                                         |
-| **EXE Packaging**            | PyInstaller one-click packaging to standalone Windows executable                                    |
+| **Audio Playback**           | FluidSynth engine with SoundFont, All tracks / Single track / Mute modes, Pitch Bend gradual effect   |
+| **Playhead**                 | Red vertical line following playback progress, current measure highlight                              |
+| **Auto-scroll**              | 30fps fixed-rate smooth scrolling, time-driven (synced with music rhythm)                             |
+| **Speed Control**            | Image/PDF: 1-500ms range; GTP: BPM-driven, auto-hides manual controls                                 |
+| **Speed Curve Editor**       | Bezier curve visualization with preset templates (Image/PDF mode only)                                |
+| **Loop Playback**            | No loop / Global loop / A-B region loop                                                               |
+| **Text Annotations**         | Double-click to add notes with color/font/bold styles, hover to show delete button                    |
+| **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/PDF A4 export                          |
+| **Global Undo/Redo**         | Ctrl+Z / Ctrl+Y, max 50 steps                                                                         |
+| **Annotation Manager**       | Batch management with create/edit/delete                                                              |
+| **Click-to-Play**            | Click anywhere on score to jump and start playback                                                    |
+| **Page Navigation**          | Page input box for PDF/multi-image mode                                                               |
+| **Mouse Wheel**              | Scroll with Ctrl (fast) / Shift (fine) modifiers                                                      |
+| **Context Menu**             | Open file location (Windows/Linux compatible)                                                         |
+| **Track Selection**          | Dropdown to switch tracks, instant re-render, per-track annotations                                   |
+| **Dark Theme**               | Modern dark UI with custom components                                                                 |
+| **Keyboard Shortcuts**       | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close                                           |
+| **Multilingual UI**          | Chinese (Simplified) / English, one-click switch in settings                                          |
+| **Application Icon**         | Custom icon (icon.ico) for window + taskbar                                                           |
+| **EXE Packaging**            | PyInstaller one-click packaging to standalone Windows executable                                      |
 
 ## Quick Start
 
@@ -326,11 +325,8 @@ source venv/bin/activate   # Linux/Mac
 # Install dependencies
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# Install ApolloTab GTP engine (from PyPI)
-pip install ApolloTab -i https://pypi.tuna.tsinghua.edu.cn/simple
-
 # Run
-python guitar_tab_viewer.py
+python TAB Score Viewer.py
 ```
 
 ### Option 2: Run EXE Directly (No Python Required)
@@ -338,10 +334,10 @@ python guitar_tab_viewer.py
 ```bash
 # Build from source (requires dependencies installed first, see Option 1 steps 1-4)
 pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
-pyinstaller guitar_tab_viewer.spec
+pyinstaller TAB Score Viewer.spec
 
 # Run packaged program
-dist/guitar_tab_viewer/guitar_tab_viewer.exe
+dist/TAB Score Viewer/TAB Score Viewer.exe
 ```
 
 ## Shortcuts
@@ -357,20 +353,20 @@ dist/guitar_tab_viewer/guitar_tab_viewer.exe
 
 ## Tech Stack
 
-| Category | Technology | Description |
-|----------|-----------|-------------|
-| **GUI** | PyQt5 >= 5.15 | Qt for Python framework |
-| **PDF** | PyMuPDF >= 1.23 | PDF parsing and rendering |
-| **Image** | Pillow >= 10.0 | PNG/JPG/WEBP decoding |
+| Category       | Technology                                           | Description                                                            |
+| -------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
+| **GUI**        | PyQt5 >= 5.15                                        | Qt for Python framework                                                |
+| **PDF**        | PyMuPDF >= 1.23                                      | PDF parsing and rendering                                              |
+| **Image**      | Pillow >= 10.0                                       | PNG/JPG/WEBP decoding                                                  |
 | **GTP Engine** | [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) | Guitar Pro parsing, TAB rendering, audio playback (standalone library) |
-| **Audio** | pyfluidsynth >= 1.4.0 | FluidSynth MIDI synthesis (via ApolloTab) |
-| **Packaging** | PyInstaller | Python to Windows EXE |
+| **Audio**      | pyfluidsynth >= 1.4.0                                | FluidSynth MIDI synthesis (via ApolloTab)                              |
+| **Packaging**  | PyInstaller                                          | Python to Windows EXE                                                  |
 
 **Architecture Patterns**: MVC, Observer (signals), Factory (Workers), Command (undo/redo), Singleton (I18n), Facade (GTPPlayer), Async (QThreadPool)
 
 ## About ApolloTab Engine
 
-GTP features are powered by the [**ApolloTab**](https://github.com/Zhuwenqian/ApolloTab) library — a standalone Python engine for parsing, rendering, and playing Guitar Pro tablature files.
+GTP features are powered by the **[ApolloTab](https://github.com/Zhuwenqian/ApolloTab)** library — a standalone Python engine for parsing, rendering, and playing Guitar Pro tablature files.
 
 ```bash
 # Install standalone
@@ -390,11 +386,12 @@ Uses PyInstaller **onedir mode** (directory, not single-file):
 
 ```bash
 pip install pyinstaller
-pyinstaller guitar_tab_viewer.spec
-dist/guitar_tab_viewer/guitar_tab_viewer.exe
+pyinstaller TAB Score Viewer.spec
+dist/TAB Score Viewer/TAB Score Viewer.exe
 ```
 
 Key settings:
+
 - Icon: `icon.ico` (exe file + window/taskbar icon)
 - No console window (GUI app)
 - Includes: locales/, audio DLLs, icon file
@@ -422,18 +419,18 @@ Used via ApolloTab engine for MIDI audio synthesis.
 
 ## Author
 
-**Zhuwenqian** — A 14-year-old boy from China
+**Zhu Wenqian** — A 14-year-old boy from China
 
 Both TAB Score Viewer and the [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) engine are developed by the same author.
 
 ### Contact
 
-| Method | Info |
-|--------|------|
-| Email | zhuwenqianchina@outlook.com / 3784385007@qq.com |
-| QQ | 3784385007 |
+| Method   | Info                                                    |
+| -------- | ------------------------------------------------------- |
+| Email    | <zhuwenqianchina@outlook.com> / <3784385007@qq.com>     |
+| QQ       | 3784385007                                              |
 | Bilibili | [Visit Profile](https://space.bilibili.com/1299073087?) |
 
 ### AI Assistance Disclosure
 
-The code in this project is **AI-assisted (Claude / GLM)**. The author is responsible for architecture design, feature planning, code review, and integration. AI tools significantly improved development efficiency, but all core design decisions were made by a human.
+The code in this project is **AI-assisted (GLM-5V-Turbo)**. The author is responsible for architecture design, feature planning, code review, and integration. AI tools significantly improved development efficiency, but all core design decisions were made by a human.

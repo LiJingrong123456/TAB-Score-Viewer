@@ -14,8 +14,8 @@
 使用方法:
   1. 安装pyinstaller: pip install pyinstaller
   2. 执行打包:   pyinstaller guitar_tab_viewer.spec
-  3. 输出目录: dist/guitar_tab_viewer/
-  4. 运行程序: dist/guitar_tab_viewer/guitar_tab_viewer.exe
+  3. 输出目录: dist/TAB Score Viewer//
+  4. 运行程序: dist/TAB Score Viewer/TAB Score Viewer.exe
 
 创建日期: 2026-06-12
 最后修改: 2026-06-12 (v1.9.1)
@@ -60,7 +60,7 @@ hiddenimports = [
 ]
 
 a = Analysis(
-    [os.path.join(SPEC_DIR, 'guitar_tab_viewer.py')],
+    [os.path.join(SPEC_DIR, 'TAB Score Viewer.py')],
     pathex=[SPEC_DIR],
     binaries=[],
     datas=datas,
@@ -87,7 +87,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='guitar_tab_viewer',
+    name='TAB Score Viewer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -105,5 +105,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='guitar_tab_viewer',  # 输出目录名: dist/guitar_tab_viewer/
+    name='TAB Score Viewer',  # 输出目录名: dist/TAB Score Viewer/
 )
