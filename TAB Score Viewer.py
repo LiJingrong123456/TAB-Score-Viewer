@@ -24,7 +24,7 @@
           16. 国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
 
 创建日期: 2026-06-06
-最后修改: 2026-06-13 (v2.0.0 - 深色/浅色主题系统: ThemeManager单例+动态主题切换+GTP渲染联动+主题持久化)
+最后修改: 2026-06-13 (v2.0.1 - Bug修复: GTP模式点击前几行无法跳转进度→偏移策略height/2→height*0.25+双位置分离seek_position)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -76,7 +76,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtCore import (
     Qt, QTimer, QRect, QSize, QPoint, QRunnable, QThreadPool,
     pyqtSignal, QObject, QEasingCurve, QPropertyAnimation,
-    QRectF, QPointF, pyqtProperty
+    QRectF, QPointF, pyqtProperty, QBuffer
 )
 
 # 第三方库
@@ -173,7 +173,7 @@ THEME_COLORS = THEME_DARK
 # 主题管理器（单例模式） - v2.0 新增
 # ============================================================
 
-class ThemeManager:
+class ThemeManager(QObject):
     """
     全局主题管理器（单例模式）
     
@@ -202,10 +202,12 @@ class ThemeManager:
       - "light": 浅色清新风格（明亮，适合白天/打印）
     """
     
+    # === pyqtSignal 必须定义为类属性 (PyQt5硬性要求) ===
+    # 不能在 __init__ 或其他方法中动态赋值为实例属性，否则 connect/emit 不工作
+    theme_changed = pyqtSignal(str)   # 信号参数: 新主题名称 ("dark" | "light")
+
     _instance = None              # 单例实例
-    _current_theme_name: str = "dark"  # 当前主题名称
-    _theme_data: dict = THEME_DARK     # 当前主题配色字典
-    theme_changed = None         # 信号: pyqtSignal(str) - 延迟初始化(需在QApplication之后)
+    _initialized: bool = False     # 是否已完成初始化(避免重复调用 QObject.__init__)
     
     # GTP渲染主题映射: UI主题名 → ApolloTab渲染主题名
     _GTP_THEME_MAP = {
@@ -214,31 +216,26 @@ class ThemeManager:
     }
     
     def __new__(cls):
-        """单例模式"""
+        """单例模式: 确保全局只有一个ThemeManager实例"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
+        """
+        初始化单例实例
+
+        注意: 由于单例模式，__init__ 可能被多次调用(每次 ThemeManager() 都会触发)，
+              使用 _initialized 标志确保 QObject.__init__() 只执行一次。
+        """
         if self._initialized:
-            return
+            return  # 已初始化过，跳过(单例复用)
         self._initialized = True
+        # 必须调用 QObject.__init__()，否则 pyqtSignal 无法正常工作
+        super().__init__()
         self._current_theme_name = "dark"
         self._theme_data = dict(THEME_DARK)
 
-    @classmethod
-    def init_signal(cls) -> None:
-        """
-        初始化主题变更信号（必须在QApplication创建之后调用）
-        
-        原理: pyqtSignal必须在QObject子类中定义，且在QApplication实例化之后才能正常工作。
-              此方法在MainWindow初始化时调用，确保信号可用。
-        """
-        instance = cls()
-        if instance.theme_changed is None:
-            instance.theme_changed = pyqtSignal(str)
-    
     @classmethod
     def get(cls, key: str, default: str = None) -> str:
         """
@@ -330,11 +327,10 @@ class ThemeManager:
         print(f"[ThemeManager] 主题已切换: {old_theme} → {theme_name}")
         
         # 发射主题变更信号
-        if instance.theme_changed is not None:
-            try:
-                instance.theme_changed.emit(theme_name)
-            except Exception:
-                pass
+        try:
+            instance.theme_changed.emit(theme_name)
+        except Exception:
+            pass
         
         return True
     
@@ -789,11 +785,15 @@ class LoadContentWorker(QRunnable):
             # v2.0新增: 根据当前UI主题设置GTP渲染主题
             # 浅色UI → light渲染 / 深色UI → dark渲染（用户可在深色模式下手动切换）
             render_theme = ThemeManager.get_gtp_render_theme()
-            try:
-                player.set_theme(render_theme)
-                print(f"[LoadContentWorker] GTP渲染主题: {render_theme}")
-            except Exception as e:
-                print(f"[LoadContentWorker] 设置GTP渲染主题失败(使用默认): {e}")
+            # 安全检查: 确保GTPPlayer版本支持set_theme方法
+            if hasattr(player, 'set_theme') and callable(getattr(player, 'set_theme')):
+                try:
+                    player.set_theme(render_theme)
+                    print(f"[LoadContentWorker] GTP渲染主题: {render_theme}")
+                except Exception as e:
+                    print(f"[LoadContentWorker] 设置GTP渲染主题失败(使用默认): {e}")
+            else:
+                print(f"[LoadContentWorker] 当前GTPPlayer版本不支持主题切换，使用默认主题")
             
             # 渲染当前音轨（默认第0轨）
             pixmaps = player.render_track(0)
@@ -821,6 +821,41 @@ class LoadContentWorker(QRunnable):
             images.append(error_pixmap)
         
         return images
+
+    def _create_error_image(self, message: str) -> QPixmap:
+        """创建错误展示图（当GTP加载失败时显示）- 支持动态主题"""
+        width, height = 800, 500
+        pixmap = QPixmap(width, height)
+        pixmap.fill(QColor(ThemeManager.get('bg_surface', '#252536')))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # 标题
+        painter.setPen(QColor(ThemeManager.get('danger', '#EF4444')))
+        title_font = QFont("Microsoft YaHei", 26, QFont.Bold)
+        painter.setFont(title_font)
+        filename = os.path.basename(self.file_path)
+        painter.drawText(QRect(50, 40, 700, 60), Qt.AlignCenter, f"加载失败: {filename}")
+
+        # 错误文本
+        painter.setPen(QColor(ThemeManager.get('text_primary', '#E2E8F0')))
+        info_font = QFont("Microsoft YaHei", 13)
+        painter.setFont(info_font)
+        
+        # 将message按行分割并绘制
+        lines = message.split('\n')
+        y = 130
+        for line in lines:
+            if line.strip():
+                painter.drawText(QRect(50, y, 700, 32), Qt.AlignLeft, line)
+            y += 30
+
+        # 边框
+        painter.setPen(QPen(QColor(ThemeManager.get('danger', '#EF4444')), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(30, 30, width - 60, height - 60, 15, 15)
+        painter.end()
+        return pixmap
 
     def _create_gtp_info_image(self, message: str) -> QPixmap:
         """创建GTP信息/错误展示图（当gtp_engine不可用时回退显示）- 支持动态主题"""
@@ -1901,50 +1936,73 @@ class DisplayWidget(QWidget):
             # 点击位置计算:
             #   event.y() = 鼠标在画布中的Y坐标(像素)
             #   click_abs_y = 当前滚动偏移 + 鼠标Y = 点击处在总内容中的绝对Y坐标(像素)
-            #   new_position = click_abs_y - 屏幕中心偏移 = 使点击处显示在屏幕中央附近
+            #   new_position = click_abs_y - 偏移量 = 使点击处显示在目标位置
+            #
+            # [v2.0.1 Bug修复] 点击前几行无法跳转进度问题:
+            #   原因: 居中偏移(height/2)过大 → 点击前几行时new_position为负数→截断为0→无法跳转
+            #   修复1: 偏移量从height/2减小到height/4(点击处显示在屏幕上1/4处,减少顶部截断)
+            #   修复2: seek音频时使用原始计算值(不被clamp截断),确保跳到正确时间点
             ww = self.width()
             if ww > 20:
                 if self.parent_window.total_scroll_distance > 0:
+                    # === 仅在可滚动时才调整位置和音频seek ===
                     # 点击处的绝对内容Y坐标
                     click_abs_y = self.parent_window.current_position + event.y()
-                    # 将点击处定位到屏幕垂直中心位置(使点击的谱面区域居中显示)
-                    new_position = click_abs_y - (self.height() / 2)
-                    # 限制在有效范围内
+
+                    # 偏移策略: 将点击处定位到屏幕上方1/4高度处(而非正中央)
+                    # 效果: 点击后该位置显示在屏幕上部,下方留出更多上下文内容可见
+                    #       同时减少"点击顶部→负数→截断为0"的问题(原来用height/2容易溢出)
+                    # 调整效果: 偏移越小,点击顶部时越不容易被截断;偏移越大,居中效果越好
+                    #         height/4 是经验平衡值: 既保留一定居中效果,又避免大部分截断
+                    click_offset = self.height() * 0.25
+
+                    # 视觉位置: clamp到有效范围(防止滚动越界)
+                    new_position = click_abs_y - click_offset
                     new_position = max(0, min(new_position, self.parent_window.total_scroll_distance))
-                    
+
+                    # Seek位置: 使用原始计算值(不被clamp截断),确保音频跳到正确时间点
+                    # 场景: 播放中途点击已滚过的前几行→视觉position可能被截断到边界,
+                    #       但音频应跳转到对应时间点(而非总是开头或末尾)
+                    seek_position = max(0, click_abs_y - click_offset)
+
                     # === 步骤1: 设置视觉位置和跳转目标(防止_tick覆盖) ===
                     self.parent_window.current_position = new_position
                     self.parent_window._click_jump_target = new_position
                     self.parent_window.update_progress_display()
                     self.parent_window._sync_play_time_from_position()  # 同步播放时间(点击跳转后)
-                    
+
                     # === 步骤2: 先处理音频seek(在start_playback之前!) ===
                     # 重要: seek必须在play()之前调用，这样play()启动的线程才能使用正确的start_offset
-                    if (self.parent_window.gtp_player and 
+                    if (self.parent_window.gtp_player and
                         self.parent_window.gtp_player.is_audio_ready):
                         try:
                             # === 使用反向时间线查找(非线性映射) ===
                             # 原理: GTPPlayer.build_timeline建立了time_ms↔scroll_y的非线性映射，
                             #       不能用线性比例(pos/total*time)反推时间！
                             #       必须用GTPPlayer.scroll_pos_to_time()在timeline中对scroll_y做二分查找。
-                            
+                            # [v2.0.1修复] 使用seek_position(原始值)而非new_position(clamp后),
+                            #       确保点击前几行时音频也能正确跳转到对应时间点
+
                             target_ms = self.parent_window.gtp_player.scroll_pos_to_time(
-                                new_position,
+                                seek_position,
                                 self.parent_window.total_scroll_distance,
                                 self.parent_window.height()
                             )
-                            
+
                             if target_ms > 0:
                                 self.parent_window.gtp_player.seek(target_ms)
                         except Exception as e:
                             print(f"[ClickPlay] 音频跳转失败: {e}")
-                    
-                    # === 步骤3: 最后启动播放(如果尚未播放) ===
-                    # 必须在seek之后! 这样play()使用seek设置好的_current_time_ms作为起点
-                    if not self.parent_window.timer.isActive():
-                        self.parent_window.toggle_playback()
-                    
-                    self.update()  # 立即更新显示
+
+                # === 步骤3: 启动播放(无论是否可滚动都执行!) ===
+                # [v2.0.1修复] 从if total_scroll_distance>0内部移到此处
+                # 原因: 短谱(total_scroll_distance=0)或点击前几行(position不变)时，
+                #       用户仍期望点击能启动/继续播放
+                # 必须在seek之后! 这样play()使用seek设置好的_current_time_ms作为起点
+                if not self.parent_window.timer.isActive():
+                    self.parent_window.toggle_playback()
+
+                self.update()  # 立即更新显示
             
             event.accept()
             return
@@ -2529,6 +2587,10 @@ class DisplayWindow(QMainWindow):
         
         # === 总音频时长(ms)(用于进度条百分比计算) ===
         self._total_audio_duration_ms:float=0.0
+        
+        # === 暂停时保存的播放时间(用于恢复播放) ===
+        # 当用户暂停播放时，保存当前音频时间，恢复播放时从此位置继续
+        self._paused_time_ms:float=0.0
 
         self.init_ui()
         self._load_annotations()               # 加载已有标注
@@ -2556,11 +2618,10 @@ class DisplayWindow(QMainWindow):
         splitter.addWidget(self.display_widget)
 
         # 连接主题变更信号: 当ThemeManager切换主题时自动刷新本窗口(含GTP谱重渲染)
-        if ThemeManager.theme_changed is not None:
-            try:
-                ThemeManager.theme_changed.connect(self._refresh_theme)
-            except Exception:
-                pass  # 信号未初始化时静默忽略(正常，首次启动时可能尚未初始化)
+        try:
+            ThemeManager.theme_changed.connect(self._refresh_theme)
+        except Exception:
+            pass  # 连接失败时静默忽略(正常，信号可能在某些边界情况下不可用)
 
         # 右侧控制面板
         right_panel=self._create_control_panel()
@@ -2749,7 +2810,7 @@ class DisplayWindow(QMainWindow):
         pg=QGroupBox(I18n.t("control_panel.playback_control"));pl=QVBoxLayout(pg)
         btn_row=QHBoxLayout()
         self.play_btn=ModernButton(I18n.t("control_panel.play_btn"),'success');self.play_btn.clicked.connect(self.toggle_playback)
-        self.stop_btn=ModernButton(I18n.t("control_panel.stop_btn"),'danger');self.stop_btn.clicked.connect(self.stop_playback);self.stop_btn.setEnabled(False)
+        self.stop_btn=ModernButton(I18n.t("control_panel.stop_btn"),'danger');self.stop_btn.clicked.connect(lambda: self.stop_playback(reset_position=True));self.stop_btn.setEnabled(False)
         btn_row.addWidget(self.play_btn);btn_row.addWidget(self.stop_btn);pl.addLayout(btn_row)
 
         # 循环模式
@@ -2997,7 +3058,7 @@ class DisplayWindow(QMainWindow):
         
         was_playing = self.timer.isActive()
         if need_stop and was_playing:
-            self.stop_playback()
+            self.stop_playback(reset_position=True)  # 切换音轨，重置位置
 
         try:
             # 使用 GTPPlayer 重新渲染新音轨
@@ -3070,6 +3131,9 @@ class DisplayWindow(QMainWindow):
         self._last_tick_time = time.perf_counter()  # 重置时间戳，从当前时刻开始计时
         # Phase 3: 同时启动音频引擎
         if self.gtp_player and self.gtp_player.is_audio_ready:
+            # 恢复播放: 如果有暂停时保存的时间，从该位置继续
+            if self._paused_time_ms > 0:
+                self.gtp_player.seek(self._paused_time_ms)
             self.gtp_player.play()
         self.play_btn.setText(I18n.t("control_panel.pause_btn"))
         self.play_btn.setStyleSheet(f"background-color:{ThemeManager.get('warning', '#F59E0B')};")
@@ -3097,13 +3161,27 @@ class DisplayWindow(QMainWindow):
         # 调用父类关闭
         super().closeEvent(event)
 
-    def stop_playback(self)->None:
-        """停止播放"""
+    def stop_playback(self, reset_position: bool = False)->None:
+        """
+        停止播放
+        
+        参数:
+            reset_position: 是否重置播放位置到开始
+                - True: 停止模式(点击停止按钮)，重置到开始
+                - False: 暂停模式(点击播放按钮)，保存当前位置以便恢复
+        """
         self.timer.stop()
         self._click_jump_target = -1.0  # 清除点击跳转目标
         # Phase 3: 同时停止GTP播放器
         if self.gtp_player and self.gtp_player.is_audio_ready:
-            self.gtp_player.stop()
+            if reset_position:
+                # 停止模式: 重置到开始位置
+                self._paused_time_ms = 0.0
+                self.gtp_player.stop()
+            else:
+                # 暂停模式: 保存当前位置以便恢复
+                self._paused_time_ms = self.gtp_player.current_time_ms
+                self.gtp_player.stop()
         self.play_btn.setText(I18n.t("control_panel.play_btn"))
         self.play_btn.setStyleSheet(f"background-color:{ThemeManager.get('success', '#10B981')};")
         self.stop_btn.setEnabled(False)
@@ -3436,7 +3514,7 @@ class DisplayWindow(QMainWindow):
                         self.gtp_player.seek(target_time)
             elif effective_time >= total_dur:
                 self.current_position = self.total_scroll_distance
-                self.stop_playback()
+                self.stop_playback(reset_position=True)  # 播放结束，重置位置
 
         else:
             # --- 线性恒速模式(无音频时降级使用) ---
@@ -3471,7 +3549,7 @@ class DisplayWindow(QMainWindow):
                     self.current_position=self.total_scroll_distance*self.loop_config.start_position/100
             elif self.current_position>=self.total_scroll_distance:
                 self.current_position=self.total_scroll_distance
-                self.stop_playback()
+                self.stop_playback(reset_position=True)  # 播放结束，重置位置
 
             if self.total_scroll_distance > 0:
                 pct = (self.current_position / self.total_scroll_distance) * 100
@@ -4221,72 +4299,92 @@ class DisplayWindow(QMainWindow):
 
     def _render_to_a4_png_v2(self, file_path:str, images:list, annotations:list, dpi:int=300)->int:
         """
-        渲染为PNG(v3: 自适应画布尺寸，消除多余空白)
-        
-        改进: 
-          - 画布尺寸根据实际内容自动计算，不再强制固定A4
-          - 单页/末页: 画布高度=内容高度+边距，无多余空白
-          - 多页中间页: 使用A4高度保持一致
-          - margin从5%缩小到2%，减少四周留白
+        渲染为PNG(v6: 按A4宽度等比缩放 + 预渲染防溢出)
+
+        设计说明:
+          - 将渲染器输出的图片按A4宽度等比缩放，谱面占满整个A4宽度
+          - 使用"预渲染+合成"方案: page_buffer(固定高度) → A4画布，物理隔离杜绝溢出
+          - 无边距、无间距
         返回: 生成的文件数
         """
         a4_w, a4_h = self._get_a4_size_px(dpi)
-        margin = int(a4_w * 0.02); draw_w = a4_w - 2 * margin  # 边距从5%→2%
+        draw_w = a4_w  # 谱面占满A4宽度
 
-        # 预缩放所有图片
+        # 按A4宽度等比缩放所有图片(最大化利用空间)
         scaled_info = []; total_h = 0
         for img in images:
             if img.isNull(): continue
             ratio = draw_w / img.width() if img.width() > 0 else 1
             sh = int(img.height() * ratio)
             scaled_info.append((img.scaled(draw_w, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation), sh))
-            total_h += sh + 5
+            total_h += sh
         if not scaled_info:
             raise ValueError("没有可渲染的内容")
 
-        draw_area_h = a4_h - 2 * margin  # 每页最大可用绘制高度
+        draw_area_h = a4_h - 25  # 每页可用高度(仅预留25px给页码)
         n_pages = max(1, (total_h + draw_area_h - 1) // draw_area_h)
+
+        # === 检测并跳过末尾空白/近空白页 ===
+        # 原理: 内容刚好跨页边界时(如total_h=3483 > draw_area_h=3482)，
+        #       尾页只有几像素内容，视觉上等同空白页，应跳过。
+        #       阈值5%: 尾页内容不足页面高度的5%时视为空白(约174px@300dpi)
+        if n_pages > 1:
+            last_page_start = (n_pages - 1) * draw_area_h
+            last_page_content = total_h - last_page_start
+            if last_page_content < draw_area_h * 0.05:
+                n_pages -= 1  # 跳过近空白尾页(少量溢出被page_buffer裁剪吸收)
+
         saved = 0
 
         for page_idx in range(n_pages):
             ps = page_idx * draw_area_h; pe = ps + draw_area_h
-            
-            # === 自适应画布高度: 紧贴实际内容 ===
-            page_content_h = min(total_h - ps, draw_area_h)
-            canvas_h = int(page_content_h + 2 * margin)  # 画布高度=内容高度+上下边距
-            
-            canvas = QImage(a4_w, canvas_h, QImage.Format_ARGB32_Premultiplied)
-            canvas.fill(QColor(255,255,255,255).rgba())
 
-            p = QPainter(canvas)
-            p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+            # === 方案: 预渲染到独立画布再合成到A4(100%杜绝溢出) ===
+            # 原理: ClipRect方式在某些Qt版本/渲染路径下不可靠(已验证多次失败)。
+            #       改用"预渲染+合成"方案:
+            #       1. 创建一个固定高度=draw_area_h的独立画布(page_buffer)
+            #       2. 将本页所有内容绘制到page_buffer(物理上不可能超出draw_area_h)
+            #       3. 将page_buffer一次性blit到A4画布上
+            #       → 即使page_buffer有溢出，也只影响page_buffer本身，不会污染A4画布
+            page_buffer = QImage(draw_w, draw_area_h, QImage.Format_ARGB32_Premultiplied)
+            page_buffer.fill(QColor(255,255,255,255).rgba())  # 白色背景
+
+            pb = QPainter(page_buffer)
+            pb.setRenderHint(QPainter.Antialiasing); pb.setRenderHint(QPainter.SmoothPixmapTransform)
 
             ry = 0
             for scaled_img, sh in scaled_info:
                 if ry + sh > ps and ry < pe:
-                    # 计算图片在当前页面内的可见区域(修复跨页溢出bug)
-                    # 原理: 当一张图跨越页底边界时，只绘制在页面范围内的部分，
-                    #       避免第1页底部出现第2页的内容
-                    src_top = max(0, ps - ry)                    # 源图裁剪顶部(跳过上一页已绘部分)
-                    src_bottom = min(sh, pe - ry)               # 源图裁剪底部(不超出本页底边)
-                    src_h = src_bottom - src_top                # 实际绘制高度
-                    dst_y = margin + (ry - ps) + src_top        # 目标画布Y坐标
-                    p.drawPixmap(
-                        QRect(margin, dst_y, draw_w, src_h),   # 目标矩形(限制在本页范围内)
-                        scaled_img,
-                        QRect(0, src_top, draw_w, src_h)       # 源矩形(只取可见部分)
-                    )
-                ry += sh + 5
+                    src_top = max(0, ps - ry)
+                    src_bottom = min(sh, pe - ry)
+                    src_h = max(0, src_bottom - src_top)
+                    if src_h > 0:
+                        dst_y = (ry - ps) + src_top
+                        pb.drawPixmap(
+                            QRect(0, dst_y, draw_w, src_h),
+                            scaled_img,
+                            QRect(0, src_top, draw_w, src_h)
+                        )
+                ry += sh
 
-            # 绘制标注(临时替换self.annotations以支持传入的annotations列表)
+            # === 绘制标注(在page_buffer内) ===
             orig_anns = self.annotations
             self.annotations = annotations
-            self._draw_annotations_on_canvas(p, margin, margin, draw_w, float(total_h), float(ps), float(pe),
+            self._draw_annotations_on_canvas(pb, 0, 0, draw_w, float(total_h), float(ps), float(pe),
                                                scale_ratio=draw_w / max(self.display_widget.width()-20, 1))
             self.annotations = orig_anns
+            pb.end()  # 关闭page_buffer的painter
 
+            # === 合成: A4画布 ← page_buffer(预渲染内容) + 页码 ===
+            canvas = QImage(a4_w, a4_h, QImage.Format_ARGB32_Premultiplied)
+            canvas.fill(QColor(255,255,255,255).rgba())  # 白色A4背景
+
+            p = QPainter(canvas)
+            p.drawPixmap(0, 0, QPixmap.fromImage(page_buffer))  # 预渲染内容(QImage→QPixmap转换)
+
+            # 页码(A4底部固定位置)
             p.setPen(QColor("#999999")); p.setFont(QFont("Arial",9))
-            p.drawText(QRect(margin, canvas_h-margin-20, draw_w, 20), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
+            p.drawText(QRect(0, a4_h - 25, draw_w, 25), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
             p.end()
 
             path = file_path if n_pages == 1 else f"{os.path.splitext(file_path)[0]}_p{page_idx+1}{os.path.splitext(file_path)[1]}"
@@ -4297,31 +4395,34 @@ class DisplayWindow(QMainWindow):
 
     def _render_to_a4_pdf_v2(self, file_path:str, images:list, annotations:list, dpi:int=300)->None:
         """
-        渲染为PDF(v3: 自适应画布尺寸 + PyMuPDF生成)
-        
-        改进:
-          - 画布高度自适应实际内容，消除末页空白
-          - margin从5%缩小到2%
-          - PDF页面尺寸也自适应(非固定A4)，每页紧贴内容
-          - 使用PyMuPDF(fitz)生成PDF，兼容性更好
+        渲染为PDF(v6: 按A4宽度等比缩放 + 预渲染防溢出)
+
+        设计说明: 与PNG导出一致，按A4宽度等比缩放 + 预渲染防溢出
         """
         import io
         a4_w, a4_h = self._get_a4_size_px(dpi)
-        margin = int(a4_w * 0.02); draw_w = a4_w - 2 * margin  # 边距从5%→2%
+        draw_w = a4_w  # 谱面占满A4宽度(与PNG一致)
 
-        # 预缩放所有图片
+        # 按A4宽度等比缩放所有图片(与PNG导出一致)
         scaled_info = []; total_h = 0
         for img in images:
             if img.isNull(): continue
             ratio = draw_w / img.width() if img.width() > 0 else 1
             sh = int(img.height() * ratio)
             scaled_info.append((img.scaled(draw_w, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation), sh))
-            total_h += sh + 5
+            total_h += sh
         if not scaled_info:
             raise ValueError("没有可渲染的内容")
 
-        draw_area_h = a4_h - 2 * margin
+        draw_area_h = a4_h - 25
         n_pages = max(1, (total_h + draw_area_h - 1) // draw_area_h)
+
+        # === 检测并跳过末尾空白/近空白页(与PNG导出一致) ===
+        if n_pages > 1:
+            last_page_start = (n_pages - 1) * draw_area_h
+            last_page_content = total_h - last_page_start
+            if last_page_content < draw_area_h * 0.05:
+                n_pages -= 1
 
         # 用PyMuPDF创建PDF
         pdf_doc = fitz.open()
@@ -4330,51 +4431,57 @@ class DisplayWindow(QMainWindow):
 
         for page_idx in range(n_pages):
             ps = page_idx * draw_area_h; pe = ps + draw_area_h
-            
-            # === 自适应画布高度 ===
-            page_content_h = min(total_h - ps, draw_area_h)
-            canvas_h = int(page_content_h + 2 * margin)
 
-            # === 渲染当前页到QImage(自适应尺寸) ===
-            canvas = QImage(a4_w, canvas_h, QImage.Format_ARGB32_Premultiplied)
-            canvas.fill(QColor(255,255,255,255).rgba())
-            p = QPainter(canvas)
-            p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+            # === 预渲染到独立画布(与PNG导出一致: 100%杜绝溢出) ===
+            page_buffer = QImage(draw_w, draw_area_h, QImage.Format_ARGB32_Premultiplied)
+            page_buffer.fill(QColor(255,255,255,255).rgba())
+
+            pb = QPainter(page_buffer)
+            pb.setRenderHint(QPainter.Antialiasing); pb.setRenderHint(QPainter.SmoothPixmapTransform)
 
             ry = 0
             for scaled_img, sh in scaled_info:
                 if ry + sh > ps and ry < pe:
-                    # 同PNG导出: 裁剪跨页溢出内容，避免下一页内容出现在当前页底部
                     src_top = max(0, ps - ry)
                     src_bottom = min(sh, pe - ry)
-                    src_h = src_bottom - src_top
-                    dst_y = margin + (ry - ps) + src_top
-                    p.drawPixmap(
-                        QRect(margin, dst_y, draw_w, src_h),
-                        scaled_img,
-                        QRect(0, src_top, draw_w, src_h)
-                    )
-                ry += sh + 5
+                    src_h = max(0, src_bottom - src_top)
+                    if src_h > 0:
+                        dst_y = (ry - ps) + src_top
+                        pb.drawPixmap(
+                            QRect(0, dst_y, draw_w, src_h),
+                            scaled_img,
+                            QRect(0, src_top, draw_w, src_h)
+                        )
+                ry += sh
 
             # 绘制标注
             orig_anns = self.annotations
             self.annotations = annotations
-            self._draw_annotations_on_canvas(p, margin, margin, draw_w, float(total_h), float(ps), float(pe),
+            self._draw_annotations_on_canvas(pb, 0, 0, draw_w, float(total_h), float(ps), float(pe),
                                                scale_ratio=draw_w / max(self.display_widget.width()-20, 1))
             self.annotations = orig_anns
+            pb.end()
+
+            # === 合成到A4画布 ===
+            canvas = QImage(a4_w, a4_h, QImage.Format_ARGB32_Premultiplied)
+            canvas.fill(QColor(255,255,255,255).rgba())
+            p = QPainter(canvas)
+            p.drawPixmap(0, 0, QPixmap.fromImage(page_buffer))  # 预渲染内容(QImage→QPixmap转换)
 
             # 页码
             p.setPen(QColor("#999999")); p.setFont(QFont("Arial",9))
-            p.drawText(QRect(margin, canvas_h-margin-20, draw_w, 20), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
+            p.drawText(QRect(0, a4_h - 25, draw_w, 25), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
             p.end()
 
-            # === 将QImage转为PDF页面(自适应尺寸) ===
-            buf = io.BytesIO()
+            # === 将QImage转为PDF页面(固定A4尺寸) ===
+            buf = QBuffer()
+            buf.open(QBuffer.WriteOnly)
             canvas.save(buf, "PNG")
-            png_bytes = buf.getvalue()
+            png_bytes = bytes(buf.data())  # QByteArray → Python bytes(PyMuPDF需要)
+            buf.close()
 
             page_pt_w = a4_pt_w
-            page_pt_h = canvas_h * px_to_pt
+            page_pt_h = a4_pt_h  # 固定A4尺寸(与画布一致)
             page = pdf_doc.new_page(width=page_pt_w, height=page_pt_h)
             rect = fitz.Rect(0, 0, page_pt_w, page_pt_h)
             page.insert_image(rect, stream=png_bytes)
@@ -5017,9 +5124,6 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色/浅色主题
     app.setWindowIcon(get_app_icon())  # 设置全局应用图标(任务栏图标/窗口默认图标)
-
-    # 初始化主题信号（必须在QApplication之后）
-    ThemeManager.init_signal()
 
     # 初始化国际化系统 - 从配置文件加载已保存的语言设置
     saved_lang='zh_CN'
