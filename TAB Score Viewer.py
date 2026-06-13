@@ -2008,43 +2008,33 @@ class DisplayWidget(QWidget):
                     self.parent_window.update_progress_display()
                     self.parent_window._sync_play_time_from_position()  # 同步播放时间(点击跳转后)
 
-                    # === 步骤2: 先处理音频seek(在start_playback之前!) ===
-                    # 重要: seek必须在play()之前调用，这样play()启动的线程才能使用正确的start_offset
+                    # === 步骤2: 音频seek(跳转到对应时间点) ===
+                    # [v2.0.1修复] 视频同步问题:
+                    #   scroll_pos_to_time的第3个参数height是视口偏移量,
+                    #   传入0仍有半行残留偏移→改用负值补偿(约半行高度=20px)
+                    target_ms = 0
                     if (self.parent_window.gtp_player and
                         self.parent_window.gtp_player.is_audio_ready):
                         try:
-                            # === 使用反向时间线查找(非线性映射) ===
-                            # 原理: GTPPlayer.build_timeline建立了time_ms↔scroll_y的非线性映射，
-                            #       不能用线性比例(pos/total*time)反推时间！
-                            #       必须用GTPPlayer.scroll_pos_to_time()在timeline中对scroll_y做二分查找。
-                            #
-                            # [v2.0.1修复] 视频同步问题:
-                            #   症状: 点击行到屏幕顶部✓,但播放条/高亮超前~5行✗
-                            #   原因: scroll_pos_to_time(scroll_pos, total, height)的第3个参数height是
-                            #         视口偏移量——函数内部可能用它计算"播放头应在视口中的位置"
-                            #         (如居中=height/2),导致返回的时间对应于scroll_pos+偏移后的位置
-                            #   修复: 传入height=0,告诉函数不要添加任何视口偏移,
-                            #         使返回的时间精确对应new_position(点击处=屏幕顶部)
-
                             target_ms = self.parent_window.gtp_player.scroll_pos_to_time(
                                 seek_position,
                                 self.parent_window.total_scroll_distance,
-                                0  # 不加视口偏移,精确映射到点击位置(屏幕顶部)
+                                100  # 负偏移补偿残留误差(约1行高度,可微调: -30~-50)
                             )
-
+                            print(f"[ClickDebug] pos={new_position:.0f} → ms={target_ms:.0f}")
                             if target_ms > 0:
-                                print(f"[ClickDebug] seek_pos={seek_position:.0f} → target_ms={target_ms:.0f}ms")
                                 self.parent_window.gtp_player.seek(target_ms)
                         except Exception as e:
-                            print(f"[ClickPlay] 音频跳转失败: {e}")
+                            print(f"[ClickPlay] seek失败: {e}")
 
                 # === 步骤3: 启动播放(无论是否可滚动都执行!) ===
-                # [v2.0.1修复] 从if total_scroll_distance>0内部移到此处
-                # 原因: 短谱(total_scroll_distance=0)或点击前几行(position不变)时，
-                #       用户仍期望点击能启动/继续播放
-                # 必须在seek之后! 这样play()使用seek设置好的_current_time_ms作为起点
+                # [v2.0.1修复] 热跳转方案: 不stop/restart,直接seek+继续播放
+                # 原因: stop()会重置音频引擎内部状态→play()从0开始,覆盖seek结果!
+                # 方案: 未播放则启动;播放中则热seek,_click_jump_target保护视觉位置
                 if not self.parent_window.timer.isActive():
                     self.parent_window.toggle_playback()
+                # 播放中: 步骤2的seek(target_ms)已生效,音频引擎从新位置继续
+                #         _click_jump_target在步骤1已设置,_tick保护视觉直到追上
 
                 self.update()  # 立即更新显示
             
