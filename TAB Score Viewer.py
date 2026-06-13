@@ -1697,13 +1697,36 @@ class DisplayWidget(QWidget):
         """
         if event.button() == Qt.LeftButton and self._drag_ann_id:
             self.setCursor(Qt.ArrowCursor)
+            # === 关键修复: 区分"点击X删除"和"拖动标注" ===
+            # 原因: _hit_annotation() 扩展了右边界28px以包含X删除按钮，
+            #       导致点X区域也会进入拖动模式。需要在release时判断：
+            #       鼠标几乎没移动(是点击而非拖动) + 在X按钮区域内 → 走删除逻辑
+            drag_distance = (event.pos() - self._drag_mouse_start).manhattanLength()
+            is_click_not_drag = (drag_distance < 5)  # 移动<5px视为点击
+            is_on_delete_btn = (self._delete_btn_rect.contains(event.pos()) or
+                                (self._hover_ann_id and self._hit_annotation(event.x(), event.y()) is not None))
+
+            if is_click_not_drag and is_on_delete_btn and self.parent_window:
+                # 点击了X删除按钮 → 执行删除（不保存位置变化）
+                del_id = self._drag_ann_id  # _drag_ann_id就是当前标注ID
+                self.parent_window._anno_save_snapshot()
+                self.parent_window.annotations = [
+                    a for a in self.parent_window.annotations if a.id != del_id
+                ]
+                self.parent_window._save_annotations()
+                self.set_annotations(self.parent_window.annotations)
+                self._hover_ann_id = ""
+                self._delete_btn_rect = QRect()
+                self._drag_ann_id = ""
+                event.accept()
+                return
+
             if self.parent_window:
-                # 检查位置是否有实际变化
+                # 正常拖动结束: 检查位置是否有实际变化
                 for a in self.parent_window.annotations:
                     if a.id == self._drag_ann_id:
                         if (abs(a.x - self._drag_start_xy[0]) > 0.001 or
                                 abs(a.y - self._drag_start_xy[1]) > 0.001):
-                            # 位置有变化 → 入撤销栈 + 保存
                             self.parent_window._anno_save_snapshot()
                             self.parent_window._save_annotations()
                         break
@@ -1712,7 +1735,12 @@ class DisplayWidget(QWidget):
             return
 
         # === 检测是否点击了删除按钮(非拖动状态下) ===
-        if event.button() == Qt.LeftButton and self._hover_ann_id and self._delete_btn_rect.contains(event.pos()):
+        # 修复: 播放时内容会滚动，paintEvent中缓存的_delete_btn_rect可能已过时。
+        #       因此同时用 _hit_annotation 实时验证鼠标当前位置是否仍在标注区域内，
+        #       任一条件满足即触发删除，确保播放中也能正常点击X按钮。
+        is_on_stale_rect = self._delete_btn_rect.contains(event.pos())
+        is_currently_hovered = (self._hover_ann_id and self._hit_annotation(event.x(), event.y()) is not None)
+        if event.button() == Qt.LeftButton and self._hover_ann_id and (is_on_stale_rect or is_currently_hovered):
             if self.parent_window:
                 # 找到要删除的标注并执行删除
                 del_id = self._hover_ann_id
@@ -2535,6 +2563,7 @@ class DisplayWindow(QMainWindow):
           不停止音频播放、不重置滚动位置、不重建MIDI事件。
           因为并轨模式下所有音轨的音频同时在播放。
         """
+        from ApolloTab import GTPPlayer  # 延迟导入(仅GTP文件需要)
         if index < 0 or not self.gtp_player or not self.gtp_player.file_path:
             return
 
@@ -2704,6 +2733,7 @@ class DisplayWindow(QMainWindow):
         原理: 用户通过 🔊 按钮下拉菜单选择模式，委托给 GTPPlayer 处理。
               切换时如果正在播放会自动重建事件序列并继续播放。
         """
+        from ApolloTab import GTPPlayer  # 延迟导入(仅GTP文件需要)
         # 检查GTP播放器是否可用
         if self.gtp_player:
             old_mode = self.gtp_player.audio_mode
@@ -2713,7 +2743,20 @@ class DisplayWindow(QMainWindow):
             
             # 更新UI状态
             self._update_audio_button_ui(mode)
-            
+
+            # === 速度控件显隐切换 ===
+            # 原理: GTP文件在 all/current 模式下由BPM时间驱动滚动(不需要手动速度控制)，
+            #       但 off 模式下降级为线性恒速滚动(需要 base_speed + 曲线控制)
+            is_off = (mode == "off")
+            if hasattr(self, 'speed_group_box'):
+                self.speed_group_box.setVisible(is_off)
+            if hasattr(self, 'speed_spin'):
+                self.speed_spin.setVisible(is_off)
+            if hasattr(self, 'curve_btn'):
+                self.curve_btn.setVisible(is_off)
+            if hasattr(self, 'curve_status_label'):
+                self.curve_status_label.setVisible(is_off)
+
             # 重建播放光标时间线（如果布局数据可用）
             if (self.images and self._page_layouts and 
                 mode != GTPPlayer.MODE_OFF):
@@ -2916,11 +2959,14 @@ class DisplayWindow(QMainWindow):
           1. 图片缩放缓存: paintEvent使用预缓存的scaled图片，避免每帧重新scale(CPU密集)
           2. UI节流: 进度条位置每帧更新(轻量)，页码同步/标签每3帧更新一次
         """
-        # === 判断是否使用时间驱动滚动(有GTP播放器 + 有时间线) ===
+        # === 判断是否使用时间驱动滚动(有GTP播放器 + 有时间线 + 音频未关闭) ===
+        # 注意: 当音频模式为"off"时，虽然is_audio_ready可能为True(引擎已初始化)，
+        #       但current_time_ms不会递增(音频未实际播放)，必须降级为线性滚动
         use_time_scroll = (
             self.gtp_player is not None
             and self.gtp_player.is_audio_ready
             and len(self._playhead_timeline) >= 2
+            and self.gtp_player.audio_mode != 'off'  # off模式下禁用时间驱动滚动
         )
 
         if use_time_scroll:
@@ -2984,7 +3030,9 @@ class DisplayWindow(QMainWindow):
 
             self._calculate_scroll_step(current_speed)
             self.current_position+=self.scroll_step
-            self.play_time+=current_speed/1000.0
+            # 线性模式: 按实际帧间隔(33ms)累加播放时间，而非速度值
+            # 之前错误地用 current_speed/1000.0 导致时间飞速增长(500→每帧+0.5s=15s/真实秒)
+            self.play_time += 33.0 / 1000.0  # ≈33ms/帧
 
             # 循环检查
             should_loop=self._check_loop_condition()

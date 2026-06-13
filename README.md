@@ -38,7 +38,7 @@
 #### 环境要求
 
 - Python 3.8+
-- Windows / Linux (Linux 无 MIDI 音频)
+- Windows
 
 #### 安装步骤
 
@@ -218,7 +218,7 @@ pages = render_gtp("my_song.gp5", track_index=0)
 pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 3. 执行打包（使用预配置的 spec 文件）
-pyinstaller guitar_tab_viewer.spec
+pyinstaller TAB Score Viewer.spec
 
 # 4. 运行打包结果
 dist\TAB Score Viewer\TAB Score Viewer.exe
