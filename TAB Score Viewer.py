@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================
-文件名: guitar_tab_viewer.py
+文件名: TAB Score Viewer.py
 功能描述: 万能吉他谱查看器(TAB Score Viewer) - 支持多格式查看、播放、标注、导出
          支持格式: PNG, JPG, JPEG, WEBP(图片), PDF(文档), GP3/GP4/GP5/GPX(GTP吉他谱)
 
@@ -14,16 +14,17 @@
            6. 全局撤销重做 - Ctrl+Z/Y统一撤销所有标注操作(画布+管理器共享栈)
            7. 页码导航 - PDF/多图模式底部页码输入框直接跳转
            8. 鼠标滚轮滚动 - 支持Ctrl加速/Shift精细控制
-           9. 深色主题UI + 自定义组件(按钮/滑块/进度条)
+           9. 深色/浅色主题UI + 自定义组件(按钮/滑块/进度条) + 实时主题切换
           10. 键盘快捷键 - 空格播放暂停/方向键调速/Ctrl+Z撤销/Ctrl+Y重做/ESC关闭
-          11. GTP文件完整渲染 - 基于gtp_engine库解析并渲染为六线谱图像
+          11. GTP文件完整渲染 - 基于ApolloTab库解析并渲染为六线谱图像
           12. 右键打开文件位置 - 文件列表右键菜单支持在资源管理器中定位文件
           13. GTP音轨切换 - 下拉菜单选择不同音轨查看(含调弦信息显示)
           14. 播放光标 - 竖线跟随播放进度移动，当前小节高亮显示
           15. 播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
+          16. 国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
 
 创建日期: 2026-06-06
-最后修改: 2026-06-12 (v1.9.1 - 应用图标: icon.ico窗口图标+任务栏图标/PyInstaller打包支持)
+最后修改: 2026-06-13 (v2.0.0 - 深色/浅色主题系统: ThemeManager单例+动态主题切换+GTP渲染联动+主题持久化)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -122,8 +123,8 @@ SUPPORTED_PDF_EXTENSIONS = ('.pdf',)
 SUPPORTED_GTP_EXTENSIONS = ('.gp3', '.gp4', '.gp5', '.gpx', '.gtp')
 SUPPORTED_ALL_EXTENSIONS = SUPPORTED_IMAGE_EXTENSIONS + SUPPORTED_PDF_EXTENSIONS + SUPPORTED_GTP_EXTENSIONS
 
-# UI颜色主题 - 深色音乐风格
-THEME_COLORS = {
+# UI颜色主题 - 深色音乐风格(默认)
+THEME_DARK = {
     'bg_primary': '#121212',
     'bg_secondary': '#1E1E2E',
     'bg_surface': '#252536',
@@ -142,6 +143,250 @@ THEME_COLORS = {
     'warning': '#F59E0B',
     'danger': '#EF4444',
 }
+
+# UI颜色主题 - 浅色清新风格
+THEME_LIGHT = {
+    'bg_primary': '#F8FAFC',       # 主背景: 极浅灰白
+    'bg_secondary': '#F1F5F9',     # 次背景: 浅灰
+    'bg_surface': '#FFFFFF',       # 表面: 纯白
+    'bg_card': '#FFFFFF',          # 卡片: 纯白
+    'border': '#E2E8F0',           # 边框: 浅灰蓝
+    'text_primary': '#1E293B',     # 主文字: 深蓝灰
+    'text_secondary': '#64748B',   # 次文字: 灰蓝
+    'text_muted': '#94A3B8',       # 弱文字: 中灰
+    'primary': '#2563EB',          # 主色: 深蓝
+    'primary_hover': '#1D4ED8',    # 主色悬停: 更深蓝
+    'primary_light': '#60A5FA',    # 主色浅: 天蓝
+    'accent': '#EA580C',           # 强调色: 深橙
+    'accent_hover': '#C2410C',     # 强调悬停: 更深橙
+    'accent_light': '#FDBA74',     # 强调浅: 浅橙
+    'success': '#059669',          # 成功: 深绿
+    'warning': '#D97706',          # 警告: 深黄
+    'danger': '#DC2626',           # 危险: 深红
+}
+
+# 向后兼容: 默认引用深色主题
+THEME_COLORS = THEME_DARK
+
+
+# ============================================================
+# 主题管理器（单例模式） - v2.0 新增
+# ============================================================
+
+class ThemeManager:
+    """
+    全局主题管理器（单例模式）
+    
+    功能:
+      1. 统一管理深色/浅色两套UI配色方案
+      2. 提供运行时动态切换主题能力
+      3. 通过 theme_changed 信号通知所有UI组件刷新样式
+      4. 与 ApolloTab 渲染主题联动（浅色UI → light渲染 / 深色UI → dark渲染）
+      5. 主题选择持久化到 settings.json
+    
+    使用方式:
+        # 获取当前主题颜色
+        color = ThemeManager.get('primary')  # 返回当前主题的主色
+        
+        # 切换主题
+        ThemeManager.set_theme('light')      # 切换到浅色
+        
+        # 监听主题变更
+        ThemeManager.theme_changed.connect(my_refresh_func)
+        
+        # 获取ApolloTab渲染主题名称
+        render_theme = ThemeManager.gtp_render_theme  # "light" 或 "dark"
+    
+    可用主题:
+      - "dark":  深色音乐风格（默认，护眼）
+      - "light": 浅色清新风格（明亮，适合白天/打印）
+    """
+    
+    _instance = None              # 单例实例
+    _current_theme_name: str = "dark"  # 当前主题名称
+    _theme_data: dict = THEME_DARK     # 当前主题配色字典
+    theme_changed = None         # 信号: pyqtSignal(str) - 延迟初始化(需在QApplication之后)
+    
+    # GTP渲染主题映射: UI主题名 → ApolloTab渲染主题名
+    _GTP_THEME_MAP = {
+        'dark': 'dark',
+        'light': 'light',
+    }
+    
+    def __new__(cls):
+        """单例模式"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self._current_theme_name = "dark"
+        self._theme_data = dict(THEME_DARK)
+
+    @classmethod
+    def init_signal(cls) -> None:
+        """
+        初始化主题变更信号（必须在QApplication创建之后调用）
+        
+        原理: pyqtSignal必须在QObject子类中定义，且在QApplication实例化之后才能正常工作。
+              此方法在MainWindow初始化时调用，确保信号可用。
+        """
+        instance = cls()
+        if instance.theme_changed is None:
+            instance.theme_changed = pyqtSignal(str)
+    
+    @classmethod
+    def get(cls, key: str, default: str = None) -> str:
+        """
+        获取当前主题的颜色值
+        
+        参数:
+            key: 颜色键名 (如 'primary', 'bg_surface', 'text_primary')
+            default: 键不存在时的默认值
+            
+        返回:
+            十六进制颜色字符串 (如 "#3B82F6")
+        """
+        instance = cls()
+        return instance._theme_data.get(key, default or THEME_DARK.get(key, '#000000'))
+    
+    @classmethod
+    def current(cls) -> dict:
+        """获取当前完整的主题配色字典（副本）"""
+        instance = cls()
+        return dict(instance._theme_data)
+    
+    @classmethod
+    def current_name(cls) -> str:
+        """获取当前主题名称 ('dark' | 'light')"""
+        return cls()._current_theme_name
+    
+    @classmethod
+    def is_dark(cls) -> bool:
+        """判断当前是否为深色主题"""
+        return cls()._current_theme_name == 'dark'
+    
+    @classmethod
+    def is_light(cls) -> bool:
+        """判断当前是否为浅色主题"""
+        return cls()._current_theme_name == 'light'
+    
+    @property
+    def gtp_render_theme(self) -> str:
+        """
+        获取当前UI主题对应的ApolloTab渲染主题名称
+        用于GTP谱面渲染时传递给 TabRenderer.set_theme()
+        
+        返回:
+            "light" 或 "dark" （与 ApolloTab.ThemeConfig.PRESET_THEMES 对应）
+        """
+        return self._GTP_THEME_MAP.get(self._current_theme_name, 'dark')
+    
+    @classmethod
+    def get_gtp_render_theme(cls) -> str:
+        """类方法接口: 获取GTP渲染主题名称"""
+        return cls().gtp_render_theme
+    
+    @classmethod
+    def set_theme(cls, theme_name: str) -> bool:
+        """
+        切换全局主题
+        
+        参数:
+            theme_name: 目标主题名称 ("dark" | "light")
+            
+        返回:
+            True 成功, False 失败(主题名称无效)
+            
+        注意:
+          切换成功后会发射 theme_changed 信号，
+          所有连接此信号的组件应重新应用样式。
+        """
+        instance = cls()
+        theme_name = theme_name.lower().strip()
+        
+        if theme_name == instance._current_theme_name:
+            return True  # 相同主题无需切换
+        
+        if theme_name == 'dark':
+            instance._theme_data = dict(THEME_DARK)
+        elif theme_name == 'light':
+            instance._theme_data = dict(THEME_LIGHT)
+        else:
+            print(f"[ThemeManager] 未知主题: '{theme_name}'，可用: dark, light")
+            return False
+        
+        old_theme = instance._current_theme_name
+        instance._current_theme_name = theme_name
+        
+        # 更新向后兼容的全局变量
+        global THEME_COLORS
+        THEME_COLORS = instance._theme_data
+        
+        print(f"[ThemeManager] 主题已切换: {old_theme} → {theme_name}")
+        
+        # 发射主题变更信号
+        if instance.theme_changed is not None:
+            try:
+                instance.theme_changed.emit(theme_name)
+            except Exception:
+                pass
+        
+        return True
+    
+    @classmethod
+    def available_themes(cls) -> list:
+        """获取所有可用主题列表 [(name, display_name), ...]"""
+        return [
+            ('dark', '深色模式 (Dark)'),
+            ('light', '浅色模式 (Light)'),
+        ]
+    
+    @classmethod
+    def apply_stylesheet(cls, widget, extra_css: str = "") -> None:
+        """
+        为指定控件应用当前主题的基础样式表（便捷方法）
+        
+        参数:
+            widget:   目标Qt控件
+            extra_css: 额外的CSS规则（追加在基础样式之后）
+        """
+        theme = cls.current()
+        base_css = f"""
+            {{ background-color: {theme['bg_primary']}; color: {theme['text_primary']};
+               font-family: 'Microsoft YaHei','Segoe UI',sans-serif; }}
+            QLabel {{ color: {theme['text_primary']}; font-size: 13px; }}
+            QLineEdit {{ background-color: {theme['bg_surface']}; color: {theme['text_primary']};
+                border: 1px solid {theme['border']}; border-radius: 5px; padding: 5px 8px; }}
+            QSpinBox {{ background-color: {theme['bg_surface']}; color: {theme['text_primary']};
+                border: 1px solid {theme['border']}; border-radius: 4px; padding: 4px; }}
+            QComboBox {{ background-color: {theme['bg_surface']}; color: {theme['text_primary']};
+                border: 1px solid {theme['border']}; border-radius: 4px; padding: 4px 8px; }}
+            QComboBox::drop-down {{ border: none; width: 20px; }}
+            QComboBox QAbstractItemView {{ background-color: {theme['bg_surface']}; color: {theme['text_primary']};
+                selection-background-color: {theme['primary']}; }}
+            QGroupBox {{ color: {theme['text_primary']}; border: 1px solid {theme['border']};
+                border-radius: 8px; margin-top: 12px; padding-top: 8px; font-weight: bold; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
+            QSlider::groove:horizontal {{ border: none; height: 4px;
+                background: {theme['bg_surface']}; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background: {theme['primary']};
+                border: 2px solid {theme['bg_primary']}; width: 16px; margin: -7px 0; border-radius: 8px; }}
+            QListWidget {{ background-color: {theme['bg_surface']}; color: {theme['text_primary']};
+                border: 1px solid {theme['border']}; border-radius: 6px; outline: none; }}
+            QListWidget::item {{ padding: 6px; border-bottom: 1px solid {theme['border']}; }}
+            QListWidget::item:selected {{ background-color: {theme['primary']}; color: white; }}
+            QListWidget::item:hover {{ background-color: {theme['primary']}; opacity:0.15; border-radius:4px; }}
+            QScrollBar:vertical {{ background: {theme['bg_secondary']}; width: 10px; border-radius: 5px; }}
+            QScrollBar::handle:vertical {{ background: {theme['border']}; border-radius: 5px; min-height: 30px; }}
+            QScrollBar::handle:vertical:hover {{ background: {theme['text_muted']}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """
+        widget.setStyleSheet(base_css + extra_css)
 
 
 # ============================================================
@@ -541,6 +786,15 @@ class LoadContentWorker(QRunnable):
             player = GTPPlayer()
             player.load(self.file_path)
             
+            # v2.0新增: 根据当前UI主题设置GTP渲染主题
+            # 浅色UI → light渲染 / 深色UI → dark渲染（用户可在深色模式下手动切换）
+            render_theme = ThemeManager.get_gtp_render_theme()
+            try:
+                player.set_theme(render_theme)
+                print(f"[LoadContentWorker] GTP渲染主题: {render_theme}")
+            except Exception as e:
+                print(f"[LoadContentWorker] 设置GTP渲染主题失败(使用默认): {e}")
+            
             # 渲染当前音轨（默认第0轨）
             pixmaps = player.render_track(0)
             
@@ -569,22 +823,22 @@ class LoadContentWorker(QRunnable):
         return images
 
     def _create_gtp_info_image(self, message: str) -> QPixmap:
-        """创建GTP信息/错误展示图（当gtp_engine不可用时回退显示）"""
+        """创建GTP信息/错误展示图（当gtp_engine不可用时回退显示）- 支持动态主题"""
         width, height = 800, 500
         pixmap = QPixmap(width, height)
-        pixmap.fill(QColor(THEME_COLORS['bg_surface']))
+        pixmap.fill(QColor(ThemeManager.get('bg_surface', '#252536')))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
         # 标题
-        painter.setPen(QColor(THEME_COLORS['primary']))
+        painter.setPen(QColor(ThemeManager.get('primary', '#3B82F6')))
         title_font = QFont("Microsoft YaHei", 26, QFont.Bold)
         painter.setFont(title_font)
         filename = os.path.basename(self.file_path)
         painter.drawText(QRect(50, 40, 700, 60), Qt.AlignCenter, f"Guitar Pro 文件: {filename}")
 
         # 信息文本
-        painter.setPen(QColor(THEME_COLORS['text_primary']))
+        painter.setPen(QColor(ThemeManager.get('text_primary', '#E2E8F0')))
         info_font = QFont("Microsoft YaHei", 13)
         painter.setFont(info_font)
         
@@ -597,7 +851,7 @@ class LoadContentWorker(QRunnable):
             y += 30
 
         # 边框
-        painter.setPen(QPen(QColor(THEME_COLORS['primary']), 2))
+        painter.setPen(QPen(QColor(ThemeManager.get('primary', '#3B82F6')), 2))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(30, 30, width - 60, height - 60, 15, 15)
         painter.end()
@@ -610,8 +864,9 @@ class LoadContentWorker(QRunnable):
 
 class ModernButton(QPushButton):
     """
-    现代化按钮组件
+    现代化按钮组件 - 支持动态主题切换
     功能: 带悬停效果、阴影、圆角的按钮基类
+    主题: 通过 ThemeManager.get() 读取当前主题色，支持运行时切换
     """
 
     def __init__(self, text: str, color_key: str = 'primary', parent=None):
@@ -620,9 +875,10 @@ class ModernButton(QPushButton):
         self._setup_style()
 
     def _setup_style(self) -> None:
-        """初始化按钮样式 - 深色主题配色"""
-        color = THEME_COLORS.get(self.color_key, THEME_COLORS['primary'])
-        hover_color = THEME_COLORS.get(f'{self.color_key}_hover', color)
+        """初始化按钮样式 - 从ThemeManager读取当前主题配色"""
+        color = ThemeManager.get(self.color_key, THEME_DARK['primary'])
+        hover_color = ThemeManager.get(f'{self.color_key}_hover', color)
+        bg_primary = ThemeManager.get('bg_primary', '#121212')
 
         self.setMinimumHeight(36)
         self.setCursor(QCursor(Qt.PointingHandCursor))
@@ -641,20 +897,26 @@ class ModernButton(QPushButton):
             ModernButton:pressed {{ background-color: {color}; }}
             ModernButton:disabled {{ background-color: #4a5568; color: #a0aec0; }}
         """)
+        # 浅色模式下阴影颜色调整为半透明灰而非纯黑
+        shadow_color = QColor(0, 0, 0, 25) if ThemeManager.is_light() else QColor(0, 0, 0, 40)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(8)
-        shadow.setColor(QColor(0, 0, 0, 40))
+        shadow.setColor(shadow_color)
         shadow.setOffset(0, 2)
         self.setGraphicsEffect(shadow)
+
+    def refresh_theme(self) -> None:
+        """主题切换时调用 - 重新应用样式"""
+        self._setup_style()
 
 
 class ModernSlider(QSlider):
     """
-    现代化滑块组件
-    功能: 继承QSlider，应用深色主题样式
+    现代化滑块组件 - 支持动态主题切换
+    功能: 继承QSlider，应用当前主题样式
     参数:
       orientation: 滑块方向(水平/垂直)
-      color_key:   主题色键名(对应THEME_COLORS)
+      color_key:   主题色键名(对应ThemeManager)
     """
 
     def __init__(self, orientation: Qt.Orientation = Qt.Horizontal,
@@ -664,18 +926,21 @@ class ModernSlider(QSlider):
         self._setup_style()
 
     def _setup_style(self) -> None:
-        """初始化滑块样式 - 深色主题配色"""
-        color = THEME_COLORS.get(self.color_key, THEME_COLORS['primary'])
+        """初始化滑块样式 - 从ThemeManager读取当前主题配色"""
+        color = ThemeManager.get(self.color_key, THEME_DARK['primary'])
+        bg_primary = ThemeManager.get('bg_primary', '#121212')
+        bg_surface = ThemeManager.get('bg_surface', '#252536')
+
         self.setStyleSheet(f"""
             QSlider::groove:horizontal {{
                 border: none;
                 height: 6px;
-                background: {THEME_COLORS['bg_surface']};
+                background: {bg_surface};
                 border-radius: 3px;
             }}
             QSlider::handle:horizontal {{
                 background: {color};
-                border: 2px solid {THEME_COLORS['bg_primary']};
+                border: 2px solid {bg_primary};
                 width: 18px;
                 margin: -7px 0;
                 border-radius: 9px;
@@ -687,12 +952,12 @@ class ModernSlider(QSlider):
             QSlider::groove:vertical {{
                 border: none;
                 width: 6px;
-                background: {THEME_COLORS['bg_surface']};
+                background: {bg_surface};
                 border-radius: 3px;
             }}
             QSlider::handle:vertical {{
                 background: {color};
-                border: 2px solid {THEME_COLORS['bg_primary']};
+                border: 2px solid {bg_primary};
                 height: 18px;
                 margin: 0 -7px;
                 border-radius: 9px;
@@ -703,12 +968,17 @@ class ModernSlider(QSlider):
             }}
         """)
 
+    def refresh_theme(self) -> None:
+        """主题切换时调用 - 重新应用样式"""
+        self._setup_style()
+
 
 class ProgressBarSlider(QWidget):
     """
-    自定义进度条滑块组件
+    自定义进度条滑块组件 - 支持动态主题切换
     功能: 显示播放进度(0-100%)，支持拖动跳转，支持A-B区域标记
     操作: 左键拖动=跳转, Ctrl+点击=A点, Shift+点击=B点
+    主题: 通过 ThemeManager.get() 读取当前主题色
     """
     positionChanged = pyqtSignal(float)
     regionSelected = pyqtSignal(float, float)
@@ -750,6 +1020,13 @@ class ProgressBarSlider(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
+        # 从ThemeManager读取当前主题色
+        bg_surface = ThemeManager.get('bg_surface', '#252536')
+        accent = ThemeManager.get('accent', '#F97316')
+        primary = ThemeManager.get('primary', '#3B82F6')
+        primary_light = ThemeManager.get('primary_light', '#60A5FA')
+        text_muted = ThemeManager.get('text_muted', '#64748B')
+
         rect = self.rect()
         bar_height = 6
         bar_y = (rect.height() - bar_height) // 2
@@ -757,34 +1034,36 @@ class ProgressBarSlider(QWidget):
 
         # 背景轨道
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(THEME_COLORS['bg_surface']))
+        painter.setBrush(QColor(bg_surface))
         painter.drawRoundedRect(bar_rect, 3, 3)
 
         # A-B循环区域高亮
         if self._region_start >= 0 and self._region_end > self._region_start:
             rx = bar_rect.x() + int(bar_rect.width() * self._region_start / 100)
             rw = int(bar_rect.width() * (self._region_end - self._region_start) / 100)
-            painter.setBrush(QColor(THEME_COLORS['accent'] + "50"))
+            painter.setBrush(QColor(accent + "50"))
             painter.drawRoundedRect(rx, bar_y, max(rw, 1), bar_height, 3, 3)
 
         # 已播放进度
         pw = int(bar_rect.width() * self._position / 100)
         if pw > 0:
             gradient = QLinearGradient(bar_rect.left(), 0, bar_rect.left() + pw, 0)
-            gradient.setColorAt(0, QColor(THEME_COLORS['primary']))
-            gradient.setColorAt(1, QColor(THEME_COLORS['primary_light']))
+            gradient.setColorAt(0, QColor(primary))
+            gradient.setColorAt(1, QColor(primary_light))
             painter.setBrush(gradient)
             painter.drawRoundedRect(bar_rect.x(), bar_y, pw, bar_height, 3, 3)
 
         # 滑块手柄
         hx = bar_rect.x() + int(bar_rect.width() * self._position / 100)
         hy = rect.height() // 2
-        painter.setPen(QPen(QColor('#ffffff'), 2))
-        painter.setBrush(QColor(THEME_COLORS['primary']))
+        # 浅色模式手柄边框用深色，深色模式用白色
+        handle_border = '#1E293B' if ThemeManager.is_light() else '#ffffff'
+        painter.setPen(QPen(QColor(handle_border), 2))
+        painter.setBrush(QColor(primary))
         painter.drawEllipse(QPoint(hx, hy), 9, 9)
 
         # 位置文字
-        painter.setPen(QColor(THEME_COLORS['text_muted']))
+        painter.setPen(QColor(text_muted))
         painter.setFont(QFont("Microsoft YaHei", 9))
         painter.drawText(rect.x() + 4, rect.y() + 11, f"{self._position:.1f}%")
         painter.end()
@@ -836,17 +1115,20 @@ class SpeedCurveEditor(QDialog):
         self.init_ui()
 
     def init_ui(self) -> None:
+        """初始化速度曲线编辑器UI - 从ThemeManager读取当前主题"""
         self.setWindowTitle(I18n.t("speed_curve.window_title"))
         self.setMinimumSize(680, 480)
+        # 使用ThemeManager获取当前主题色
+        t = ThemeManager.current()
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
-            QLabel {{ color: {THEME_COLORS['text_primary']}; font-family: 'Microsoft YaHei'; }}
-            QGroupBox {{ color: {THEME_COLORS['text_primary']}; border: 1px solid {THEME_COLORS['border']};
+            QDialog {{ background-color: {t['bg_primary']}; }}
+            QLabel {{ color: {t['text_primary']}; font-family: 'Microsoft YaHei'; }}
+            QGroupBox {{ color: {t['text_primary']}; border: 1px solid {t['border']};
                          border-radius: 8px; margin-top: 10px; padding-top: 10px; font-weight: bold; }}
-            QCheckBox {{ color: {THEME_COLORS['text_primary']}; }}
-            QPushButton {{ background-color: {THEME_COLORS['primary']}; color: white; border: none;
+            QCheckBox {{ color: {t['text_primary']}; }}
+            QPushButton {{ background-color: {t['primary']}; color: white; border: none;
                           border-radius: 6px; padding: 6px 14px; font-family: 'Microsoft YaHei'; }}
-            QPushButton:hover {{ background-color: {THEME_COLORS['primary_hover']}; }}
+            QPushButton:hover {{ background-color: {t['primary_hover']}; }}
         """)
 
         layout = QVBoxLayout(self)
@@ -879,14 +1161,14 @@ class SpeedCurveEditor(QDialog):
             btn.setMaximumWidth(75)
             btn_layout.addWidget(btn)
         clear_btn = QPushButton(I18n.t("speed_curve.clear_all"))
-        clear_btn.setStyleSheet(f"background-color: {THEME_COLORS['danger']};")
+        clear_btn.setStyleSheet(f"background-color: {ThemeManager.get('danger', '#EF4444')};")
         clear_btn.clicked.connect(self._clear_all)
         btn_layout.addWidget(clear_btn)
         layout.addWidget(btn_group)
 
         # 说明
         hint = QLabel(I18n.t("speed_curve.hint"))
-        hint.setStyleSheet(f"color: {THEME_COLORS['text_muted']}; font-size: 11px;")
+        hint.setStyleSheet(f"color: {ThemeManager.get('text_muted', '#64748B')}; font-size: 11px;")
         layout.addWidget(hint)
 
         bbox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -941,7 +1223,10 @@ class SpeedCurveEditor(QDialog):
 
 
 class _SpeedCurveCanvas(QWidget):
-    """速度曲线绘图画布内部组件"""
+    """
+    速度曲线绘图画布内部组件 - 支持动态主题切换
+    主题: 通过 ThemeManager.get() 读取当前主题色
+    """
 
     curveChanged = pyqtSignal(object)
 
@@ -961,13 +1246,21 @@ class _SpeedCurveCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
+        # 从ThemeManager读取当前主题色
+        bg_surface = ThemeManager.get('bg_surface', '#252536')
+        border = ThemeManager.get('border', '#3A3A4A')
+        text_muted = ThemeManager.get('text_muted', '#64748B')
+        primary = ThemeManager.get('primary', '#3B82F6')
+        accent = ThemeManager.get('accent', '#F97316')
+        accent_light = ThemeManager.get('accent_light', '#FB923C')
+
         rect = self.rect()
         pad = 40
         draw_rect = QRect(pad, pad, rect.width() - 2*pad, rect.height() - 2*pad)
-        painter.fillRect(rect, QColor(THEME_COLORS['bg_surface']))
+        painter.fillRect(rect, QColor(bg_surface))
 
         # 网格
-        painter.setPen(QPen(QColor(THEME_COLORS['border']), 1, Qt.DotLine))
+        painter.setPen(QPen(QColor(border), 1, Qt.DotLine))
         for pct in [25, 50, 75]:
             x = draw_rect.x() + int(draw_rect.width()*pct/100)
             painter.drawLine(x, draw_rect.top(), x, draw_rect.bottom())
@@ -976,7 +1269,7 @@ class _SpeedCurveCanvas(QWidget):
             painter.drawLine(draw_rect.left(), y, draw_rect.right(), y)
 
         # 坐标标签
-        painter.setPen(QColor(THEME_COLORS['text_muted']))
+        painter.setPen(QColor(text_muted))
         painter.setFont(QFont("Microsoft YaHei", 9))
         for pct in [0, 25, 50, 75, 100]:
             painter.drawText(draw_rect.x()+int(draw_rect.width()*pct/100)-10, draw_rect.bottom()+16, f"{pct}%")
@@ -998,9 +1291,9 @@ class _SpeedCurveCanvas(QWidget):
             last_p = points[-1]
             path.lineTo(draw_rect.x()+int(draw_rect.width()*last_p.position/100), draw_rect.bottom())
             path.closeSubpath()
-            painter.fillPath(path, QColor(THEME_COLORS["primary"]+"35"))
+            painter.fillPath(path, QColor(primary + "35"))
 
-            pen = QPen(QColor(THEME_COLORS['primary']), 2)
+            pen = QPen(QColor(primary), 2)
             painter.setPen(pen)
             for i in range(len(points)-1):
                 p1, p2 = points[i], points[i+1]
@@ -1015,11 +1308,11 @@ class _SpeedCurveCanvas(QWidget):
             px = draw_rect.x()+int(draw_rect.width()*p.position/100)
             py = draw_rect.bottom()-int(draw_rect.height()*p.speed/160)
             is_sel = (idx==self._selected_idx)
-            painter.setPen(QPen(QColor(THEME_COLORS['accent']) if is_sel else QColor(THEME_COLORS['primary']), 2))
-            painter.setBrush(QColor(THEME_COLORS['accent_light']) if is_sel else QColor(THEME_COLORS['primary']))
+            painter.setPen(QPen(QColor(accent) if is_sel else QColor(primary), 2))
+            painter.setBrush(QColor(accent_light) if is_sel else QColor(primary))
             painter.drawEllipse(QPoint(px, py), 8 if is_sel else 6, 8 if is_sel else 6)
 
-        painter.setPen(QPen(QColor(THEME_COLORS['border']), 1))
+        painter.setPen(QPen(QColor(border), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(draw_rect)
         painter.end()
@@ -1083,18 +1376,20 @@ class AnnotationCreateDialog(QDialog):
         self.init_ui()
 
     def init_ui(self)->None:
+        """初始化标注编辑对话框UI - 从ThemeManager读取当前主题"""
         self.setWindowTitle(I18n.t("annotation_create.window_title")); self.setFixedSize(420,360)
+        t = ThemeManager.current()
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
-            QLabel {{ color: {THEME_COLORS['text_primary']}; font-family: 'Microsoft YaHei'; }}
-            QTextEdit {{ background-color: {THEME_COLORS['bg_surface']}; color: {THEME_COLORS['text_primary']};
-                        border: 1px solid {THEME_COLORS['border']}; border-radius: 6px; padding: 6px; }}
-            QSpinBox {{ background-color: {THEME_COLORS['bg_surface']}; color: {THEME_COLORS['text_primary']};
-                        border: 1px solid {THEME_COLORS['border']}; border-radius: 4px; padding: 4px; }}
-            QCheckBox {{ color: {THEME_COLORS['text_primary']}; }}
-            QPushButton {{ background-color: {THEME_COLORS['primary']}; color: white; border: none;
+            QDialog {{ background-color: {t['bg_primary']}; }}
+            QLabel {{ color: {t['text_primary']}; font-family: 'Microsoft YaHei'; }}
+            QTextEdit {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
+                        border: 1px solid {t['border']}; border-radius: 6px; padding: 6px; }}
+            QSpinBox {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
+                        border: 1px solid {t['border']}; border-radius: 4px; padding: 4px; }}
+            QCheckBox {{ color: {t['text_primary']}; }}
+            QPushButton {{ background-color: {t['primary']}; color: white; border: none;
                            border-radius: 6px; padding: 8px 20px; font-family: 'Microsoft YaHei'; }}
-            QPushButton:hover {{ background-color: {THEME_COLORS['primary_hover']}; }}
+            QPushButton:hover {{ background-color: {t['primary_hover']}; }}
         """)
         layout=QVBoxLayout(self)
         
@@ -1128,7 +1423,7 @@ class AnnotationCreateDialog(QDialog):
 
         cancel_btn=QPushButton(I18n.t("annotation_create.cancel_btn"))
         cancel_btn.clicked.connect(self.reject)
-        cancel_btn.setStyleSheet(f"background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_secondary']};")
+        cancel_btn.setStyleSheet(f"background-color:{ThemeManager.get('bg_surface', '#252536')};color:{ThemeManager.get('text_secondary', '#94A3B8')};")
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
@@ -1175,19 +1470,21 @@ class AnnotationEditDialog(QDialog):
         self.init_ui()
 
     def init_ui(self)->None:
+        """初始化标注编辑对话框UI(编辑模式) - 从ThemeManager读取当前主题"""
         self.setWindowTitle(I18n.t("annotation_edit.window_title")); self.setFixedSize(420,400)
+        t = ThemeManager.current()
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {THEME_COLORS['bg_primary']}; }}
-            QLabel {{ color: {THEME_COLORS['text_primary']}; font-family: 'Microsoft YaHei'; }}
-            QTextEdit {{ background-color: {THEME_COLORS['bg_surface']}; color: {THEME_COLORS['text_primary']};
-                        border: 1px solid {THEME_COLORS['border']}; border-radius: 6px; padding: 6px; }}
-            QSpinBox {{ background-color: {THEME_COLORS['bg_surface']}; color: {THEME_COLORS['text_primary']};
-                        border: 1px solid {THEME_COLORS['border']}; border-radius: 4px; padding: 4px; }}
-            QCheckBox {{ color: {THEME_COLORS['text_primary']}; }}
-            QPushButton {{ background-color: {THEME_COLORS['primary']}; color: white; border: none;
+            QDialog {{ background-color: {t['bg_primary']}; }}
+            QLabel {{ color: {t['text_primary']}; font-family: 'Microsoft YaHei'; }}
+            QTextEdit {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
+                        border: 1px solid {t['border']}; border-radius: 6px; padding: 6px; }}
+            QSpinBox {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
+                        border: 1px solid {t['border']}; border-radius: 4px; padding: 4px; }}
+            QCheckBox {{ color: {t['text_primary']}; }}
+            QPushButton {{ background-color: {t['primary']}; color: white; border: none;
                            border-radius: 6px; padding: 8px 20px; font-family: 'Microsoft YaHei'; }}
-            QPushButton:hover {{ background-color: {THEME_COLORS['primary_hover']}; }}
-            QPushButton#deleteBtn {{ background-color: {THEME_COLORS['danger']}; }}
+            QPushButton:hover {{ background-color: {t['primary_hover']}; }}
+            QPushButton#deleteBtn {{ background-color: {ThemeManager.get('danger', '#EF4444')}; }}
             QPushButton#deleteBtn:hover {{ background-color: #DC2626; }}
         """)
         layout=QVBoxLayout(self)
@@ -1219,7 +1516,7 @@ class AnnotationEditDialog(QDialog):
 
         cancel_btn=QPushButton(I18n.t("annotation_edit.cancel_btn"))
         cancel_btn.clicked.connect(self.reject)
-        cancel_btn.setStyleSheet(f"background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_secondary']};")
+        cancel_btn.setStyleSheet(f"background-color:{ThemeManager.get('bg_surface', '#252536')};color:{ThemeManager.get('text_secondary', '#94A3B8')};")
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
@@ -1266,22 +1563,24 @@ class AnnotationManagerDialog(QDialog):
         self.init_ui()
 
     def init_ui(self)->None:
+        """初始化标注管理器UI(列表模式) - 从ThemeManager读取当前主题"""
         self.setWindowTitle(I18n.t("annotation_manager.window_title")); self.setMinimumSize(550,400)
+        t = ThemeManager.current()
         self.setStyleSheet(f"""
-            QDialog{{background-color:{THEME_COLORS['bg_primary']};}}
-            QLabel{{color:{THEME_COLORS['text_primary']};font-family:'Microsoft YaHei';}}
-            QListWidget{{background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};
-                        border:1px solid{THEME_COLORS['border']};border-radius:6px;}}
-            QListWidget::item:selected{{background-color:{THEME_COLORS['primary']};}}
-            QListWidget::item:hover{{background-color:{THEME_COLORS['bg_card']};}}
-            QPushButton{{background-color:{THEME_COLORS['primary']};color:white;border:none;border-radius:6px;padding:7px14px;}}
-            QPushButton:hover{{background-color:{THEME_COLORS['primary_hover']};}}
-            QPushButton#delBtn{{background-color:{THEME_COLORS['danger']};}}
+            QDialog{{background-color:{t['bg_primary']};}}
+            QLabel{{color:{t['text_primary']};font-family:'Microsoft YaHei';}}
+            QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
+                        border:1px solid{t['border']};border-radius:6px;}}
+            QListWidget::item:selected{{background-color:{t['primary']};}}
+            QListWidget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
+            QPushButton{{background-color:{t['primary']};color:white;border:none;border-radius:6px;padding:7px14px;}}
+            QPushButton:hover{{background-color:{t['primary_hover']};}}
+            QPushButton#delBtn{{background-color:{ThemeManager.get('danger', '#EF4444')};}}
             QPushButton#delBtn:hover{{background-color:#DC2626;}}
         """)
         layout=QVBoxLayout(self)
         title=QLabel(I18n.t("annotation_manager.list_title", count=len(self.annotations)))
-        title.setStyleSheet(f"font-size:15px;font-weight:bold;color:{THEME_COLORS['primary_light']};")
+        title.setStyleSheet(f"font-size:15px;font-weight:bold;color:{ThemeManager.get('primary_light', '#60A5FA')};")
         layout.addWidget(title)
         self.list_widget=QListWidget(); self._populate_list()
         self.list_widget.itemDoubleClicked.connect(self._edit_item); layout.addWidget(self.list_widget)
@@ -1771,10 +2070,15 @@ class DisplayWidget(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor(THEME_COLORS['bg_secondary']))
+        # 从ThemeManager读取当前主题色
+        bg_secondary = ThemeManager.get('bg_secondary', '#1E1E2E')
+        text_muted = ThemeManager.get('text_muted', '#64748B')
+        primary = ThemeManager.get('primary', '#3B82F6')
+
+        painter.fillRect(self.rect(), QColor(bg_secondary))
 
         if not self.images:
-            painter.setPen(QColor(THEME_COLORS['text_muted']))
+            painter.setPen(QColor(text_muted))
             painter.setFont(QFont("Microsoft YaHei",15))
             painter.drawText(self.rect(),Qt.AlignCenter,
                 I18n.t("messages.open_file_hint"))
@@ -1806,7 +2110,7 @@ class DisplayWidget(QWidget):
         # 加载遮罩
         if self.parent_window and self.parent_window.is_loading:
             painter.fillRect(self.rect(),QColor(0,0,0,120))
-            painter.setPen(QColor(THEME_COLORS['primary']))
+            painter.setPen(QColor(primary))
             painter.setFont(QFont("Microsoft YaHei",18))
             painter.drawText(self.rect(),Qt.AlignCenter,I18n.t("messages.loading"))
         painter.end()
@@ -2251,6 +2555,13 @@ class DisplayWindow(QMainWindow):
         self.display_widget=DisplayWidget(self)
         splitter.addWidget(self.display_widget)
 
+        # 连接主题变更信号: 当ThemeManager切换主题时自动刷新本窗口(含GTP谱重渲染)
+        if ThemeManager.theme_changed is not None:
+            try:
+                ThemeManager.theme_changed.connect(self._refresh_theme)
+            except Exception:
+                pass  # 信号未初始化时静默忽略(正常，首次启动时可能尚未初始化)
+
         # 右侧控制面板
         right_panel=self._create_control_panel()
         splitter.addWidget(right_panel)
@@ -2262,25 +2573,103 @@ class DisplayWindow(QMainWindow):
         main_layout.addLayout(bottom)
 
     def _apply_theme(self)->None:
-        """应用深色主题"""
+        """
+        应用当前主题样式到DisplayWindow
+        从ThemeManager读取当前主题配色，支持深色/浅色动态切换
+        """
+        t = ThemeManager.current()
         self.setStyleSheet(f"""
-            QMainWindow,QWidget{{background-color:{THEME_COLORS['bg_primary']};color:{THEME_COLORS['text_primary']};
+            QMainWindow,QWidget{{background-color:{t['bg_primary']};color:{t['text_primary']};
                 font-family:'Microsoft YaHei','Segoe UI',sans-serif;}}
-            QLabel{{color:{THEME_COLORS['text_primary']};font-size:13px;}}
-            QSlider::groove:horizontal{{border:none;height:4px;background:{THEME_COLORS['bg_surface']};border-radius:2px;}}
-            QSlider::handle:horizontal{{background:{THEME_COLORS['primary']};border:2px solid{THEME_COLORS['bg_primary']};
+            QLabel{{color:{t['text_primary']};font-size:13px;}}
+            QSlider::groove:horizontal{{border:none;height:4px;background:{t['bg_surface']};border-radius:2px;}}
+            QSlider::handle:horizontal{{background:{t['primary']};border:2px solid{t['bg_primary']};
                 width:16px;margin:-7px 0;border-radius:8px;}}
-            QSpinBox{{background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};
-                border:1px solid{THEME_COLORS['border']};border-radius:4px;padding:4px;}}
-            QComboBox{{background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};
-                border:1px solid{THEME_COLORS['border']};border-radius:4px;padding:4px 8px;}}
+            QSpinBox{{background-color:{t['bg_surface']};color:{t['text_primary']};
+                border:1px solid{t['border']};border-radius:4px;padding:4px;}}
+            QComboBox{{background-color:{t['bg_surface']};color:{t['text_primary']};
+                border:1px solid{t['border']};border-radius:4px;padding:4px 8px;}}
             QComboBox::drop-down{{border:none;width:20px;}}
-            QComboBox QAbstractItemView{{background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};
-                selection-background-color:{THEME_COLORS['primary']};}}
-            QGroupBox{{color:{THEME_COLORS['text_primary']};border:1px solid{THEME_COLORS['border']};
+            QComboBox QAbstractItemView{{background-color:{t['bg_surface']};color:{t['text_primary']};
+                selection-background-color:{t['primary']};}}
+            QGroupBox{{color:{t['text_primary']};border:1px solid{t['border']};
                 border-radius:8px;margin-top:12px;padding-top:8px;font-weight:bold;}}
             QGroupBox::title{{subcontrol-origin;margin;left:12px;padding:0 6px;}}
         """)
+
+    def _refresh_theme(self) -> None:
+        """
+        主题切换时刷新DisplayWindow所有UI组件样式
+        
+        调用时机:
+          - SettingsWindow._on_theme_changed() 切换主题时调用
+          - 也可连接到 ThemeManager.theme_changed 信号
+        
+        刷新内容:
+          1. 重新应用窗口级样式表(_apply_theme)
+          2. 刷新工具栏文件名标签颜色
+          3. 刷新控制面板各标签/状态文字颜色
+          4. 刷新进度条组件(触发重绘)
+          5. 刷新ModernButton/ModernSlider等自定义组件
+          6. 如果是GTP文件，同步切换渲染主题
+        """
+        # 1. 重新应用窗口样式
+        self._apply_theme()
+
+        # 2. 刷新工具栏文字颜色
+        if hasattr(self, 'file_label'):
+            self.file_label.setStyleSheet(
+                f"font-size:14px;font-weight:bold;color:{ThemeManager.get('primary_light', '#60A5FA')};")
+
+        # 3. 刷新控制面板标签颜色
+        if hasattr(self, 'curve_status_label'):
+            self.curve_status_label.setStyleSheet(
+                f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:11px;")
+        if hasattr(self, 'ab_info_label'):
+            self.ab_info_label.setStyleSheet(
+                f"color:{ThemeManager.get('accent', '#F97316')};font-size:11px;")
+        if hasattr(self, 'help_txt'):  # 快捷键帮助(在_create_control_panel中创建的局部变量无法访问，跳过)
+            pass
+
+        # 4. 刷新页码控件
+        if hasattr(self, 'page_input'):
+            self.page_input.setStyleSheet(
+                f"background-color:{ThemeManager.get('bg_surface', '#252536')};"
+                f"color:{ThemeManager.get('text_primary', '#E2E8F0')};"
+                f"border:1px solid{ThemeManager.get('border', '#3A3A4A')};border-radius:4px;padding:2px;")
+        if hasattr(self, 'page_total_label'):
+            self.page_total_label.setStyleSheet(
+                f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:12px;")
+
+        # 5. 刷新播放/停止按钮颜色
+        if hasattr(self, 'play_btn'):
+            is_playing = self.timer.isActive()
+            btn_color = ThemeManager.get('warning', '#F59E0B') if is_playing else ThemeManager.get('success', '#10B981')
+            self.play_btn.setStyleSheet(f"background-color:{btn_color};")
+
+        # 7. 刷新进度条(触发重绘)
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.update()
+
+        # 8. 刷新显示画布
+        if hasattr(self, 'display_widget'):
+            self.display_widget.update()
+
+        # 9. 同步GTP渲染主题到UI主题（如果当前打开的是GTP文件）
+        #    重要: 必须重新渲染全部页面，避免出现"第1页浅色+第2页深色"不一致问题
+        #    使用 display_widget.set_images() 而非直接赋值 self.images，
+        #    因为 set_images() 会将 _cache_dirty 置为 True，确保缩放缓存被重建
+        if self.gtp_player and hasattr(self.gtp_player, 'set_theme') and self.gtp_player.is_loaded:
+            try:
+                render_theme = ThemeManager.get_gtp_render_theme()
+                self.gtp_player.set_theme(render_theme)
+                # 重新渲染全部页面（替换整个images列表，确保所有页主题一致）
+                all_pixmaps = self.gtp_player.render_track(self.gtp_player.current_track)
+                if all_pixmaps:
+                    self.display_widget.set_images(all_pixmaps)  # 触发缓存失效+重绘
+                    print(f"[DisplayWindow] GTP渲染全部{len(all_pixmaps)}页已同步为: {render_theme}")
+            except Exception as e:
+                print(f"[DisplayWindow] GTP渲染主题同步失败: {e}")
 
     def _create_toolbar(self)->QHBoxLayout:
         """创建顶部工具栏"""
@@ -2289,7 +2678,7 @@ class DisplayWindow(QMainWindow):
         # 文件名
         fname=os.path.basename(self.file_path) if isinstance(self.file_path,str) else I18n.t("app.multi_images")
         self.file_label=QLabel(I18n.t("toolbar.file_label", name=fname))
-        self.file_label.setStyleSheet(f"font-size:14px;font-weight:bold;color:{THEME_COLORS['primary_light']};")
+        self.file_label.setStyleSheet(f"font-size:14px;font-weight:bold;color:{ThemeManager.get('primary_light', '#60A5FA')};")
         tb.addWidget(self.file_label)
 
         # GTP音轨选择下拉菜单（仅GTP文件显示，默认隐藏）
@@ -2388,7 +2777,7 @@ class DisplayWindow(QMainWindow):
         sr.addWidget(self.speed_spin);sl.addLayout(sr)
 
         self.curve_status_label=QLabel(I18n.t("control_panel.curve_status_disabled"))
-        self.curve_status_label.setStyleSheet(f"color:{THEME_COLORS['text_muted']};font-size:11px;")
+        self.curve_status_label.setStyleSheet(f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:11px;")
         sl.addWidget(self.curve_status_label)
         layout.addWidget(self.speed_group_box)  # 使用实例变量以便动态控制可见性
 
@@ -2397,14 +2786,14 @@ class DisplayWindow(QMainWindow):
         self.position_label=QLabel(I18n.t("control_panel.position_label", pct="0.0"));self.time_label=QLabel(I18n.t("control_panel.time_label", time="00:00"))
         il.addWidget(self.position_label);il.addWidget(self.time_label)
         self.ab_info_label=QLabel("")
-        self.ab_info_label.setStyleSheet(f"color:{THEME_COLORS['accent']};font-size:11px;")
+        self.ab_info_label.setStyleSheet(f"color:{ThemeManager.get('accent', '#F97316')};font-size:11px;")
         il.addWidget(self.ab_info_label)
         layout.addWidget(ig)
 
         # 快捷键帮助
         hg=QGroupBox(I18n.t("control_panel.shortcut_group"));hl=QVBoxLayout(hg)
         help_txt=QLabel(I18n.t("control_panel.shortcut_help"))
-        help_txt.setStyleSheet(f"color:{THEME_COLORS['text_muted']};font-size:11px;")
+        help_txt.setStyleSheet(f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:11px;")
         hl.addWidget(help_txt);layout.addWidget(hg)
         layout.addStretch()
         return panel
@@ -2423,12 +2812,12 @@ class DisplayWindow(QMainWindow):
         self.page_input.setRange(1,9999)
         self.page_input.setMinimumWidth(50)
         self.page_input.setAlignment(Qt.AlignCenter)
-        self.page_input.setStyleSheet(f"background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};border:1px solid{THEME_COLORS['border']};border-radius:4px;padding:2px;")
+        self.page_input.setStyleSheet(f"background-color:{ThemeManager.get('bg_surface', '#252536')};color:{ThemeManager.get('text_primary', '#E2E8F0')};border:1px solid{ThemeManager.get('border', '#3A3A4A')};border-radius:4px;padding:2px;")
         self.page_input.valueChanged.connect(self._on_page_jump)
         pg_layout.addWidget(self.page_input)
 
         self.page_total_label=QLabel("/ 1")
-        self.page_total_label.setStyleSheet(f"color:{THEME_COLORS['text_muted']};font-size:12px;")
+        self.page_total_label.setStyleSheet(f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:12px;")
         pg_layout.addWidget(self.page_total_label)
 
         pg_layout.addStretch()
@@ -2683,7 +3072,7 @@ class DisplayWindow(QMainWindow):
         if self.gtp_player and self.gtp_player.is_audio_ready:
             self.gtp_player.play()
         self.play_btn.setText(I18n.t("control_panel.pause_btn"))
-        self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['warning']};")
+        self.play_btn.setStyleSheet(f"background-color:{ThemeManager.get('warning', '#F59E0B')};")
         self.stop_btn.setEnabled(True)
 
     def closeEvent(self, event):
@@ -2716,7 +3105,7 @@ class DisplayWindow(QMainWindow):
         if self.gtp_player and self.gtp_player.is_audio_ready:
             self.gtp_player.stop()
         self.play_btn.setText(I18n.t("control_panel.play_btn"))
-        self.play_btn.setStyleSheet(f"background-color:{THEME_COLORS['success']};")
+        self.play_btn.setStyleSheet(f"background-color:{ThemeManager.get('success', '#10B981')};")
         self.stop_btn.setEnabled(False)
 
     def _init_audio_engine(self)->None:
@@ -2810,13 +3199,13 @@ class DisplayWindow(QMainWindow):
         if mode == "all":
             self.audio_btn.setText(I18n.t("toolbar.audio_all"))
             self.audio_btn.setStyleSheet(
-                f"QToolButton{{background-color:{THEME_COLORS['accent']};"
+                f"QToolButton{{background-color:{ThemeManager.get('accent', '#F97316')};"
                 f"border-radius:4px;padding:4px 10px;}}"
             )
         elif mode == "current":
             self.audio_btn.setText(I18n.t("toolbar.audio_current"))
             self.audio_btn.setStyleSheet(
-                f"QToolButton{{background-color:{THEME_COLORS['primary']};"
+                f"QToolButton{{background-color:{ThemeManager.get('primary', '#3B82F6')};"
                 f"border-radius:4px;padding:4px 10px;}}"
             )
         else:  # "off"
@@ -3722,12 +4111,43 @@ class DisplayWindow(QMainWindow):
         items = []
 
         if track_mode == "current":
-            imgs, anns, label = self._get_page_range_images(page_mode)
-            items.append((imgs, anns, ""))
+            # v2.0修复: GTP文件导出当前轨时，必须强制用浅色主题重新渲染
+            # 原因: self.images 可能是深色主题的缓存图像，直接导出会导致深色谱面
+            if self.gtp_player and self.gtp_player.is_loaded:
+                from ApolloTab.renderer import TabRenderer
+                renderer = TabRenderer()
+                try:
+                    renderer.set_theme('light')  # 强制浅色主题
+                except Exception:
+                    pass
+                try:
+                    pixmaps = renderer.render_from_file(
+                        self.gtp_player.file_path,
+                        track_index=self.gtp_player.current_track
+                    )
+                    imgs = [p for p in pixmaps if not p.isNull()]
+                    if page_mode[0] == "range":
+                        imgs = imgs[page_mode[1]-1:page_mode[2]]
+                except Exception as e:
+                    print(f"警告: 导出当前轨重渲染失败({e})，回退到缓存图像")
+                    imgs, anns, label = self._get_page_range_images(page_mode)
+                    items.append((imgs, anns, ""))
+                    return items  # 回退后直接返回，不再执行下方代码
+                anns = self._load_track_annotations(self.gtp_player.current_track)
+                items.append((imgs, anns, ""))
+            else:
+                # 非GTP文件(图片/PDF): 直接使用缓存图像(无主题问题)
+                imgs, anns, label = self._get_page_range_images(page_mode)
+                items.append((imgs, anns, ""))
 
         elif track_mode == "all" and self.gtp_player and self.gtp_player.is_loaded:
             from ApolloTab.renderer import TabRenderer
             renderer = TabRenderer()
+            # v2.0新增: 导出时强制使用浅色主题(无论当前UI主题是什么)
+            try:
+                renderer.set_theme('light')
+            except Exception:
+                pass
             for t_idx in range(self.gtp_track_combo.count()):
                 try:
                     pixmaps = renderer.render_from_file(self.gtp_player.file_path, track_index=t_idx)
@@ -3743,6 +4163,11 @@ class DisplayWindow(QMainWindow):
         elif isinstance(track_mode, list):
             from ApolloTab.renderer import TabRenderer
             renderer = TabRenderer()
+            # v2.0新增: 导出时强制使用浅色主题(无论当前UI主题是什么)
+            try:
+                renderer.set_theme('light')
+            except Exception:
+                pass
             for t_idx in track_mode:
                 try:
                     pixmaps = renderer.render_from_file(self.gtp_player.file_path, track_index=t_idx)
@@ -4180,29 +4605,6 @@ class SettingsWindow(QMainWindow):
         folder_layout.addWidget(self.folder_button)
         main_layout.addLayout(folder_layout)
 
-        # 速度控制
-        speed_layout=QHBoxLayout()
-        speed_layout.addWidget(QLabel(I18n.t("settings_window.speed_label")))
-        self.speed_slider=QSlider(Qt.Horizontal)
-        self.speed_value_label=QLabel('50')
-        self.speed_slider.valueChanged.connect(self._update_speed_value)
-        speed_layout.addWidget(self.speed_slider)
-        speed_layout.addWidget(self.speed_value_label)
-
-        speed_layout.addWidget(QLabel(I18n.t("settings_window.min_label")))
-        self.min_speed_edit=QLineEdit('50')
-        self.min_speed_edit.setMaximumWidth(50)
-        self.min_speed_edit.editingFinished.connect(self._update_speed_range)
-        speed_layout.addWidget(self.min_speed_edit)
-
-        speed_layout.addWidget(QLabel(I18n.t("settings_window.max_label")))
-        self.max_speed_edit=QLineEdit('200')
-        self.max_speed_edit.setMaximumWidth(50)
-        self.max_speed_edit.editingFinished.connect(self._update_speed_range)
-        speed_layout.addWidget(self.max_speed_edit)
-
-        main_layout.addLayout(speed_layout)
-
         # 语言选择
         lang_layout=QHBoxLayout()
         lang_layout.addWidget(QLabel(I18n.t("settings_window.language_label")))
@@ -4217,6 +4619,21 @@ class SettingsWindow(QMainWindow):
         lang_layout.addWidget(self.lang_combo)
         lang_layout.addStretch()
         main_layout.addLayout(lang_layout)
+
+        # 主题选择 (v2.0新增)
+        theme_layout=QHBoxLayout()
+        theme_layout.addWidget(QLabel(I18n.t("settings_window.theme_label")))
+        self.theme_combo=QComboBox()
+        for name, display_name in ThemeManager.available_themes():
+            self.theme_combo.addItem(display_name, name)
+        # 从配置恢复主题选择
+        saved_theme=self._load_saved_theme()
+        idx=self.theme_combo.findData(saved_theme)
+        if idx>=0: self.theme_combo.setCurrentIndex(idx)
+        self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+        theme_layout.addWidget(self.theme_combo)
+        theme_layout.addStretch()
+        main_layout.addLayout(theme_layout)
 
         # 文件列表
         file_list_label=QLabel(I18n.t("settings_window.file_list_label"))
@@ -4243,28 +4660,29 @@ class SettingsWindow(QMainWindow):
         main_layout.addWidget(self.file_list)
 
     def _apply_theme(self)->None:
-        """应用深色主题到设置窗口"""
+        """应用当前主题样式到SettingsWindow - 从ThemeManager读取当前主题配色"""
+        t = ThemeManager.current()
         self.setStyleSheet(f"""
-            QMainWindow,QWidget{{background-color:{THEME_COLORS['bg_primary']};color:{THEME_COLORS['text_primary']};
+            QMainWindow,QWidget{{background-color:{t['bg_primary']};color:{t['text_primary']};
                 font-family:'Microsoft YaHei','Segoe UI',sans-serif;}}
-            QLabel{{color:{THEME_COLORS['text_primary']};font-size:13px;}}
-            QPushButton{{background-color:{THEME_COLORS['primary']};color:white;border:none;
+            QLabel{{color:{t['text_primary']};font-size:13px;}}
+            QPushButton{{background-color:{t['primary']};color:white;border:none;
                 border-radius:6px;padding:7px 16px;font-weight:500;}}
-            QPushButton:hover{{background-color:{THEME_COLORS['primary_hover']};}}
-            QPushButton:pressed{{background-color:{THEME_COLORS['primary']};}}
-            QLineEdit{{background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};
-                border:1px solid{THEME_COLORS['border']};border-radius:5px;padding:5px 8px;}}
-            QSlider::groove:horizontal{{border:none;height:6px;background:{THEME_COLORS['bg_surface']};border-radius:3px;}}
-            QSlider::handle:horizontal{{background:{THEME_COLORS['primary']};width:16px;margin:-6px 0;border-radius:8px;
-                border:2px solid{THEME_COLORS['bg_primary']};}}
-            QListWidget{{background-color:{THEME_COLORS['bg_surface']};color:{THEME_COLORS['text_primary']};
-                border:1px solid{THEME_COLORS['border']};border-radius:6px;outline:none;}}
-            QListWidget::item{{padding:6px;border-bottom:1px solid{THEME_COLORS['border']};}}
-            QListWidget::item:selected{{background-color:{THEME_COLORS['primary']};color:white;}}
-            QListWidget::item:hover{{background-color:{THEME_COLORS['bg_card']};}}
-            QScrollBar:vertical{{background:{THEME_COLORS['bg_secondary']};width:10px;border-radius:5px;}}
-            QScrollBar::handle:vertical{{background:{THEME_COLORS['border']};border-radius:5px;min-height:30px;}}
-            QScrollBar::handle:vertical:hover{{background:{THEME_COLORS['text_muted']};}}
+            QPushButton:hover{{background-color:{t['primary_hover']};}}
+            QPushButton:pressed{{background-color:{t['primary']};}}
+            QLineEdit{{background-color:{t['bg_surface']};color:{t['text_primary']};
+                border:1px solid{t['border']};border-radius:5px;padding:5px 8px;}}
+            QSlider::groove:horizontal{{border:none;height:6px;background:{t['bg_surface']};border-radius:3px;}}
+            QSlider::handle:horizontal{{background:{t['primary']};width:16px;margin:-6px 0;border-radius:8px;
+                border:2px solid{t['bg_primary']};}}
+            QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
+                border:1px solid{t['border']};border-radius:6px;outline:none;}}
+            QListWidget::item{{padding:6px;border-bottom:1px solid{t['border']};}}
+            QListWidget::item:selected{{background-color:{t['primary']};color:white;}}
+            QListWidget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
+            QScrollBar:vertical{{background:{t['bg_secondary']};width:10px;border-radius:5px;}}
+            QScrollBar::handle:vertical{{background:{t['border']};border-radius:5px;min-height:30px;}}
+            QScrollBar::handle:vertical:hover{{background:{t['text_muted']};}}
             QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}
         """)
 
@@ -4272,13 +4690,6 @@ class SettingsWindow(QMainWindow):
         """加载配置并恢复状态 - 包含目录有效性检查"""
         try:
             self.load_config()
-            if hasattr(self,'last_speed'):
-                self.speed_slider.setValue(self.last_speed)
-                self.speed_value_label.setText(str(self.last_speed))
-            if hasattr(self,'min_range') and hasattr(self,'max_range'):
-                self.speed_slider.setRange(self.min_range,self.max_range)
-                self.min_speed_edit.setText(str(self.min_range))
-                self.max_speed_edit.setText(str(self.max_range))
             # 恢复上次打开的文件夹(带完整性检查)
             if hasattr(self,'last_folder') and self.last_folder:
                 if os.path.isdir(self.last_folder) and os.access(self.last_folder, os.R_OK):
@@ -4300,23 +4711,18 @@ class SettingsWindow(QMainWindow):
                 with open(CONFIG_FILE,'r',encoding='utf-8') as f:
                     cfg=json.load(f)
                     self.last_folder=cfg.get('last_folder','')
-                    self.last_speed=cfg.get('last_speed',50)
-                    self.min_range=cfg.get('min_range',50)
-                    self.max_range=cfg.get('max_range',200)
             else:
-                self.last_speed=50;self.min_range=50;self.max_range=200
+                self.last_folder=''
         except Exception as e:
             print(f"加载配置失败: {e}")
-            self.last_speed=50;self.min_range=50;self.max_range=200
+            self.last_folder=''
 
     def save_config(self)->None:
-        """保存配置文件"""
+        """保存配置文件（包含主题设置）"""
         try:
             cfg={'last_folder':self.current_directory,
-                 'last_speed':self.speed_slider.value(),
-                 'min_range':int(self.min_speed_edit.text()),
-                 'max_range':int(self.max_speed_edit.text()),
-                 'language':I18n.current_language()}
+                 'language':I18n.current_language(),
+                 'theme':ThemeManager.current_name()}  # v2.0新增: 保存主题
             os.makedirs(os.path.dirname(CONFIG_FILE),exist_ok=True)
             with open(CONFIG_FILE,'w',encoding='utf-8') as f:
                 json.dump(cfg,f,ensure_ascii=False,indent=2)
@@ -4346,6 +4752,46 @@ class SettingsWindow(QMainWindow):
         # 提示用户重启应用以完全生效(部分静态文本需重建窗口才能更新)
         QMessageBox.information(self,I18n.t("settings_window.language_switch_title"),
                                 I18n.t("settings_window.language_switch_msg"))
+
+    def _load_saved_theme(self)->str:
+        """从配置文件加载已保存的主题设置"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE,'r',encoding='utf-8') as f:
+                    cfg=json.load(f)
+                    return cfg.get('theme','dark')
+        except Exception:
+            pass
+        return 'dark'
+
+    def _on_theme_changed(self, index: int)->None:
+        """
+        主题切换处理 - 切换深色/浅色主题并实时刷新所有窗口
+        
+        原理:
+          1. 从下拉框获取目标主题名(dark/light)
+          2. 调用 ThemeManager.set_theme() 切换全局配色
+          3. 发射 theme_changed 信号通知所有窗口刷新样式
+          4. 保存主题设置到配置文件(持久化)
+          5. 如果有打开的DisplayWindow，同步刷新其GTP渲染主题
+        """
+        theme_name = self.theme_combo.itemData(index)
+        if not theme_name or theme_name == ThemeManager.current_name():
+            return
+
+        # 切换全局主题
+        if not ThemeManager.set_theme(theme_name):
+            return
+
+        # 刷新设置窗口自身样式
+        self._apply_theme()
+
+        # 刷新已打开的DisplayWindow（如果存在）
+        if self.display_window and hasattr(self.display_window, '_refresh_theme'):
+            self.display_window._refresh_theme()
+
+        # 保存设置
+        self.save_config()
 
     def select_folder(self)->None:
         """选择文件夹"""
@@ -4398,30 +4844,6 @@ class SettingsWindow(QMainWindow):
             QMessageBox.warning(self,I18n.t("settings_window.permission_denied_title"),I18n.t("settings_window.permission_denied_msg", msg=msg))
         else:
             QMessageBox.critical(self,I18n.t("messages.load_error"),I18n.t("messages.load_error_msg", msg=msg))
-
-    def _update_speed_value(self,value:int)->None:
-        """速度值改变"""
-        self.speed_value_label.setText(str(value));self.save_config()
-        if self.display_window and self.display_window.isVisible():
-            self.display_window.base_speed=value
-            if self.display_window.timer.isActive():
-                # 使用固定33ms定时器，不再用base_speed作为间隔
-                self.display_window.timer.start(33)
-
-    def _update_speed_range(self)->None:
-        """速度范围改变"""
-        try:
-            mn,mx=int(self.min_speed_edit.text()),int(self.max_speed_edit.text())
-            if mn<1:mn=1;self.min_speed_edit.setText(str(mn))
-            if mn>=mx:mn=mx-1;self.min_speed_edit.setText(str(mn))
-            self.speed_slider.setRange(mn,mx)
-            cur=self.speed_slider.value()
-            if cur<mn:self.speed_slider.setValue(mn)
-            elif cur>mx:self.speed_slider.setValue(mx)
-            self.save_config()
-        except ValueError:
-            self.min_speed_edit.setText(str(getattr(self,'min_range',50)))
-            self.max_speed_edit.setText(str(getattr(self,'max_range',200)))
 
     def on_file_double_clicked(self,item:QListWidgetItem)->None:
         """双击文件项 - 图片格式自动加载同目录所有图片(按序拼接)"""
@@ -4528,19 +4950,8 @@ class SettingsWindow(QMainWindow):
 
     def show_display(self,fpath,ftype:str)->None:
         """显示谱面窗口"""
-        slider_val=self.speed_slider.value()
-        mn_range=int(self.min_speed_edit.text());mx_range=int(self.max_speed_edit.text())
-        if mx_range>mn_range:
-            linear_pct=(slider_val-mn_range)/(mx_range-mn_range)
-            adj_pct=linear_pct**0.5
-            # 映射到350-700ms范围(值越小播放越快)
-            if adj_pct>=0.8:speed=350      # 最快
-            elif adj_pct>=0.6:speed=450
-            elif adj_pct>=0.4:speed=525
-            elif adj_pct>=0.2:speed=600
-            else:speed=700                  # 最慢
-        else:speed=500                      # 默认中速
-        speed=int(speed)
+        # 默认播放速度 500ms（中等速度）
+        speed=500
 
         if not self.display_window or not self.display_window.isVisible():
             self.display_window=DisplayWindow(fpath,ftype,speed)
@@ -4584,19 +4995,27 @@ if __name__ == '__main__':
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     os.makedirs(ANNOTATION_DIR, exist_ok=True)
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色主题
+    app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色/浅色主题
     app.setWindowIcon(get_app_icon())  # 设置全局应用图标(任务栏图标/窗口默认图标)
+
+    # 初始化主题信号（必须在QApplication之后）
+    ThemeManager.init_signal()
 
     # 初始化国际化系统 - 从配置文件加载已保存的语言设置
     saved_lang='zh_CN'
+    saved_theme='dark'  # v2.0新增: 默认深色主题
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE,'r',encoding='utf-8') as f:
                 cfg=json.load(f)
                 saved_lang=cfg.get('language','zh_CN')
+                saved_theme=cfg.get('theme','dark')  # v2.0新增: 加载保存的主题
     except Exception:
         pass
     I18n.set_language(saved_lang)
+    
+    # v2.0新增: 应用保存的主题（在创建窗口之前）
+    ThemeManager.set_theme(saved_theme)
 
     settings = SettingsWindow()
     sys.exit(app.exec_())
