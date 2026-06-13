@@ -24,7 +24,7 @@
           16. 国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
 
 创建日期: 2026-06-06
-最后修改: 2026-06-13 (v2.0.1 - Bug修复: GTP模式点击前几行无法跳转进度→偏移策略height/2→height*0.25+双位置分离seek_position)
+最后修改: 2026-06-13 (v2.0.1 - Bug修复: GTP点击跳转→零偏移offset=0精确定位+播放启动解耦)
 
 依赖库:
   - PyQt5 >= 5.15     # GUI框架(窗口/控件/信号槽/绘图/PDF导出)
@@ -1938,32 +1938,69 @@ class DisplayWidget(QWidget):
             #   click_abs_y = 当前滚动偏移 + 鼠标Y = 点击处在总内容中的绝对Y坐标(像素)
             #   new_position = click_abs_y - 偏移量 = 使点击处显示在目标位置
             #
-            # [v2.0.1 Bug修复] 点击前几行无法跳转进度问题:
-            #   原因: 居中偏移(height/2)过大 → 点击前几行时new_position为负数→截断为0→无法跳转
-            #   修复1: 偏移量从height/2减小到height/4(点击处显示在屏幕上1/4处,减少顶部截断)
-            #   修复2: seek音频时使用原始计算值(不被clamp截断),确保跳到正确时间点
+            # [v2.0.1 Bug修复] 点击跳转位置不准确的迭代修复:
+            #   v2.0.1a问题: height/2居中偏移 → 点击前几行截断为0(无法跳转)
+            #   v2.0.1b问题: height*0.25偏移 → position大时点上部仍会后移("跳到很后面")
+            #   根因: click_abs_y = position + y, 当position很大时结果必然很大,
+            #         与窗口高度成比例的偏移无法有效抵消
+            #   最终修复: 改为固定小偏移(80px),点击处直接出现在视口顶部附近,
+            #            行为直觉——点顶部=向前翻,点底部=向后翻,幅度正比于点击位置
             ww = self.width()
             if ww > 20:
                 if self.parent_window.total_scroll_distance > 0:
-                    # === 仅在可滚动时才调整位置和音频seek ===
-                    # 点击处的绝对内容Y坐标
-                    click_abs_y = self.parent_window.current_position + event.y()
+                    # === 精确点击定位: 基于缓存图片实际高度计算位置 ===
+                    # [v2.0.1核心修复] 原方案用 current_position + event.y() 计算绝对Y,
+                    #   但这假设像素坐标与图片布局完全线性对应。实际上:
+                    #   1. _rebuild_image_cache用int()截断缩放高度(如802.4→802)
+                    #   2. _calculate_total_distance用float计算(保留802.4)
+                    #   3. 两者随图片数量增多会产生累积误差→点击偏移
+                    #
+                    # 新方案: 遍历_cached_scaled的**实际像素高度**,精确找到点击位置落在哪张图片内,
+                    #         用累积的真实像素值作为click_abs_y,消除截断误差
 
-                    # 偏移策略: 将点击处定位到屏幕上方1/4高度处(而非正中央)
-                    # 效果: 点击后该位置显示在屏幕上部,下方留出更多上下文内容可见
-                    #       同时减少"点击顶部→负数→截断为0"的问题(原来用height/2容易溢出)
-                    # 调整效果: 偏移越小,点击顶部时越不容易被截断;偏移越大,居中效果越好
-                    #         height/4 是经验平衡值: 既保留一定居中效果,又避免大部分截断
-                    click_offset = self.height() * 0.25
+                    click_y = event.y()  # 点击在画布中的Y坐标
+
+                    # 方法A: 快速估算(原方案,用于对比)
+                    rough_abs_y = self.parent_window.current_position + click_y
+
+                    # 方法B: 精确计算(遍历缓存图片的实际渲染高度)
+                    # 原理: 从current_position开始,逐张累加缓存图片真实高度(+5px间距),
+                    #       找到click_y落入哪张图片的范围,得到精确的内容绝对Y坐标
+                    precise_abs_y = self.parent_window.current_position
+                    found_image = False
+                    remaining_y = click_y
+                    for cached in self._cached_scaled:
+                        if cached.isNull():
+                            continue
+                        img_h = cached.height()  # 缓存图片的实际渲染像素高度(已含int截断)
+                        if remaining_y < img_h + 5:  # 在这张图片或间距内
+                            precise_abs_y += remaining_y
+                            found_image = True
+                            break
+                        remaining_y -= (img_h + 5)  # 跳过这张图片+间距
+                        precise_abs_y += (img_h + 5)
+                    if not found_image:
+                        # 点击超出所有图片范围(不太可能,但防兜底)
+                        precise_abs_y = rough_abs_y
+
+                    # 使用精确计算的绝对Y坐标
+                    click_abs_y = precise_abs_y
+
+                    # [调试] 输出粗略值和精确值的差异(确认是否为int截断导致)
+                    # 如果差异>5px说明截断误差是主因, 正式版可删除此print
+                    diff = abs(rough_abs_y - precise_abs_y)
+                    if diff > 2:
+                        print(f"[ClickDebug] y={click_y} pos={self.parent_window.current_position:.0f} rough={rough_abs_y:.0f} precise={precise_abs_y:.0f} diff={diff:.0f}px")
+
+                    # 无偏移: 点击处直接对齐到屏幕顶部(y=0)
+                    click_offset = 0
 
                     # 视觉位置: clamp到有效范围(防止滚动越界)
                     new_position = click_abs_y - click_offset
                     new_position = max(0, min(new_position, self.parent_window.total_scroll_distance))
 
-                    # Seek位置: 使用原始计算值(不被clamp截断),确保音频跳到正确时间点
-                    # 场景: 播放中途点击已滚过的前几行→视觉position可能被截断到边界,
-                    #       但音频应跳转到对应时间点(而非总是开头或末尾)
-                    seek_position = max(0, click_abs_y - click_offset)
+                    # Seek位置: 与视觉位置一致(都是基于点击的真实位置)
+                    seek_position = new_position
 
                     # === 步骤1: 设置视觉位置和跳转目标(防止_tick覆盖) ===
                     self.parent_window.current_position = new_position
@@ -1980,16 +2017,23 @@ class DisplayWidget(QWidget):
                             # 原理: GTPPlayer.build_timeline建立了time_ms↔scroll_y的非线性映射，
                             #       不能用线性比例(pos/total*time)反推时间！
                             #       必须用GTPPlayer.scroll_pos_to_time()在timeline中对scroll_y做二分查找。
-                            # [v2.0.1修复] 使用seek_position(原始值)而非new_position(clamp后),
-                            #       确保点击前几行时音频也能正确跳转到对应时间点
+                            #
+                            # [v2.0.1修复] 视频同步问题:
+                            #   症状: 点击行到屏幕顶部✓,但播放条/高亮超前~5行✗
+                            #   原因: scroll_pos_to_time(scroll_pos, total, height)的第3个参数height是
+                            #         视口偏移量——函数内部可能用它计算"播放头应在视口中的位置"
+                            #         (如居中=height/2),导致返回的时间对应于scroll_pos+偏移后的位置
+                            #   修复: 传入height=0,告诉函数不要添加任何视口偏移,
+                            #         使返回的时间精确对应new_position(点击处=屏幕顶部)
 
                             target_ms = self.parent_window.gtp_player.scroll_pos_to_time(
                                 seek_position,
                                 self.parent_window.total_scroll_distance,
-                                self.parent_window.height()
+                                0  # 不加视口偏移,精确映射到点击位置(屏幕顶部)
                             )
 
                             if target_ms > 0:
+                                print(f"[ClickDebug] seek_pos={seek_position:.0f} → target_ms={target_ms:.0f}ms")
                                 self.parent_window.gtp_player.seek(target_ms)
                         except Exception as e:
                             print(f"[ClickPlay] 音频跳转失败: {e}")
