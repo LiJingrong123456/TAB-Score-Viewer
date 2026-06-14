@@ -15,7 +15,9 @@
     "export_btn": "Export",
     "export_tooltip": "Export current score (with annotations) as A4 image or PDF",
     "print_btn": "Print",
-    "print_tooltip": "Print current score (with annotations) to printer\nSupports track and page range selection",
+    "print_tooltip": "Print current score (with annotations) to printer\nSupports track and page range selection\nDropdown: Direct Print / Print Preview",
+    "print_direct": "Print Directly...",
+    "print_preview": "Print Preview...",
     "curve_btn": "Speed Curve",
     "audio_all": "All Tracks",
     "audio_current": "Current Track",
@@ -159,6 +161,7 @@
   },
   "print_dialog": {
     "window_title": "Print Settings - TAB Score Viewer",
+    "preview_title": "Print Preview - TAB Score Viewer",
     "track_group": "Track Selection ({count} tracks)",
     "track_current": "Current Track",
     "track_all": "All Tracks",

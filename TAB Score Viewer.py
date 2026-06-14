@@ -93,7 +93,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QToolTip,
     QProgressBar, QComboBox, QTabWidget, QToolButton, QRadioButton
 )
-from PyQt5.QtPrintSupport import QPrinter, QPrintDialog  # 打印支持(用于打印曲谱到物理打印机)
+from PyQt5.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog  # 打印支持(用于打印曲谱到物理打印机+预览)
 from PyQt5.QtGui import (
     QPixmap, QPainter, QPen, QColor, QFont, QFontMetrics, QIcon,
     QImage, QCursor, QPainterPath, QLinearGradient, QRadialGradient,
@@ -3027,10 +3027,33 @@ class DisplayWindow(QMainWindow):
         self.export_btn.clicked.connect(self._export_to_a4)
         tb.addWidget(self.export_btn)
 
-        # 打印按钮(直接打印到打印机，含标注) (SVG图标: 打印机)
-        self.print_btn=ModernButton(I18n.t("toolbar.print_btn"),'warning','printer')
+        # 打印按钮(下拉菜单: 直接打印 / 打印预览) (SVG图标: 打印机)
+        self.print_btn = QToolButton()
+        self.print_btn.setText(I18n.t("toolbar.print_btn"))
+        self.print_btn.setIcon(load_icon('printer'))
+        self.print_btn.setPopupMode(QToolButton.MenuButtonPopup)  # 下拉菜单模式
+        self.print_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.print_btn.setToolTip(I18n.t("toolbar.print_tooltip"))
-        self.print_btn.clicked.connect(self._print_score)
+
+        # 创建下拉菜单
+        print_menu = QMenu(self)
+
+        # 菜单项1: 直接打印
+        action_print_direct = QAction(I18n.t("toolbar.print_direct"), self)
+        action_print_direct.setIcon(load_icon('printer'))
+        action_print_direct.triggered.connect(lambda: self._print_score(use_preview=False))
+        print_menu.addAction(action_print_direct)
+
+        # 菜单项2: 打印预览
+        action_print_preview = QAction(I18n.t("toolbar.print_preview"), self)
+        action_print_preview.setIcon(load_icon('printer'))  # 复用打印机图标
+        action_print_preview.triggered.connect(lambda: self._print_score(use_preview=True))
+        print_menu.addAction(action_print_preview)
+
+        self.print_btn.setMenu(print_menu)
+        # 默认点击行为: 直接打印（与下拉菜单第一项一致）
+        self.print_btn.clicked.connect(lambda: self._print_score(use_preview=False))
+
         tb.addWidget(self.print_btn)
 
         # 速度曲线按钮 (SVG图标: 趋势线图表)
@@ -4452,27 +4475,32 @@ class DisplayWindow(QMainWindow):
         # 调用DisplayWidget的创建标注方法
         self.display_widget._create_annotation_at(x, y)
 
-    # ========== 打印曲谱(含标注，支持分轨/分页) ==========
+    # ========== 打印曲谱(含标注，支持分轨/分页/预览) ==========
 
-    def _print_score(self)->None:
+    def _print_score(self, use_preview:bool=False)->None:
         """
-        打印谱面(含标注)到打印机
+        打印谱面(含标注)到打印机或打印预览
 
         功能:
-          - 使用系统打印对话框选择打印机
+          - 使用系统打印对话框选择打印机 / 或显示打印预览窗口
           - 分轨: GTP文件可选指定轨道打印，或"全部轨道"按顺序拼接
           - 分页: 可选单页、页码范围、全部页面
           - 标注: 完整渲染所有标注(颜色/字体/大小)
           - 自动分页: 内容超过一页时自动分多页打印
+          - **GTP文件强制浅色主题**: 与导出一致，确保打印输出清晰可读
 
         原理:
           1. 弹出自定义打印设置对话框(PrintDialog)让用户选择轨道/页码范围
-          2. 弹出系统QPrintDialog让用户选择打印机和打印参数
-          3. 收集需要打印的图片列表(GTP多轨时按需重新渲染各轨)
-          4. 使用QPainter将内容逐页绘制到QPrinter
-          5. 排序规则与导出功能完全一致(复用_collect_export_data)
+          2. 收集需要打印的图片列表(GTP多轨时按需重新渲染各轨，强制浅色主题)
+          3. 根据模式:
+             - 直接打印: 弹出QPrintDialog选择打印机 → _render_to_printer()
+             - 打印预览: 弹出QPrintPreviewDialog → 用户确认后执行打印
+          4. 排序规则与导出功能完全一致(复用_collect_export_data)
 
-        调用方式: 工具栏"打印"按钮点击触发
+        参数:
+            use_preview: 是否使用打印预览模式(True=预览, False=直接打印)
+
+        调用方式: 工具栏"打印"下拉菜单触发
         """
         if not self.images or all(img.isNull() for img in self.images):
             QMessageBox.warning(self, I18n.t("messages.print_no_content"), I18n.t("messages.print_no_content_msg"))
@@ -4494,19 +4522,8 @@ class DisplayWindow(QMainWindow):
         track_mode = dlg.track_mode  # "current" | "all" | list[int]
         page_mode = dlg.page_mode    # "all" | ("range", start, end)
 
-        # 弹出系统打印对话框
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setPageSize(QPrinter.A4)
-        printer.setPageMargins(10, 10, 10, 10, QPrinter.Millimeter)
-        printer.setFullPage(True)
-
-        print_dlg = QPrintDialog(printer, self)
-        print_dlg.setWindowTitle(I18n.t("print_dialog.window_title"))
-        if print_dlg.exec_() != QDialog.Accepted:
-            return
-
         try:
-            # === Step 1: 收集要打印的数据(复用导出逻辑) ===
+            # === Step 1: 收集要打印的数据(复用导出逻辑，GTP强制浅色主题) ===
             print_items = self._collect_export_data(track_mode, page_mode)
             # print_items: List[(images_list, annotations_list, track_label), ...]
 
@@ -4514,22 +4531,87 @@ class DisplayWindow(QMainWindow):
                 QMessageBox.warning(self, I18n.t("messages.print_no_content"), I18n.t("messages.print_no_data"))
                 return
 
-            # === Step 2: 执行打印 ===
-            total_pages = 0
-            for item_idx, (imgs, anns, label) in enumerate(print_items):
-                if not imgs:
-                    continue
-                n = self._render_to_printer(printer, imgs, anns)
-                total_pages += n
+            # === Step 2: 根据模式执行打印或预览 ===
+            if use_preview:
+                self._show_print_preview(print_items)
+            else:
+                self._execute_print(print_items)
 
-            QMessageBox.information(
-                self, I18n.t("messages.print_success"),
-                I18n.t("messages.print_success_msg", count=total_pages)
-            )
         except Exception as e:
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, I18n.t("messages.print_fail"), I18n.t("messages.print_fail_msg", error=str(e)))
+
+    def _execute_print(self, print_items:list)->None:
+        """
+        执行直接打印流程(弹出系统打印对话框 → 打印)
+
+        参数:
+            print_items: List[(images, annotations, label)] 已收集的打印数据
+        """
+        # 创建打印机配置
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setPageSize(QPrinter.A4)
+        printer.setPageMargins(10, 10, 10, 10, QPrinter.Millimeter)
+        printer.setFullPage(True)
+
+        # 弹出系统打印对话框
+        print_dlg = QPrintDialog(printer, self)
+        print_dlg.setWindowTitle(I18n.t("print_dialog.window_title"))
+        if print_dlg.exec_() != QDialog.Accepted:
+            return
+
+        # 执行打印
+        total_pages = 0
+        for imgs, anns, label in print_items:
+            if not imgs:
+                continue
+            n = self._render_to_printer(printer, imgs, anns)
+            total_pages += n
+
+        QMessageBox.information(
+            self, I18n.t("messages.print_success"),
+            I18n.t("messages.print_success_msg", count=total_pages)
+        )
+
+    def _show_print_preview(self, print_items:list)->None:
+        """
+        显示打印预览窗口
+
+        功能:
+          - 使用QPrintPreviewDialog显示谱面在纸上的实际效果
+          - 用户可在预览窗口中缩放、翻页、调整打印参数
+          - 点击预览窗口中的"打印"按钮直接发送到打印机
+
+        原理:
+          1. 创建QPrintPreviewDialog并连接paintRequested信号
+          2. 信号触发时调用_render_to_printer()渲染当前页到预览画布
+          3. 预览窗口内置缩放/翻页/打印功能，无需额外实现
+
+        参数:
+            print_items: List[(images, annotations, label)] 已收集的打印数据
+        """
+        # 创建打印机配置(用于预览和后续打印)
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setPageSize(QPrinter.A4)
+        printer.setPageMargins(10, 10, 10, 10, QPrinter.Millimeter)
+        printer.setFullPage(True)
+
+        # 创建打印预览对话框
+        preview_dlg = QPrintPreviewDialog(printer, self)
+        preview_dlg.setWindowTitle(I18n.t("print_dialog.preview_title"))
+        preview_dlg.setMinimumSize(800, 600)  # 最小尺寸确保预览效果良好
+
+        # 连接渲染信号: 当预览需要绘制页面时触发
+        def on_paint_requested(printer_for_preview:QPrinter)->None:
+            """打印预览回调: 将内容渲染到预览打印机"""
+            for imgs, anns, label in print_items:
+                if not imgs:
+                    continue
+                self._render_to_printer(printer_for_preview, imgs, anns)
+
+        preview_dlg.paintRequested.connect(on_paint_requested)
+        preview_dlg.exec_()
 
     def _render_to_printer(self, printer:QPrinter, images:list, annotations:list)->int:
         """
@@ -4550,8 +4632,8 @@ class DisplayWindow(QMainWindow):
         """
         # 获取打印机实际可打印区域
         printer_rect = printer.pageRect(QPrinter.DevicePixel)
-        draw_w = printer_rect.width()
-        draw_area_h = printer_rect.height() - 35  # 预留35px给页码
+        draw_w = int(printer_rect.width())  # 必须转int: QPixmap.scaled()不接受float参数
+        draw_area_h = int(printer_rect.height()) - 35  # 预留35px给页码
 
         # 按A4宽度等比缩放所有图片(与导出一致)
         scaled_info = []; total_h = 0
@@ -4622,7 +4704,7 @@ class DisplayWindow(QMainWindow):
             # 页码(底部居中)
             painter.setPen(QColor("#999999"))
             painter.setFont(QFont("Arial", 9))
-            painter.drawText(QRect(0, printer_rect.height() - 35, draw_w, 35),
+            painter.drawText(QRect(0, int(printer_rect.height()) - 35, draw_w, 35),
                            Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
             printed += 1
 

@@ -15,7 +15,9 @@
     "export_btn": "导出",
     "export_tooltip": "导出当前谱面(含标注)为A4图片或PDF",
     "print_btn": "打印",
-    "print_tooltip": "打印当前谱面(含标注)到打印机\n支持选择轨道和页码范围",
+    "print_tooltip": "打印当前谱面(含标注)到打印机\n支持选择轨道和页码范围\n下拉菜单: 直接打印 / 打印预览",
+    "print_direct": "直接打印...",
+    "print_preview": "打印预览...",
     "curve_btn": "速度曲线",
     "audio_all": "全轨",
     "audio_current": "当前轨",
@@ -159,6 +161,7 @@
   },
   "print_dialog": {
     "window_title": "打印设置 - TAB Score Viewer",
+    "preview_title": "打印预览 - TAB Score Viewer",
     "track_group": "音轨选择 (共{count}轨)",
     "track_current": "当前轨道",
     "track_all": "全部轨道",
