@@ -2312,121 +2312,128 @@ class DisplayWidget(QWidget):
                 return
             
             # === 未命中标注 → 点击谱面跳转到该位置并开始播放 ===
-            # 坐标系统说明:
-            #   current_position: 滚动偏移量(像素)，paintEvent中 base_y = -current_position
-            #   total_scroll_distance: 最大可滚动距离(像素) = 总内容高度 - 显示区域高度
-            #   两者都是像素单位，不需要比例转换！
+            # [v2.0.6 重构] 以"小节"为单位进行定位，与A/B循环的小节原子单位一致
+            #   旧方案: 精确像素跳转 → 可能跳到小节中间位置
+            #   新方案: 点击任意位置 → 自动对齐到所在小节的起始拍
             #
-            # 点击位置计算:
-            #   event.y() = 鼠标在画布中的Y坐标(像素)
-            #   click_abs_y = 当前滚动偏移 + 鼠标Y = 点击处在总内容中的绝对Y坐标(像素)
-            #   new_position = click_abs_y - 偏移量 = 使点击处显示在目标位置
-            #
-            # [v2.0.1 Bug修复] 点击跳转位置不准确的迭代修复:
-            #   v2.0.1a问题: height/2居中偏移 → 点击前几行截断为0(无法跳转)
-            #   v2.0.1b问题: height*0.25偏移 → position大时点上部仍会后移("跳到很后面")
-            #   根因: click_abs_y = position + y, 当position很大时结果必然很大,
-            #         与窗口高度成比例的偏移无法有效抵消
-            #   最终修复: 改为固定小偏移(80px),点击处直接出现在视口顶部附近,
-            #            行为直觉——点顶部=向前翻,点底部=向后翻,幅度正比于点击位置
+            # A/B循环联动:
+            #   - 循环激活 + 点击小节在区间外 → 忽略跳转，维持循环播放
+            #   - 循环未激活 / 点击小节在区间内 → 跳转到小节开头并播放
             ww = self.width()
             if ww > 20:
                 if self.parent_window.total_scroll_distance > 0:
-                    # === 精确点击定位: 基于缓存图片实际高度计算位置 ===
-                    # [v2.0.1核心修复] 原方案用 current_position + event.y() 计算绝对Y,
-                    #   但这假设像素坐标与图片布局完全线性对应。实际上:
-                    #   1. _rebuild_image_cache用int()截断缩放高度(如802.4→802)
-                    #   2. _calculate_total_distance用float计算(保留802.4)
-                    #   3. 两者随图片数量增多会产生累积误差→点击偏移
-                    #
-                    # 新方案: 遍历_cached_scaled的**实际像素高度**,精确找到点击位置落在哪张图片内,
-                    #         用累积的真实像素值作为click_abs_y,消除截断误差
-
                     click_y = event.y()  # 点击在画布中的Y坐标
 
-                    # 方法A: 快速估算(原方案,用于对比)
-                    rough_abs_y = self.parent_window.current_position + click_y
-
-                    # 方法B: 精确计算(遍历缓存图片的实际渲染高度)
-                    # 原理: 从current_position开始,逐张累加缓存图片真实高度(+5px间距),
-                    #       找到click_y落入哪张图片的范围,得到精确的内容绝对Y坐标
+                    # === 计算点击处的绝对Y坐标(精确版) ===
                     precise_abs_y = self.parent_window.current_position
                     found_image = False
                     remaining_y = click_y
                     for cached in self._cached_scaled:
                         if cached.isNull():
                             continue
-                        img_h = cached.height()  # 缓存图片的实际渲染像素高度(已含int截断)
-                        if remaining_y < img_h + 5:  # 在这张图片或间距内
+                        img_h = cached.height()
+                        if remaining_y < img_h + 5:
                             precise_abs_y += remaining_y
                             found_image = True
                             break
-                        remaining_y -= (img_h + 5)  # 跳过这张图片+间距
+                        remaining_y -= (img_h + 5)
                         precise_abs_y += (img_h + 5)
                     if not found_image:
-                        # 点击超出所有图片范围(不太可能,但防兜底)
-                        precise_abs_y = rough_abs_y
+                        precise_abs_y = self.parent_window.current_position + click_y
 
-                    # 使用精确计算的绝对Y坐标
                     click_abs_y = precise_abs_y
 
-                    # [调试] 输出粗略值和精确值的差异(确认是否为int截断导致)
-                    # 如果差异>5px说明截断误差是主因, 正式版可删除此print
-                    diff = abs(rough_abs_y - precise_abs_y)
-                    if diff > 2:
-                        print(f"[ClickDebug] y={click_y} pos={self.parent_window.current_position:.0f} rough={rough_abs_y:.0f} precise={precise_abs_y:.0f} diff={diff:.0f}px")
-
-                    # 无偏移: 点击处直接对齐到屏幕顶部(y=0)
-                    click_offset = 0
-
-                    # 视觉位置: clamp到有效范围(防止滚动越界)
-                    new_position = click_abs_y - click_offset
-                    new_position = max(0, min(new_position, self.parent_window.total_scroll_distance))
-
-                    # Seek位置: 与视觉位置一致(都是基于点击的真实位置)
-                    seek_position = new_position
-
-                    # === 步骤1: 设置视觉位置和跳转目标(防止_tick覆盖) ===
-                    self.parent_window.current_position = new_position
-                    self.parent_window._click_jump_target = new_position
-                    self.parent_window.update_progress_display()
-                    self.parent_window._sync_play_time_from_position()  # 同步播放时间(点击跳转后)
-
-                    # === 步骤2: 音频seek(跳转到对应时间点) ===
-                    # [v2.0.1修复] height参数必须传0!
-                    #
-                    # 库函数内部实现(scroll_pos_to_time):
-                    #   raw_scroll_y = scroll_pos + display_height / 2   ← 自动+h/2!
-                    #
-                    # 而我们的seek_position已经是"居中坐标"(与_tick的time_based_pos同坐标系),
-                    # 即相当于 time_to_scroll_pos 返回值 = scroll_y - h/2。
-                    # 如果再传self.height(),库内部会+h/2→多加~375px→经非线性映射放大→超前一页!
-                    #
-                    # 正确做法: 传0,让库内部只加0,保持对称性。
-                    # 残留微小误差(如果有)用常量微调即可。
-                    target_ms = 0
-                    if (self.parent_window.gtp_player and
-                        self.parent_window.gtp_player.is_audio_ready):
-                        try:
-                            target_ms = self.parent_window.gtp_player.scroll_pos_to_time(
-                                seek_position,
-                                self.parent_window.total_scroll_distance,
-                                0  # 居中坐标不再需要h/2转换(内部会+0=无偏移)
+                    # === 尝试以小节为单位定位(GTP模式) ===
+                    measure_info = None
+                    use_measure_jump = False
+                    
+                    if (self.parent_window.gtp_player and 
+                        self.parent_window.gtp_player.is_audio_ready and
+                        len(self.parent_window._playhead_timeline) >= 2):
+                        # GTP模式: 使用小节级别定位
+                        measure_info = self.parent_window.gtp_player.find_measure_at_scroll_pos(
+                            click_abs_y
+                        )
+                        
+                        if measure_info:
+                            # 检查A/B循环区间约束
+                            loop_active = (
+                                self.parent_window.loop_config.is_enabled 
+                                and self.parent_window.loop_config.loop_type == 'region'
                             )
-                            print(f"[ClickDebug] pos={new_position:.0f} → ms={target_ms:.0f}")
-                            if target_ms > 0:
+                            
+                            if loop_active:
+                                loop_start_ms, loop_end_ms = (
+                                    self.parent_window.gtp_player.loop_time_range
+                                )
+                                target_ms = measure_info['start_time_ms']
+                                
+                                # 判断目标小节是否在循环区间内
+                                # 允许微小误差(±50ms): 避免边界值因时间精度问题被误判为"区间外"
+                                if target_ms < loop_start_ms - 50 or target_ms > loop_end_ms + 50:
+                                    print(f"[ClickMeasure] 小节[{measure_info['meas_idx']}] "
+                                          f"(time={target_ms:.0f}ms) 在循环区间 "
+                                          f"[{loop_start_ms:.0f}-{loop_end_ms:.0f}ms] 之外, 忽略跳转")
+                                    event.accept()
+                                    return  # 区间外: 不执行跳转,维持当前循环
+                                
+                                print(f"[ClickMeasure] 小节[{measure_info['meas_idx']}] "
+                                      f"(time={target_ms:.0f}ms) 在循环区间内, 允许跳转")
+                            
+                            use_measure_jump = True
+                    
+                    if use_measure_jump and measure_info:
+                        # === 小节单位跳转: 对齐到该小节第一个拍 ===
+                        new_position = measure_info['start_scroll_y']
+                        new_position = max(0, min(new_position, self.parent_window.total_scroll_distance))
+                        target_ms = measure_info['start_time_ms']
+                        
+                        print(f"[ClickMeasure] 跳转到小节[{measure_info['meas_idx']}] "
+                              f"pos={new_position:.0f}px time={target_ms:.0f}ms")
+                        
+                        # 步骤1: 设置视觉位置和跳转目标
+                        self.parent_window.current_position = new_position
+                        self.parent_window._click_jump_target = new_position
+                        self.parent_window.update_progress_display()
+                        self.parent_window.play_time = target_ms / 1000.0
+                        
+                        # 步骤2: 音频seek到小节起始位置
+                        if target_ms > 0:
+                            try:
                                 self.parent_window.gtp_player.seek(target_ms)
-                        except Exception as e:
-                            print(f"[ClickPlay] seek失败: {e}")
+                            except Exception as e:
+                                print(f"[ClickMeasure] seek失败: {e}")
+                    
+                    else:
+                        # === 降级: 非GTP模式或无时间线时使用原始像素跳转 ===
+                        click_offset = 0
+                        new_position = max(0, min(
+                            click_abs_y - click_offset, 
+                            self.parent_window.total_scroll_distance
+                        ))
+                        
+                        self.parent_window.current_position = new_position
+                        self.parent_window._click_jump_target = new_position
+                        self.parent_window.update_progress_display()
+                        self.parent_window._sync_play_time_from_position()
 
-                # === 步骤3: 启动播放(无论是否可滚动都执行!) ===
-                # [v2.0.1修复] 热跳转方案: 不stop/restart,直接seek+继续播放
-                # 原因: stop()会重置音频引擎内部状态→play()从0开始,覆盖seek结果!
-                # 方案: 未播放则启动;播放中则热seek,_click_jump_target保护视觉位置
+                        target_ms = 0
+                        if (self.parent_window.gtp_player and
+                            self.parent_window.gtp_player.is_audio_ready):
+                            try:
+                                target_ms = self.parent_window.gtp_player.scroll_pos_to_time(
+                                    new_position,
+                                    self.parent_window.total_scroll_distance,
+                                    0
+                                )
+                                if target_ms > 0:
+                                    self.parent_window.gtp_player.seek(target_ms)
+                            except Exception as e:
+                                print(f"[ClickPlay] seek失败: {e}")
+
+                # === 启动/继续播放 ===
                 if not self.parent_window.timer.isActive():
                     self.parent_window.toggle_playback()
-                # 播放中: 步骤2的seek(target_ms)已生效,音频引擎从新位置继续
-                #         _click_jump_target在步骤1已设置,_tick保护视觉直到追上
 
                 self.update()  # 立即更新显示
             
@@ -4211,10 +4218,20 @@ class DisplayWindow(QMainWindow):
                     self.play_time = 0
                     if self.gtp_player:
                         self.gtp_player.seek(0)
-            # === 播放结束(region循环由库层自动处理，不会到达这里) ===
+            # === 播放结束判断 ===
+            # [v2.0.6 修复] region循环模式下，播放结束由库层(SynthEngine)内部管理
+            # UI层不应因 effective_time >= total_dur 而提前调用 stop_playback()
+            # 原因: _loop_end_ms(B点)通常 < _total_audio_duration_ms(总时长)
+            #       当 effective_time 达到总时长时，库层可能正在执行循环重启
+            #       此时UI层stop会导致循环失效("到达B点后不seek回A点")
             elif effective_time >= total_dur:
-                self.current_position = self.total_scroll_distance
-                self.stop_playback(reset_position=True)
+                # region循环模式: 交给库层管理生命周期，UI层不干预
+                if self.loop_config.is_enabled and self.loop_config.loop_type == 'region':
+                    pass  # 库层会自动循环回A点，UI层继续读取current_time_ms即可
+                else:
+                    # 非循环或all循环模式: 正常停止播放
+                    self.current_position = self.total_scroll_distance
+                    self.stop_playback(reset_position=True)
 
         else:
             # --- 线性恒速模式(无音频时降级使用) ---
