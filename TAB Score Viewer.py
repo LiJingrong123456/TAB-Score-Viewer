@@ -1209,28 +1209,34 @@ class TrackVolumeSlider(QWidget):
         """获取当前dB值"""
         return self._db_value
 
-    def _db_to_y(self, db: float) -> int:
+    def _db_to_y(self, db: float, track_top: int = 8, track_bottom: int = None) -> float:
         """
         将dB值转换为Y坐标(像素)
         原理: 线性映射 dB范围 → 滑块轨道高度
               顶部=最大dB, 底部=最小dB(符合直觉:向上推=音量大)
+        
+        参数:
+            db: dB值
+            track_top: 轨道顶部Y坐标(默认8)
+            track_bottom: 轨道底部Y坐标(默认WIDGET_HEIGHT-28)
         """
+        if track_bottom is None:
+            track_bottom = self.WIDGET_HEIGHT - 28
+        
         if db <= self._min_db:
-            return self.WIDGET_HEIGHT - 30  # 最底部(留出标签空间)
+            return float(track_bottom)  # 最底部(留出标签空间)
         if db >= self._max_db:
-            return 10  # 最顶部(留出边距)
+            return float(track_top)  # 最顶部(留出边距)
         
         # 线性插值
         ratio = (db - self._min_db) / (self._max_db - self._min_db)
-        track_top = 10
-        track_bottom = self.WIDGET_HEIGHT - 30
         y = track_bottom - ratio * (track_bottom - track_top)
-        return int(y)
+        return y
 
     def _y_to_db(self, y: int) -> float:
         """将Y坐标转换为dB值"""
-        track_top = 10
-        track_bottom = self.WIDGET_HEIGHT - 30
+        track_top = 8
+        track_bottom = self.WIDGET_HEIGHT - 28
         
         if y >= track_bottom:
             return self._min_db
@@ -1242,12 +1248,11 @@ class TrackVolumeSlider(QWidget):
         return round(db, 1)
 
     def paintEvent(self, event) -> None:
-        """绘制音量滑块(专业DAW风格)"""
+        """绘制音量滑块(简洁DAW风格)"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
         # 获取主题颜色
-        bg_primary = ThemeManager.get('bg_primary', '#121212')
         bg_surface = ThemeManager.get('bg_surface', '#252536')
         bg_card = ThemeManager.get('bg_card', '#2D2D44')
         border_color = ThemeManager.get('border', '#3A3A4A')
@@ -1265,77 +1270,59 @@ class TrackVolumeSlider(QWidget):
         # ===== 1. 绘制背景 =====
         painter.fillRect(self.rect(), QColor(bg_surface))
         
-        # ===== 2. 绘制左侧dB刻度 =====
-        painter.setPen(QColor(text_muted))
-        font = QFont('Microsoft YaHei', 7)
-        painter.setFont(font)
-        
-        # 主要刻度标记(dB值)
-        scale_marks = [6, 3, 0, -3, -6, -9, -12, -15, -18, -21, -24, -27,
-                       -33, -39, -60]  # -60dB近似-∞(静音)
-        for db in scale_marks:
-            y = self._db_to_y(float(db))
-            # 刻度线
-            painter.drawLine(2, y, 8, y)
-            # 刻度文字(右侧对齐)
-            if db == -60:
-                text = "-∞"
-            elif db >= 0:
-                text = f"+{db}"
-            else:
-                text = f"{db}"
-            painter.drawText(10, y + 3, text)
-        
-        # ===== 3. 绘制滑块轨道 =====
-        track_x = self.SCALE_WIDTH + 8
-        track_top = 10
-        track_bottom = self.WIDGET_HEIGHT - 30
+        # ===== 2. 计算布局(轨道居中) =====
+        margin_x = (self.WIDGET_WIDTH - self.SLIDER_WIDTH) // 2  # 水平居中
+        track_top = 8
+        track_bottom = self.WIDGET_HEIGHT - 28  # 底部留空间给名称和dB值
         track_height = track_bottom - track_top
         
+        # ===== 3. 绘制滑块轨道 =====
+        track_rect = QRect(margin_x, track_top, self.SLIDER_WIDTH, track_height)
+        
         # 轨道背景(深色凹槽)
-        track_rect = QRect(track_x, track_top, self.SLIDER_WIDTH, track_height)
         painter.fillRect(track_rect, QColor(bg_card))
         painter.setPen(QPen(QColor(border_color), 1))
         painter.drawRoundedRect(track_rect, 3, 3)
         
         # 已填充部分(当前位置到顶部)
-        handle_y = self._db_to_y(self._db_value)
-        filled_rect = QRect(track_x, int(handle_y), self.SLIDER_WIDTH, 
-                           int(track_bottom - handle_y))
+        handle_y = self._db_to_y(self._db_value, track_top, track_bottom)
+        filled_height = int(track_bottom - handle_y)
+        if filled_height > 0:
+            filled_rect = QRect(margin_x, int(handle_y), self.SLIDER_WIDTH, filled_height)
+            
+            # 渐变填充
+            gradient = QLinearGradient(0, handle_y, 0, track_bottom)
+            gradient.setColorAt(0.0, QColor(slider_color).lighter(130))
+            gradient.setColorAt(1.0, QColor(slider_color).darker(120))
+            painter.fillRect(filled_rect, gradient)
         
-        # 渐变填充(从滑块位置到轨道底部)
-        gradient = QLinearGradient(0, handle_y, 0, track_bottom)
-        gradient.setColorAt(0.0, QColor(slider_color).lighter(120))
-        gradient.setColorAt(1.0, QColor(slider_color).darker(130))
-        painter.fillRect(filled_rect, gradient)
-        
-        # ===== 4. 绘制滑块手柄(金属质感) =====
-        handle_rect = QRect(track_x - 3, int(handle_y) - self.HANDLE_HEIGHT//2,
-                           self.SLIDER_WIDTH + 6, self.HANDLE_HEIGHT)
+        # ===== 4. 绘制滑块手柄 =====
+        handle_rect = QRect(margin_x - 4, int(handle_y) - self.HANDLE_HEIGHT//2,
+                           self.SLIDER_WIDTH + 8, self.HANDLE_HEIGHT)
         
         # 手柄渐变(3D立体效果)
         handle_gradient = QLinearGradient(0, handle_rect.top(), 
                                           0, handle_rect.bottom())
         if self.is_master:
-            handle_gradient.setColorAt(0.0, QColor('#FFB380'))   # 亮橙
-            handle_gradient.setColorAt(0.5, QColor('#CC5500'))   # 深橙
-            handle_gradient.setColorAt(1.0, QColor('#993D00'))   # 更深
+            handle_gradient.setColorAt(0.0, QColor('#FFAA66'))   # 亮橙
+            handle_gradient.setColorAt(0.5, QColor('#DD6600'))   # 中橙
+            handle_gradient.setColorAt(1.0, QColor('#994400'))   # 深橙
         else:
-            handle_gradient.setColorAt(0.0, QColor('#80BFFF'))   # 亮蓝
-            handle_gradient.setColorAt(0.5, QColor('#1A56DB'))   # 深蓝
-            handle_gradient.setColorAt(1.0, QColor('#0D3B66'))   # 更深
+            handle_gradient.setColorAt(0.0, QColor('#66AAFF'))   # 亮蓝
+            handle_gradient.setColorAt(0.5, QColor('#2266CC'))   # 中蓝
+            handle_gradient.setColorAt(1.0, QColor('#114488'))   # 深蓝
         
         painter.setBrush(handle_gradient)
         painter.setPen(QPen(QColor(border_color), 1))
-        painter.drawRoundedRect(handle_rect, 4, 4)
+        painter.drawRoundedRect(handle_rect, 3, 3)
         
         # 手柄上的指示线
         painter.setPen(QPen(QColor(text_primary), 2))
-        mid_x = track_x + self.SLIDER_WIDTH // 2
-        painter.drawLine(mid_x - 5, int(handle_y), mid_x + 5, int(handle_y))
+        mid_x = margin_x + self.SLIDER_WIDTH // 2
+        painter.drawLine(mid_x - 4, int(handle_y), mid_x + 4, int(handle_y))
         
-        # ===== 5. 绘制当前dB值(手柄旁边) =====
-        font = QFont('Consolas', 8, QFont.Bold)
+        # ===== 5. 绘制当前dB值(手柄下方) =====
+        font = QFont('Consolas', 7, QFont.Bold)
         painter.setFont(font)
         painter.setPen(QColor(text_primary))
         
@@ -1344,9 +1331,10 @@ class TrackVolumeSlider(QWidget):
         else:
             db_text = f"{self._db_value:+.1f}"
         
-        # 文字在手柄右侧
-        text_x = track_x + self.SLIDER_WIDTH + 6
-        painter.drawText(text_x, int(handle_y) + 4, db_text)
+        # dB值居中显示在手柄下方
+        db_text_width = QFontMetrics(font).horizontalAdvance(db_text)
+        db_text_x = (self.WIDGET_WIDTH - db_text_width) // 2
+        painter.drawText(db_text_x, track_bottom + 12, db_text)
         
         # ===== 6. 绘制底部音轨名称 =====
         font = QFont('Microsoft YaHei', 8)
@@ -1354,12 +1342,10 @@ class TrackVolumeSlider(QWidget):
         painter.setPen(QColor(text_muted))
         
         # 截断过长的名称
-        display_name = self.track_name[:8] + "..." if len(self.track_name) > 8 else self.track_name
-        if self.is_master:
-            display_name = "Master"
-        
-        painter.drawText(0, self.WIDGET_HEIGHT - 12, self.WIDGET_WIDTH, 16,
-                        Qt.AlignCenter, display_name)
+        display_name = self.track_name[:7] + ".." if len(self.track_name) > 7 else self.track_name
+        name_text_width = QFontMetrics(font).horizontalAdvance(display_name)
+        name_x = (self.WIDGET_WIDTH - name_text_width) // 2
+        painter.drawText(name_x, self.WIDGET_HEIGHT - 4, display_name)
         
         painter.end()
 
@@ -3604,7 +3590,7 @@ class DisplayWindow(QMainWindow):
         
         UI布局:
           [Master] [音轨1] [音轨2] [音轨3] ...
-          每个滑块: 36px宽 × 150px高，带dB刻度(超紧凑模式)
+          每个滑块: 48px宽 × 140px高，简洁风格(无左侧刻度)
         
         音量范围: -60.0dB(静音) ~ +12.0dB(最大增益)
         默认值: 0.0dB (单位增益)
@@ -3643,7 +3629,7 @@ class DisplayWindow(QMainWindow):
             separator = QFrame()
             separator.setFrameShape(QFrame.VLine)
             separator.setStyleSheet(f"color: {ThemeManager.get('border', '#3A3A4A')};")
-            separator.setFixedHeight(130)  # 固定高度(匹配滑块)
+            separator.setFixedHeight(120)  # 固定高度(匹配滑块)
             self.volume_slider_layout.addWidget(separator)
             
             # 2. 为每个音轨创建音量滑块(跟在Master后面)
@@ -3662,9 +3648,9 @@ class DisplayWindow(QMainWindow):
             self.volume_group_box.setVisible(True)
             self.volume_scroll.setVisible(True)
             
-            # 根据音轨数量调整滚动区域宽度(使用新的WIDGET_WIDTH=36)
-            total_width = (num_tracks + 1) * (36 + 1) + 16  # 滑块宽 + 间距(超紧凑) + 分隔线
-            self.volume_container.setMinimumWidth(min(total_width, 400))  # 最大400px
+            # 根据音轨数量调整滚动区域宽度(使用新的WIDGET_WIDTH=48)
+            total_width = (num_tracks + 1) * (48 + 2) + 16  # 滑块宽 + 间距 + 分隔线
+            self.volume_container.setMinimumWidth(min(total_width, 480))  # 最大480px
             
             print(f"[VolumeControl] 已初始化 {num_tracks} 个音轨音量滑块 + Master总音量")
             
