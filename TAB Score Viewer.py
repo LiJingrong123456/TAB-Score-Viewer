@@ -39,10 +39,12 @@ Core Features / 核心功能:
      播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
  16. Internationalization (i18n) - Chinese/English bilingual, JSON translation files
      国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
+ 17. GTP track volume control - DAW-style vertical sliders with dB scale (-∞ ~ +12dB)
+     GTP音轨音量控制 - 专业DAW风格垂直滑块(dB刻度)，支持每轨独立调节+Master总音量
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-06-14 (v2.0.1 - SVG icons, fix translations, SoundFont _internal path)
-最后修改: 2026-06-14 (v2.0.1 - SVG图标,修复翻译键,SoundFont _internal路径)
+Last Modified: 2026-06-14 (v2.0.6 - GTP音轨音量控制滑块)
+最后修改: 2026-06-14 (v2.0.6 - GTP音轨音量控制滑块)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -1133,6 +1135,277 @@ class ModernSlider(QSlider):
     def refresh_theme(self) -> None:
         """主题切换时调用 - 重新应用样式"""
         self._setup_style()
+
+
+class TrackVolumeSlider(QWidget):
+    """
+    专业音轨音量垂直滑块组件 (类似DAW混音器推子)
+    
+    功能:
+      1. 垂直音量滑块，带dB刻度标记(-∞ ~ +6dB)
+      2. 实时显示当前dB值
+      3. 支持鼠标拖动/滚轮调整
+      4. 动态主题适配(深色/浅色)
+      5. 专业音频设备外观(金属质感滑块)
+    
+    参数:
+      track_name: 音轨名称(显示在底部)
+      is_master:  是否为Master总音量滑块(特殊样式)
+    
+    使用方式:
+        slider = TrackVolumeSlider("Guitar 1", is_master=False)
+        slider.valueChanged.connect(lambda db: print(f"音量: {db} dB"))
+        slider.set_db_value(-3.0)  # 设置为-3dB
+    
+    音量范围: -∞(静音) ~ +6dB(最大增益)
+              默认值: 0.0 dB (单位增益)
+    
+    调整精度:
+      - 鼠标拖动: 连续调整
+      - 滚轮: 每次±1dB
+      - 双击: 重置为0dB
+    """
+    
+    # 信号: 音量值变化时发射(dB值, float)
+    valueChanged = pyqtSignal(float)
+    
+    def __init__(self, track_name: str = "Track", is_master: bool = False, parent=None):
+        super().__init__(parent)
+        self.track_name = track_name
+        self.is_master = is_master
+        
+        # 音量参数
+        self._db_value: float = 0.0          # 当前dB值(默认0dB=单位增益)
+        self._min_db: float = -60.0           # 最小dB值(近似-∞)
+        self._max_db: float = 12.0            # 最大dB值(+12dB预留)
+        self._dragging: bool = False
+        self._last_y: int = 0                 # 拖动起始Y坐标
+        
+        # UI尺寸常量(可调整效果)
+        self.SLIDER_WIDTH = 22                # 滑块轨道宽度(px)
+        self.HANDLE_HEIGHT = 28               # 滑块手柄高度(px)
+        self.WIDGET_WIDTH = 56                # 组件总宽度(px)
+        self.WIDGET_HEIGHT = 180              # 组件总高度(px)
+        self.SCALE_WIDTH = 20                 # 刻度区宽度(px)
+        
+        # 设置固定尺寸
+        self.setFixedWidth(self.WIDGET_WIDTH)
+        self.setFixedHeight(self.WIDGET_HEIGHT)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+        self.setMouseTracking(True)
+        
+        # 启用鼠标跟踪(用于hover效果)
+        self.setTracking(True)
+
+    def set_db_value(self, db: float) -> None:
+        """
+        设置音量值(dB)
+        参数:
+            db: 目标dB值(范围: -60.0 ~ +12.0)
+        效果: 自动clamp到有效范围并刷新显示
+        """
+        self._db_value = max(self._min_db, min(self._max_db, db))
+        self.update()
+        self.valueChanged.emit(self._db_value)
+
+    def get_db_value(self) -> float:
+        """获取当前dB值"""
+        return self._db_value
+
+    def _db_to_y(self, db: float) -> int:
+        """
+        将dB值转换为Y坐标(像素)
+        原理: 线性映射 dB范围 → 滑块轨道高度
+              顶部=最大dB, 底部=最小dB(符合直觉:向上推=音量大)
+        """
+        if db <= self._min_db:
+            return self.WIDGET_HEIGHT - 30  # 最底部(留出标签空间)
+        if db >= self._max_db:
+            return 10  # 最顶部(留出边距)
+        
+        # 线性插值
+        ratio = (db - self._min_db) / (self._max_db - self._min_db)
+        track_top = 10
+        track_bottom = self.WIDGET_HEIGHT - 30
+        y = track_bottom - ratio * (track_bottom - track_top)
+        return int(y)
+
+    def _y_to_db(self, y: int) -> float:
+        """将Y坐标转换为dB值"""
+        track_top = 10
+        track_bottom = self.WIDGET_HEIGHT - 30
+        
+        if y >= track_bottom:
+            return self._min_db
+        if y <= track_top:
+            return self._max_db
+        
+        ratio = (track_bottom - y) / (track_bottom - track_top)
+        db = self._min_db + ratio * (self._max_db - self._min_db)
+        return round(db, 1)
+
+    def paintEvent(self, event) -> None:
+        """绘制音量滑块(专业DAW风格)"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 获取主题颜色
+        bg_primary = ThemeManager.get('bg_primary', '#121212')
+        bg_surface = ThemeManager.get('bg_surface', '#252536')
+        bg_card = ThemeManager.get('bg_card', '#2D2D44')
+        border_color = ThemeManager.get('border', '#3A3A4A')
+        text_primary = ThemeManager.get('text_primary', '#E2E8F0')
+        text_muted = ThemeManager.get('text_muted', '#64748B')
+        primary = ThemeManager.get('primary', '#3B82F6')
+        
+        # Master滑块使用特殊高亮色
+        if self.is_master:
+            accent = ThemeManager.get('accent', '#F97316')
+            slider_color = accent
+        else:
+            slider_color = primary
+        
+        # ===== 1. 绘制背景 =====
+        painter.fillRect(self.rect(), QColor(bg_surface))
+        
+        # ===== 2. 绘制左侧dB刻度 =====
+        painter.setPen(QColor(text_muted))
+        font = QFont('Microsoft YaHei', 7)
+        painter.setFont(font)
+        
+        # 主要刻度标记(dB值)
+        scale_marks = [6, 3, 0, -3, -6, -9, -12, -15, -18, -21, -24, -27,
+                       -33, -39, -60]  # -60dB近似-∞(静音)
+        for db in scale_marks:
+            y = self._db_to_y(float(db))
+            # 刻度线
+            painter.drawLine(2, y, 8, y)
+            # 刻度文字(右侧对齐)
+            if db == -60:
+                text = "-∞"
+            elif db >= 0:
+                text = f"+{db}"
+            else:
+                text = f"{db}"
+            painter.drawText(10, y + 3, text)
+        
+        # ===== 3. 绘制滑块轨道 =====
+        track_x = self.SCALE_WIDTH + 8
+        track_top = 10
+        track_bottom = self.WIDGET_HEIGHT - 30
+        track_height = track_bottom - track_top
+        
+        # 轨道背景(深色凹槽)
+        track_rect = QRect(track_x, track_top, self.SLIDER_WIDTH, track_height)
+        painter.fillRect(track_rect, QColor(bg_card))
+        painter.setPen(QPen(QColor(border_color), 1))
+        painter.drawRounded(track_rect, 3, 3)
+        
+        # 已填充部分(当前位置到顶部)
+        handle_y = self._db_to_y(self._db_value)
+        filled_rect = QRect(track_x, int(handle_y), self.SLIDER_WIDTH, 
+                           int(track_bottom - handle_y))
+        
+        # 渐变填充(从滑块位置到轨道底部)
+        gradient = QLinearGradient(0, handle_y, 0, track_bottom)
+        gradient.setColorAt(0.0, QColor(slider_color).lighter(120))
+        gradient.setColorAt(1.0, QColor(slider_color).darker(130))
+        painter.fillRect(filled_rect, gradient)
+        
+        # ===== 4. 绘制滑块手柄(金属质感) =====
+        handle_rect = QRect(track_x - 3, int(handle_y) - self.HANDLE_HEIGHT//2,
+                           self.SLIDER_WIDTH + 6, self.HANDLE_HEIGHT)
+        
+        # 手柄渐变(3D立体效果)
+        handle_gradient = QLinearGradient(0, handle_rect.top(), 
+                                          0, handle_rect.bottom())
+        if self.is_master:
+            handle_gradient.setColorAt(0.0, QColor('#FFB380'))   # 亮橙
+            handle_gradient.setColorAt(0.5, QColor('#CC5500'))   # 深橙
+            handle_gradient.setColorAt(1.0, QColor('#993D00'))   # 更深
+        else:
+            handle_gradient.setColorAt(0.0, QColor('#80BFFF'))   # 亮蓝
+            handle_gradient.setColorAt(0.5, QColor('#1A56DB'))   # 深蓝
+            handle_gradient.setColorAt(1.0, QColor('#0D3B66'))   # 更深
+        
+        painter.setBrush(handle_gradient)
+        painter.setPen(QPen(QColor(border_color), 1))
+        painter.drawRounded(handle_rect, 4, 4)
+        
+        # 手柄上的指示线
+        painter.setPen(QPen(QColor(text_primary), 2))
+        mid_x = track_x + self.SLIDER_WIDTH // 2
+        painter.drawLine(mid_x - 5, int(handle_y), mid_x + 5, int(handle_y))
+        
+        # ===== 5. 绘制当前dB值(手柄旁边) =====
+        font = QFont('Consolas', 8, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor(text_primary))
+        
+        if self._db_value <= -59:
+            db_text = "-∞"
+        else:
+            db_text = f"{self._db_value:+.1f}"
+        
+        # 文字在手柄右侧
+        text_x = track_x + self.SLIDER_WIDTH + 6
+        painter.drawText(text_x, int(handle_y) + 4, db_text)
+        
+        # ===== 6. 绘制底部音轨名称 =====
+        font = QFont('Microsoft YaHei', 8)
+        painter.setFont(font)
+        painter.setPen(QColor(text_muted))
+        
+        # 截断过长的名称
+        display_name = self.track_name[:8] + "..." if len(self.track_name) > 8 else self.track_name
+        if self.is_master:
+            display_name = "Master"
+        
+        painter.drawText(0, self.WIDGET_HEIGHT - 12, self.WIDGET_WIDTH, 16,
+                        Qt.AlignCenter, display_name)
+        
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        """鼠标按下事件 - 开始拖动或双击重置"""
+        if event.button() == Qt.LeftButton:
+            if event.type() == QEvent.MouseButtonDblClick:
+                # 双击: 重置为0dB
+                self.set_db_value(0.0)
+            else:
+                # 单击: 开始拖动
+                self._dragging = True
+                self._last_y = event.y()
+                # 直接跳转到点击位置
+                new_db = self._y_to_db(event.y())
+                self.set_db_value(new_db)
+
+    def mouseMoveEvent(self, event) -> None:
+        """鼠标移动事件 - 拖动调整音量"""
+        if self._dragging and event.buttons() & Qt.LeftButton:
+            # 根据Y轴移动量计算新dB值
+            delta_y = self._last_y - event.y()  # 向上拖=正值(音量增大)
+            sensitivity = (self._max_db - self._min_db) / (self.WIDGET_HEIGHT - 40)
+            delta_db = delta_y * sensitivity * 2  # 加速拖动
+            new_db = self._db_value + delta_db
+            self.set_db_value(new_db)
+            self._last_y = event.y()
+
+    def mouseReleaseEvent(self, event) -> None:
+        """鼠标释放事件 - 结束拖动"""
+        if event.button() == Qt.LeftButton:
+            self._dragging = False
+
+    def wheelEvent(self, event) -> None:
+        """滚轮事件 - 微调音量(每次±1dB)"""
+        delta = event.angleDelta().y()
+        if delta > 0:
+            # 向上滚: 音量增加
+            new_db = min(self._max_db, self._db_value + 1.0)
+        else:
+            # 向下滚: 音量减小
+            new_db = max(self._min_db, self._db_value - 1.0)
+        self.set_db_value(new_db)
 
 
 class ProgressBarSlider(QWidget):
@@ -3111,6 +3384,37 @@ class DisplayWindow(QMainWindow):
         help_txt=QLabel(I18n.t("control_panel.shortcut_help"))
         help_txt.setStyleSheet(f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:11px;")
         hl.addWidget(help_txt);layout.addWidget(hg)
+
+        # === GTP音轨音量控制(仅GTP文件显示，默认隐藏) ===
+        self.volume_group_box = QGroupBox(I18n.t("control_panel.volume_group"))
+        volume_layout = QHBoxLayout(self.volume_group_box)
+        volume_layout.setSpacing(4)
+        volume_layout.setContentsMargins(4, 10, 4, 4)
+
+        # 使用QScrollArea包裹，防止音轨过多时撑开面板
+        self.volume_scroll = QScrollArea()
+        self.volume_scroll.setWidgetResizable(True)
+        self.volume_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.volume_scroll.setMaximumHeight(200)  # 限制最大高度
+        self.volume_scroll.setVisible(False)  # 默认隐藏
+
+        # 音轨滑块容器(水平排列所有滑块)
+        self.volume_container = QWidget()
+        self.volume_slider_layout = QHBoxLayout(self.volume_container)
+        self.volume_slider_layout.setSpacing(6)
+        self.volume_slider_layout.setContentsMargins(2, 0, 2, 0)
+        self.volume_scroll.setWidget(self.volume_container)
+
+        volume_layout.addWidget(self.volume_scroll)
+        layout.addWidget(self.volume_group_box)
+
+        # 存储音量滑块引用 {track_index: TrackVolumeSlider}
+        self._track_volume_sliders: Dict[int, TrackVolumeSlider] = {}
+        self._master_volume_slider: Optional[TrackVolumeSlider] = None
+
+        # 默认隐藏整个音量控制组
+        self.volume_group_box.setVisible(False)
+
         layout.addStretch()
         return panel
 
@@ -3209,6 +3513,7 @@ class DisplayWindow(QMainWindow):
         # GTP文件：填充音轨选择下拉菜单 + 初始化音频引擎 + 构建播放光标时间线 + 隐藏手动速度控制
         if self.file_type == 'gtp':
             self._populate_gtp_track_combo()
+            self._setup_volume_controls()  # 初始化音轨音量控制滑块(新增)
             self._init_audio_engine()  # Phase 3: 初始化音频播放引擎
             self._build_playhead_timeline()  # Phase 3.5: 构建播放光标时间线(必须在init_audio之后)
             self.audio_btn.setVisible(True)  # 显示音频按钮
@@ -3235,6 +3540,10 @@ class DisplayWindow(QMainWindow):
                 self.speed_group_box.setVisible(True)
             if hasattr(self, 'curve_status_label'):
                 self.curve_status_label.setVisible(True)
+            
+            # 非GTP文件: 隐藏音量控制面板
+            if hasattr(self, 'volume_group_box'):
+                self.volume_group_box.setVisible(False)
 
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)
@@ -3282,6 +3591,144 @@ class DisplayWindow(QMainWindow):
             # 解析失败时隐藏下拉菜单，不影响正常显示
             if self.gtp_track_combo:
                 self.gtp_track_combo.setVisible(False)
+
+    def _setup_volume_controls(self) -> None:
+        """
+        初始化GTP音轨音量控制滑块
+        
+        原理: 根据GTP文件中的音轨数量，动态创建垂直音量滑块组件。
+              每个音轨一个独立滑块 + 一个Master总音量滑块。
+              滑块排列在水平滚动区域内(类似专业DAW混音器界面)。
+        
+        调用时机:
+          - GTP文件加载完成后(_on_content_loaded中调用)
+          - 音轨切换时不需要重建(仅首次加载时创建)
+        
+        UI布局:
+          [音轨1] [音轨2] [音轨3] ... [Master]
+          每个滑块: 56px宽 × 180px高，带dB刻度
+        
+        音量范围: -60.0dB(静音) ~ +12.0dB(最大增益)
+        默认值: 0.0dB (单位增益)
+        """
+        try:
+            # 清除旧的滑块
+            for slider in self._track_volume_sliders.values():
+                slider.deleteLater()
+            self._track_volume_sliders.clear()
+            
+            if self._master_volume_slider:
+                self._master_volume_slider.deleteLater()
+                self._master_volume_slider = None
+            
+            # 检查GTP播放器是否可用
+            if not self.gtp_player or not self.gtp_player.song:
+                self.volume_group_box.setVisible(False)
+                return
+            
+            song = self.gtp_player.song
+            num_tracks = len(song.tracks)
+            
+            if num_tracks == 0:
+                self.volume_group_box.setVisible(False)
+                return
+            
+            # 为每个音轨创建音量滑块
+            for i, track in enumerate(song.tracks):
+                track_name = track.name if track.name else f"Track {i+1}"
+                
+                # 创建音轨音量滑块
+                slider = TrackVolumeSlider(track_name=track_name, is_master=False)
+                slider.valueChanged.connect(lambda db, idx=i: self._on_track_volume_changed(idx, db))
+                
+                # 添加到布局和字典
+                self.volume_slider_layout.addWidget(slider)
+                self._track_volume_sliders[i] = slider
+            
+            # 创建Master总音量滑块(放在最后，使用特殊样式)
+            master_slider = TrackVolumeSlider(track_name="Master", is_master=True)
+            master_slider.valueChanged.connect(self._on_master_volume_changed)
+            
+            # 添加分隔线(QFrame作为视觉分隔)
+            separator = QFrame()
+            separator.setFrameShape(QFrame.VLine)
+            separator.setStyleSheet(f"color: {ThemeManager.get('border', '#3A3A4A')};")
+            self.volume_slider_layout.addWidget(separator)
+            
+            self.volume_slider_layout.addWidget(master_slider)
+            self._master_volume_slider = master_slider
+            
+            # 显示整个音量控制组
+            self.volume_group_box.setVisible(True)
+            self.volume_scroll.setVisible(True)
+            
+            # 根据音轨数量调整滚动区域宽度
+            total_width = (num_tracks + 1) * (56 + 6) + 20  # 滑块宽 + 间距 + 分隔线
+            self.volume_container.setMinimumWidth(min(total_width, 600))  # 最大600px
+            
+            print(f"[VolumeControl] 已初始化 {num_tracks} 个音轨音量滑块 + Master总音量")
+            
+        except Exception as e:
+            print(f"[VolumeControl] 初始化音量控制失败: {e}")
+            self.volume_group_box.setVisible(False)
+
+    def _on_track_volume_changed(self, track_index: int, db_value: float) -> None:
+        """
+        单个音轨音量变化回调
+        
+        参数:
+            track_index: 音轨索引(0-based)
+            db_value:    新的dB值
+        
+        功能:
+          1. 存储该音轨的音量设置(用于后续播放时应用)
+          2. 如果正在播放且音频引擎支持实时调整，立即应用
+          3. 打印调试信息(开发阶段)
+        """
+        # 存储到字典(即使音频引擎不支持也能保存设置)
+        if not hasattr(self, '_track_volumes'):
+            self._track_volumes: Dict[int, float] = {}
+        self._track_volumes[track_index] = db_value
+        
+        # 尝试实时应用到音频引擎
+        try:
+            if self.gtp_player and hasattr(self.gtp_player, 'set_track_volume'):
+                # 如果GTPPlayer支持per-track音量控制
+                self.gtp_player.set_track_volume(track_index, db_value)
+        except Exception as e:
+            pass  # 静默失败(底层可能不支持)
+        
+        # 调试输出
+        track_name = f"Track {track_index+1}"
+        if self.gtp_player and self.gtp_player.song and track_index < len(self.gtp_player.song.tracks):
+            track_name = self.gtp_player.song.tracks[track_index].name
+        print(f"[VolumeControl] {track_name}: {db_value:+.1f} dB")
+
+    def _on_master_volume_changed(self, db_value: float) -> None:
+        """
+        Master总音量变化回调
+        
+        参数:
+            db_value: 新的dB值(-60.0 ~ +12.0)
+        
+        功能:
+          1. 存储Master音量设置
+          2. 尝试应用到音频引擎的总音量控制
+          3. 影响所有音轨的最终输出音量
+        """
+        # 存储
+        if not hasattr(self, '_master_volume'):
+            self._master_volume: float = 0.0
+        self._master_volume = db_value
+        
+        # 尝试应用到音频引擎
+        try:
+            if self.gtp_player and hasattr(self.gtp_player, 'set_master_volume'):
+                self.gtp_player.set_master_volume(db_value)
+        except Exception as e:
+            pass  # 静默失败
+        
+        print(f"[VolumeControl] Master: {db_value:+.1f} dB")
 
     def _on_gtp_track_changed(self, index:int)->None:
         """
