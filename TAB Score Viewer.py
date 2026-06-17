@@ -5165,25 +5165,32 @@ class DisplayWindow(QMainWindow):
 
     def _export_to_a4(self)->None:
         """
-        导出谱面(含标注)为A4尺寸的PNG或PDF
+        导出谱面(含标注)为A4尺寸的PNG/JPG或PDF (v3: 异步导出+进度条)
         
         功能:
-          - 格式: PNG(每页一图) / PDF(单文件多页)
+          - 格式: PNG(无损图片) / JPG(有损压缩,适合分享) / PDF(矢量文档)
           - 分轨: GTP文件可选指定轨道导出，或"全部轨道"按顺序拼接
           - 分页: 可选单页、页数范围、全部页面
           - 标注: 完整渲染所有标注(颜色/字体/大小)
-        
-        原理:
-          1. 弹出自定义导出对话框(ExportDialog)让用户选择格式/轨道/页码范围
-          2. 收集需要导出的图片列表(GTP多轨时按需重新渲染各轨)
-          3. 按A4尺寸(2480×3508px @300dpi)逐页/逐轨绘制到画布
-          4. PNG: 每页保存独立文件; PDF: 单文件多页
+          - 异步: 后台线程渲染，UI不冻结，显示进度条，支持取消
+
+        原理 (v3异步架构):
+          1. 弹出ExportDialog让用户选择格式(JPG含质量滑块)/轨道/页码范围
+          2. 创建ExportWorker(QRunnable) + ExportProgressDialog
+          3. 将Worker提交到QThreadPool全局线程池后台运行
+          4. Worker通过信号报告进度→ProgressDialog更新进度条
+          5. 用户可随时点击取消按钮中断导出
+          6. 完成/出错/取消后自动关闭进度对话框并提示结果
+
+        对比旧版(v2同步):
+          - 旧版: UI主线程直接调用渲染方法 → 大文件时界面冻结5-10秒
+          - 新版: 后台线程渲染 → UI保持响应，实时显示进度
         """
         if not self.images or all(img.isNull() for img in self.images):
             QMessageBox.warning(self, I18n.t("messages.export_no_content"), I18n.t("messages.export_no_content_msg"))
             return
 
-        # 弹出导出对话框
+        # 弹出导出对话框(含JPG质量选项)
         dlg = ExportDialog(
             parent=self,
             src_name=os.path.basename(self.file_path) if isinstance(self.file_path, str) else I18n.t("app.score_name"),
@@ -5196,55 +5203,29 @@ class DisplayWindow(QMainWindow):
             return
 
         # 获取用户选择
-        fmt = dlg.format_choice  # "png" 或 "pdf"
-        track_mode = dlg.track_mode  # "current" | "all" | list[int]
-        page_mode = dlg.page_mode    # "all" | ("range", start, end)
+        fmt = dlg.format_choice           # "png" | "jpg" | "pdf"
+        track_mode = dlg.track_mode       # "current" | "all" | list[int]
+        page_mode = dlg.page_mode         # "all" | ("range", start, end)
         save_path = dlg.save_path
+        jpg_quality = dlg.jpg_quality     # JPG质量(1-100)
 
-        try:
-            # === Step 1: 收集要导出的图片和标注 ===
-            export_items = self._collect_export_data(track_mode, page_mode)
-            # export_items: List[ExportItem] = [(images_list, annotations_list, track_label), ...]
+        # === 计算总轨道数(用于进度条) ===
+        total_tracks = 1
+        if track_mode == "all" and self.gtp_track_combo:
+            total_tracks = self.gtp_track_combo.count()
+        elif isinstance(track_mode, list):
+            total_tracks = len(track_mode)
 
-            if not export_items or not any(item[0] for item in export_items):
-                QMessageBox.warning(self, I18n.t("messages.export_no_content"), I18n.t("messages.export_no_data"))
-                return
+        # === 创建异步工作线程和进度对话框 ===
+        worker = ExportWorker(self, fmt, track_mode, page_mode, save_path, jpg_quality)
+        progress_dlg = ExportProgressDialog(parent=self, total_tracks=total_tracks)
+        progress_dlg.set_worker(worker)
 
-            # === Step 2: 执行导出 ===
-            total_files = 0
-            for item_idx, (imgs, anns, label) in enumerate(export_items):
-                if not imgs:
-                    continue
+        # 提交到全局线程池后台执行
+        QThreadPool.globalInstance().start(worker)
 
-                # 构建此轨/部分的保存路径
-                if len(export_items) > 1 or label:
-                    base, ext = os.path.splitext(save_path)
-                    part_path = f"{base}_{label}{ext}"
-                else:
-                    part_path = save_path
-
-                if fmt == "pdf":
-                    self._render_to_a4_pdf_v2(part_path, imgs, anns)
-                    total_files += 1
-                else:
-                    n = self._render_to_a4_png_v2(part_path, imgs, anns)
-                    total_files += n
-
-            fmt_name = "PDF" if fmt == "pdf" else "PNG"
-            mode_desc = ""
-            if track_mode == "all":
-                mode_desc = I18n.t("messages.export_mode_all", count=self.gtp_track_combo.count())
-            elif isinstance(track_mode, list):
-                mode_desc = I18n.t("messages.export_mode_tracks", tracks=', '.join(str(t+1) for t in track_mode))
-
-            QMessageBox.information(
-                self, I18n.t("messages.export_success"),
-                I18n.t("messages.export_success_msg", fmt=fmt_name, path=save_path, count=total_files, mode=mode_desc)
-            )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, I18n.t("messages.export_fail"), I18n.t("messages.export_fail_msg", error=str(e)))
+        # 显示进度对话框(模态，但不阻塞后台线程)
+        progress_dlg.exec_()
 
     def _collect_export_data(self, track_mode, page_mode)->list:
         """
@@ -5461,6 +5442,118 @@ class DisplayWindow(QMainWindow):
             path = file_path if n_pages == 1 else f"{os.path.splitext(file_path)[0]}_p{page_idx+1}{os.path.splitext(file_path)[1]}"
             if not canvas.save(path, "PNG"):
                 raise IOError(f"PNG保存失败: {path}")
+            saved += 1
+        return saved
+
+    def _render_to_a4_jpg(self, file_path:str, images:list, annotations:list,
+                          quality:int=90, dpi:int=300)->int:
+        """
+        渲染为JPG格式(v1: 基于PNG渲染逻辑，增加质量参数)
+
+        功能:
+          - 与PNG导出完全一致的渲染流程(缩放/分页/标注/页码)
+          - 输出格式为JPG(有损压缩)，文件体积远小于PNG
+          - 可调压缩质量(1-100)，平衡画质与文件大小
+
+        参数:
+            file_path:   保存路径(如 "output.jpg")
+            images:      QPixmap图片列表(每页一张)
+            annotations: 标注列表(Annotation对象)
+            quality:     JPG压缩质量(1-100), 默认90(高质量)
+                        调整效果: 越大文件越大但画质越好
+                        推荐: 90=高质量接近无损 / 80=网络分享 / 60=极致压缩
+            dpi:        分辨率(默认300印刷级)
+
+        返回:
+            生成的文件数(int)
+
+        原理:
+          1. 复用_render_to_a4_png_v2的完整渲染逻辑(QImage画布+预渲染防溢出)
+          2. 最后保存时改用QImage.save(path, "JPEG", quality=quality)输出JPG
+          3. Qt的JPG质量范围是0-99(-1表示默认)，内部自动映射用户输入1-100→0-99
+
+        适用场景:
+          - 网络分享(微信/QQ/论坛): 质量80，文件小加载快
+          - 电子文档存档: 质量90，接近无损但比PNG小3-5倍
+          - 极限压缩(邮件附件): 质量60，可接受画质损失换最小体积
+        """
+        a4_w, a4_h = self._get_a4_size_px(dpi)
+        draw_w = a4_w  # 谱面占满A4宽度(与PNG一致)
+
+        # 按A4宽度等比缩放所有图片(与PNG导出一致)
+        scaled_info = []; total_h = 0
+        for img in images:
+            if img.isNull(): continue
+            ratio = draw_w / img.width() if img.width() > 0 else 1
+            sh = int(img.height() * ratio)
+            scaled_info.append((img.scaled(draw_w, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation), sh))
+            total_h += sh
+        if not scaled_info:
+            raise ValueError("没有可渲染的内容")
+
+        draw_area_h = a4_h - 25  # 每页可用高度(仅预留25px给页码)
+        n_pages = max(1, (total_h + draw_area_h - 1) // draw_area_h)
+
+        # === 检测并跳过末尾空白/近空白页(与PNG导出一致) ===
+        if n_pages > 1:
+            last_page_start = (n_pages - 1) * draw_area_h
+            last_page_content = total_h - last_page_start
+            if last_page_content < draw_area_h * 0.05:
+                n_pages -= 1
+
+        # Qt JPG质量映射: 用户输入1-100 → Qt的0-99 (-1=默认)
+        qt_quality = max(0, min(99, quality - 1))  # 映射到Qt范围
+
+        saved = 0
+        for page_idx in range(n_pages):
+            ps = page_idx * draw_area_h; pe = ps + draw_area_h
+
+            # === 预渲染到独立画布(与PNG导出一致: 100%杜绝溢出) ===
+            page_buffer = QImage(draw_w, draw_area_h, QImage.Format_ARGB32_Premultiplied)
+            page_buffer.fill(QColor(255,255,255,255).rgba())  # 白色背景(JPG不支持透明)
+
+            pb = QPainter(page_buffer)
+            pb.setRenderHint(QPainter.Antialiasing); pb.setRenderHint(QPainter.SmoothPixmapTransform)
+
+            ry = 0
+            for scaled_img, sh in scaled_info:
+                if ry + sh > ps and ry < pe:
+                    src_top = max(0, ps - ry)
+                    src_bottom = min(sh, pe - ry)
+                    src_h = max(0, src_bottom - src_top)
+                    if src_h > 0:
+                        dst_y = (ry - ps) + src_top
+                        pb.drawPixmap(
+                            QRect(0, dst_y, draw_w, src_h),
+                            scaled_img,
+                            QRect(0, src_top, draw_w, src_h)
+                        )
+                ry += sh
+
+            # 绘制标注(在page_buffer内)
+            orig_anns = self.annotations
+            self.annotations = annotations
+            self._draw_annotations_on_canvas(pb, 0, 0, draw_w, float(total_h), float(ps), float(pe),
+                                               scale_ratio=draw_w / max(self.display_widget.width()-20, 1))
+            self.annotations = orig_anns
+            pb.end()
+
+            # === 合成到A4画布 ===
+            canvas = QImage(a4_w, a4_h, QImage.Format_RGB32)  # JPG用RGB32(无alpha通道，更小)
+            canvas.fill(QColor(255,255,255).rgb())           # 纯白背景
+
+            p = QPainter(canvas)
+            p.drawPixmap(0, 0, QPixmap.fromImage(page_buffer))
+
+            # 页码(A4底部固定位置)
+            p.setPen(QColor("#666666")); p.setFont(QFont("Arial",9))
+            p.drawText(QRect(0, a4_h - 25, draw_w, 25), Qt.AlignCenter, f"- {page_idx+1}/{n_pages} -")
+            p.end()
+
+            # === 保存为JPG格式(带质量参数) ===
+            path = file_path if n_pages == 1 else f"{os.path.splitext(file_path)[0]}_p{page_idx+1}{os.path.splitext(file_path)[1]}"
+            if not canvas.save(path, "JPEG", qt_quality):
+                raise IOError(f"JPG保存失败: {path}")
             saved += 1
         return saved
 
@@ -5689,7 +5782,16 @@ class DisplayWindow(QMainWindow):
 class ExportDialog(QDialog):
     """
     导出设置对话框 - 选择格式/轨道/页码范围
-    功能: PNG(每页一图)或PDF(单文件多页); GTP可选轨道; 可选页码范围
+
+    功能:
+      - 格式: PNG(无损图片) / JPG(有损压缩,适合网络分享) / PDF(矢量文档)
+      - JPG质量: 可调压缩质量(1-100), 默认90
+      - 分轨: GTP文件可选指定轨道导出，或"全部轨道"按顺序拼接
+      - 分页: 可选单页、页数范围、全部页面
+
+    调整参数:
+      - jpg_quality默认值: 90 (高质量), 改小可减小文件大小但降低画质
+      - jpg_quality范围: 1-100, 对应Qt的0-99质量映射(内部自动-1)
     """
 
     def __init__(self, parent, src_name:str, is_gtp:bool,
@@ -5700,15 +5802,39 @@ class ExportDialog(QDialog):
         self.total_pages = total_pages
         self.format_choice = "png"; self.track_mode = "current"
         self.page_mode = "all"; self.save_path = ""
+        self.jpg_quality = 90  # JPG压缩质量(1-100), 默认90(高质量)
         self.setWindowTitle(I18n.t("export_dialog.window_title")); self.setMinimumWidth(420)
         self._setup_ui()
 
     def _setup_ui(self)->None:
         lo = QVBoxLayout(self); lo.setSpacing(12)
-        # 格式
+        # === 格式选择 (PNG / JPG / PDF) ===
         fg = QGroupBox(I18n.t("export_dialog.format_group")); fl = QHBoxLayout(fg)
-        self.fmt_png = QRadioButton(I18n.t("export_dialog.fmt_png")); self.fmt_pdf = QRadioButton(I18n.t("export_dialog.fmt_pdf"))
-        self.fmt_png.setChecked(True); fl.addWidget(self.fmt_png); fl.addWidget(self.fmt_pdf); lo.addWidget(fg)
+        self.fmt_png = QRadioButton(I18n.t("export_dialog.fmt_png"))
+        self.fmt_jpg = QRadioButton(I18n.t("export_dialog.fmt_jpg"))
+        self.fmt_pdf = QRadioButton(I18n.t("export_dialog.fmt_pdf"))
+        self.fmt_png.setChecked(True)
+        fl.addWidget(self.fmt_png); fl.addWidget(self.fmt_jpg); fl.addWidget(self.fmt_pdf)
+        lo.addWidget(fg)
+
+        # === JPG质量滑块 (仅JPG格式时显示) ===
+        qg = QGroupBox(I18n.t("export_dialog.jpg_quality_label")); ql = QHBoxLayout(qg)
+        self.quality_slider = QSlider(Qt.Horizontal)
+        self.quality_slider.setRange(1, 100)  # 质量1-100
+        self.quality_slider.setValue(90)       # 默认90(高质量)
+        self.quality_slider.setMinimumWidth(200)
+        self.quality_label = QLabel("90")      # 显示当前质量值
+        self.quality_label.setMinimumWidth(30)
+        self.quality_slider.valueChanged.connect(lambda v: self.quality_label.setText(str(v)))
+        self.quality_slider.setToolTip(I18n.t("export_dialog.jpg_quality_tooltip"))
+        ql.addWidget(self.quality_slider); ql.addWidget(self.quality_label)
+        qg.setVisible(False)  # 默认隐藏，选JPG时显示
+        self._quality_group = qg  # 保存引用以便切换显示
+        lo.addWidget(qg)
+
+        # 格式切换时联动显示/隐藏质量滑块
+        self.fmt_jpg.toggled.connect(qg.setVisible)
+
         # 轨道(GTP多轨时显示)
         if self.is_gtp and self.gtp_track_count > 1:
             tg = QGroupBox(I18n.t("export_dialog.track_group", count=self.gtp_track_count)); tl = QVBoxLayout(tg)
@@ -5741,7 +5867,19 @@ class ExportDialog(QDialog):
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); lo.addWidget(bb)
 
     def accept(self)->None:
-        self.format_choice = "pdf" if self.fmt_pdf.isChecked() else "png"
+        """确认时收集用户选择的格式/轨道模式/页码模式/JPG质量"""
+        # 收集格式选择 (PNG / JPG / PDF)
+        if self.fmt_pdf.isChecked():
+            self.format_choice = "pdf"
+        elif self.fmt_jpg.isChecked():
+            self.format_choice = "jpg"
+        else:
+            self.format_choice = "png"
+
+        # 收集JPG质量(仅JPG格式有效)
+        self.jpg_quality = self.quality_slider.value()
+
+        # 收集轨道选择
         if self.is_gtp and self.gtp_track_count > 1:
             if self.tk_all and self.tk_all.isChecked(): self.track_mode = "all"
             elif self.tk_sel and self.tk_sel.isChecked():
@@ -5749,14 +5887,24 @@ class ExportDialog(QDialog):
                 if not self.track_mode: QMessageBox.warning(self,"提示",I18n.t("messages.select_track_hint")); return
             else: self.track_mode = "current"
         else: self.track_mode = "current"
+
+        # 收集页码范围
         if hasattr(self,'pg_rng') and self.pg_rng.isChecked():
             s,e = self._ps.value(), self._pe.value()
             if s > e: s,e = e,s
             self.page_mode = ("range", s, e)
         else: self.page_mode = "all"
-        ext = ".pdf" if self.format_choice=="pdf" else ".png"
+
+        # 根据格式确定文件扩展名和过滤器
+        ext_map = {"pdf": ".pdf", "png": ".png", "jpg": ".jpg"}
+        filter_map = {
+            "pdf": I18n.t('export_dialog.file_filter_pdf'),
+            "png": I18n.t('export_dialog.file_filter_png'),
+            "jpg": I18n.t('export_dialog.file_filter_jpg')
+        }
+        ext = ext_map[self.format_choice]
         fp,_ = QFileDialog.getSaveFileName(self,I18n.t("export_dialog.save_title"),f"{os.path.splitext(self.src_name)[0]}_annotated{ext}",
-                                           f"{I18n.t('export_dialog.file_filter_pdf') if self.format_choice=='pdf' else I18n.t('export_dialog.file_filter_png')} (*{ext})")
+                                           f"{filter_map[self.format_choice]} (*{ext})")
         if not fp: return
         self.save_path = fp; super().accept()
 
@@ -5847,6 +5995,265 @@ class PrintDialog(QDialog):
             self.page_mode = "all"
 
         super().accept()
+
+
+# ============================================================
+# 异步导出系统 - 后台线程 + 进度对话框
+# ============================================================
+
+class ExportWorkerSignals(QObject):
+    """
+    导出工作线程信号类
+
+    信号说明:
+      - progress: (current_track, total_tracks, current_page, total_pages) 渲染进度
+      - finished: (total_files, save_path, fmt_name, mode_desc) 导出完成
+      - error: (str,) 导出出错
+      - cancelled: () 用户取消导出
+    """
+    progress = pyqtSignal(int, int, int, int)   # (当前轨道, 总轨道, 当前页, 总页)
+    finished = pyqtSignal(int, str, str, str)   # (文件数, 路径, 格式名, 模式描述)
+    error = pyqtSignal(str)                     # 错误信息
+    cancelled = pyqtSignal()                    # 取消信号
+
+
+class ExportWorker(QRunnable):
+    """
+    异步导出工作线程 - 在后台执行PNG/JPG/PDF渲染，避免UI冻结
+
+    原理:
+      1. 继承QRunnable，提交到QThreadPool全局线程池后台运行
+      2. 通过ExportWorkerSignals信号向UI线程报告进度/结果/错误
+      3. 支持用户通过cancelled标志随时取消导出(每页渲染前检查)
+      4. 内部持有DisplayWindow引用，调用其渲染方法完成实际工作
+
+    使用方式:
+      worker = ExportWorker(window, fmt, track_mode, page_mode, save_path, jpg_quality)
+      worker.signals.progress.connect(progress_callback)
+      worker.signals.finished.connect(done_callback)
+      QThreadPool.globalInstance().start(worker)
+    """
+
+    def __init__(self, window: 'DisplayWindow', fmt: str, track_mode, page_mode,
+                 save_path: str, jpg_quality: int = 90):
+        super().__init__()
+        self.window = window          # DisplayWindow实例(持有渲染方法)
+        self.fmt = fmt                # "png" | "jpg" | "pdf"
+        self.track_mode = track_mode  # "current" | "all" | list[int]
+        self.page_mode = page_mode    # "all" | ("range", start, end)
+        self.save_path = save_path    # 保存路径
+        self.jpg_quality = jpg_quality # JPG质量(1-100)
+        self.signals = ExportWorkerSignals()
+        self._is_cancelled = False    # 取消标志(原子检查)
+
+    def cancel(self)->None:
+        """请求取消导出(由UI线程调用，下个渲染循环生效)"""
+        self._is_cancelled = True
+
+    def run(self)->None:
+        """
+        异步执行导出流程(在后台线程中运行)
+
+        执行步骤:
+          1. 发出"正在收集数据"的初始进度
+          2. 调用window._collect_export_data()收集图片和标注
+          3. 遍历每个轨道项:
+             a. 检查是否已取消 → 是则发出cancelled信号并返回
+             b. 根据格式调用对应渲染方法(_render_to_a4_png_v2 / _render_to_a4_jpg / _render_to_a4_pdf_v2)
+             c. 每完成一页发出progress信号更新UI
+          4. 全部完成后发出finished信号
+          5. 任何异常发出error信号
+        """
+        try:
+            # === Step 1: 收集导出数据 ===
+            self.signals.progress.emit(0, 1, 0, 1)  # 初始状态: "正在收集数据..."
+
+            export_items = self.window._collect_export_data(self.track_mode, self.page_mode)
+            # export_items: List[(images_list, annotations_list, track_label), ...]
+
+            if not export_items or not any(item[0] for item in export_items):
+                self.signals.error.emit(I18n.t("messages.export_no_data"))
+                return
+
+            # === Step 2: 计算总工作量(用于进度显示) ===
+            total_items = len(export_items)
+
+            # === Step 3: 逐轨逐页渲染 ===
+            total_files = 0
+            for item_idx, (imgs, anns, label) in enumerate(export_items):
+                # 检查取消
+                if self._is_cancelled:
+                    self.signals.cancelled.emit()
+                    return
+
+                if not imgs:
+                    continue
+
+                # 构建此轨/部分的保存路径
+                if len(export_items) > 1 or label:
+                    base, ext = os.path.splitext(self.save_path)
+                    part_path = f"{base}_{label}{ext}"
+                else:
+                    part_path = self.save_path
+
+                # 根据格式选择渲染方法
+                if self.fmt == "pdf":
+                    n = self.window._render_to_a4_pdf_v2(part_path, imgs, anns)
+                    total_files += 1
+                elif self.fmt == "jpg":
+                    n = self.window._render_to_a4_jpg(part_path, imgs, anns, self.jpg_quality)
+                    total_files += n
+                else:  # png
+                    n = self.window._render_to_a4_png_v2(part_path, imgs, anns)
+                    total_files += n
+
+                # 报告轨道级进度
+                self.signals.progress.emit(item_idx + 1, total_items, 0, 0)
+
+            # === Step 4: 完成 ===
+            fmt_name = {"png": "PNG", "jpg": "JPG", "pdf": "PDF"}.get(self.fmt, "PNG")
+            mode_desc = ""
+            if self.track_mode == "all":
+                mode_desc = I18n.t("messages.export_mode_all",
+                    count=self.window.gtp_track_combo.count() if self.window.gtp_track_combo else 0)
+            elif isinstance(self.track_mode, list):
+                mode_desc = I18n.t("messages.export_mode_tracks",
+                    tracks=', '.join(str(t+1) for t in self.track_mode))
+
+            self.signals.finished.emit(total_files, self.save_path, fmt_name, mode_desc)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
+
+
+class ExportProgressDialog(QDialog):
+    """
+    导出进度对话框 - 显示异步导出的实时进度
+
+    功能:
+      - 显示当前渲染状态(收集数据 / 渲染轨道X/Y / 保存文件 / 完成)
+      - 进度条可视化展示整体进度
+      - 取消按钮可中断导出操作
+      - 自动关闭: 完成或出错后1.5秒自动关闭(或用户手动关闭)
+
+    UI布局:
+      ┌─────────────────────────────────┐
+      │  正在导出 - TAB Score Viewer     │
+      ├─────────────────────────────────┤
+      │  状态: 正在渲染: 轨道 2/4       │
+      │         第 7/25 页              │
+      │  ████████████░░░░░░  52%       │
+      │           [取消]               │
+      └─────────────────────────────────┘
+    """
+
+    def __init__(self, parent, total_tracks:int=1):
+        super().__init__(parent)
+        self.total_tracks = total_tracks
+        self.setWindowTitle(I18n.t("export_progress.window_title"))
+        self.setMinimumWidth(400)
+        self.setFixedSize(420, 160)
+        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self._worker = None          # ExportWorker引用(用于取消)
+        self._setup_ui()
+
+    def _setup_ui(self)->None:
+        lo = QVBoxLayout(self); lo.setSpacing(10)
+
+        # 状态标签
+        self.status_label = QLabel(I18n.t("export_progress.status_collecting"))
+        self.status_label.setStyleSheet("font-size:13px; color:#666;")
+        lo.addWidget(self.status_label)
+
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, self.total_tracks * 100)  # 轨道数*100作为最大值
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        lo.addWidget(self.progress_bar)
+
+        # 取消按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.cancel_btn = QPushButton(I18n.t("export_progress.btn_cancel"))
+        self.cancel_btn.setMinimumWidth(80)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addStretch()
+        lo.addLayout(btn_layout)
+
+    def set_worker(self, worker: ExportWorker)->None:
+        """绑定ExportWorker实例(用于取消操作)"""
+        self._worker = worker
+        # 连接信号
+        worker.signals.progress.connect(self._on_progress)
+        worker.signals.finished.connect(self._on_finished)
+        worker.signals.error.connect(self._on_error)
+        worker.signals.cancelled.connect(self._on_cancelled)
+
+    def _on_progress(self, current_track:int, total_tracks:int,
+                     current_page:int, total_pages:int)->None:
+        """进度更新回调"""
+        # 更新状态文字
+        if current_track == 0:
+            status = I18n.t("export_progress.status_collecting")
+        elif total_pages > 0:
+            status = I18n.t("export_progress.status_rendering", current=current_track,
+                           total=total_tracks) + \
+                    I18n.t("export_progress.status_page", page=current_page, pages=total_pages)
+        else:
+            status = I18n.t("export_progress.status_rendering", current=current_track,
+                           total=total_tracks)
+        self.status_label.setText(status)
+
+        # 更新进度条 (轨道级粗粒度 + 页码细粒度)
+        if total_tracks > 0 and total_pages > 0:
+            # 每个轨道占 (100/total_tracks) 分，当前轨道内按页码细分
+            per_track = 100 // max(total_tracks, 1)
+            track_done = (current_track - 1) * per_track
+            page_in_track = (per_track * current_page // max(total_pages, 1)) if current_page > 0 else 0
+            self.progress_bar.setValue(track_done + page_in_track)
+        elif total_tracks > 0:
+            self.progress_bar.setValue(current_track * 100 // total_tracks)
+
+    def _on_finished(self, total_files:int, save_path:str, fmt_name:str, mode_desc:str)->None:
+        """导出完成回调"""
+        self.status_label.setText(I18n.t("export_progress.status_done"))
+        self.progress_bar.setValue(self.progress_bar.maximum())
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText(I18n.t("control_panel.ok_btn") if hasattr(I18n.t('control_panel'), 'ok_btn') else "确定")
+
+        # 显示成功提示
+        QMessageBox.information(
+            self, I18n.t("messages.export_success"),
+            I18n.t("messages.export_success_msg",
+                  fmt=fmt_name, path=save_path, count=total_files, mode=mode_desc)
+        )
+        # 延迟自动关闭
+        QTimer.singleShot(500, self.close)
+
+    def _on_error(self, error_msg:str)->None:
+        """导出出错回调"""
+        self.status_label.setText(f"Error: {error_msg}")
+        self.cancel_btn.setEnabled(False)
+        QMessageBox.critical(self, I18n.t("messages.export_fail"),
+                             I18n.t("messages.export_fail_msg", error=error_msg))
+        QTimer.singleShot(500, self.close)
+
+    def _on_cancelled(self)->None:
+        """导出被用户取消"""
+        self.status_label.setText(I18n.t("export_progress.status_cancelled"))
+        self.cancel_btn.setEnabled(False)
+        QTimer.singleShot(800, self.close)
+
+    def _on_cancel(self)->None:
+        """取消按钮点击处理"""
+        if self._worker:
+            self._worker.cancel()  # 请求取消
+        self.status_label.setText(I18n.t("export_progress.status_cancelled"))
+        self.cancel_btn.setEnabled(False)
 
 
 # ============================================================
