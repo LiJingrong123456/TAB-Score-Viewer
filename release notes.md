@@ -1,7 +1,7 @@
 # TAB Score Viewer Release Notes
 
-**Current Version**: v2.0.6
-**Release Date**: 2026-06-14
+**Current Version**: v2.0.7
+**Release Date**: 2026-06-15
 **Author**: Zhu Wenqian
 
 ---
@@ -9,6 +9,7 @@
 ## Table of Contents
 
 - [Version Evolution](#version-evolution)
+- [v2.0.7 - Async Export & JPG Format Support](#207---async-export--jpg-format-support)
 - [v2.0.6 - Measure-Based Click Navigation & Loop Integration](#v206---measure-based-click-navigation--loop-integration)
 - [v2.0.5 - Print & Print Preview Feature](#v205---print--print-preview-feature)
 - [v2.0.4 - GTP A/B Loop Architecture Refactoring](#v204---gtp-ab-loop-architecture-refactoring)
@@ -36,6 +37,114 @@
 | **v2.0.4** | **2026-06-14** | **GTP A/B loop architecture refactoring** |
 | **v2.0.5** | **2026-06-14** | **Print & print preview feature** |
 | **v2.0.6** | **2026-06-14** | **Measure-based click navigation & loop integration** |
+| **v2.0.7** | **2026-06-15** | **Async export with progress bar + JPG format support** |
+
+---
+
+## v2.0.7 (2026-06-15) - Async Export & JPG Format Support
+
+### Problem Description
+
+Two critical pain points in the export system:
+
+| # | Symptom | Root Cause |
+|---|---------|------------|
+| 1 | **UI freezes during large file export** | `_export_to_a4()` runs rendering on UI main thread, blocking event loop for 5-10 seconds on 50+ page files |
+| 2 | **No JPG format support** | Only PNG and PDF available; users need smaller files for web sharing (WeChat/QQ/forums) |
+
+### Solution: Async Export Architecture + JPG Rendering
+
+#### 1. Async Export System (QRunnable + QThreadPool)
+
+```
+Old Flow (v2 synchronous):
+  _export_to_a4() → [UI Thread] → render PNG/PDF → UI FREEZES 5-10s
+
+New Flow (v3 async):
+  _export_to_a4() → create ExportWorker(QRunnable)
+                  → QThreadPool.globalInstance().start(worker)
+                  → ExportProgressDialog shows progress
+                  → Worker runs in background thread
+                  → Signals: progress → finished/error/cancelled → UI updates safely
+```
+
+**Key Components:**
+
+| Class | Role |
+|-------|------|
+| `ExportWorkerSignals(QObject)` | Custom signals: `progress`, `finished`, `error`, `cancelled` |
+| `ExportWorker(QRunnable)` | Background thread: collect data → render per-track → emit progress |
+| `ExportProgressDialog(QDialog)` | Progress bar + status label + cancel button, auto-close on done/error/cancel |
+
+**Thread Safety**: All cross-thread communication uses Qt's signal-slot mechanism (automatically queued connection across threads).
+
+#### 2. JPG Format Support
+
+| Feature | Detail |
+|---------|--------|
+| **Format option** | New "JPG Image (Lossy, for sharing)" radio button in ExportDialog |
+| **Quality slider** | Range 1-100, default 90 (high quality); only visible when JPG selected |
+| **Rendering method** | `_render_to_a4_jpg()` — reuses PNG pipeline with JPEG output |
+| **Quality mapping** | User input 1-100 → Qt internal 0-99 (`quality - 1`) |
+| **Image format** | Uses `QImage.Format_RGB32` (no alpha channel = smaller file size) |
+| **File size** | ~3-5x smaller than PNG at quality 90; suitable for web sharing |
+
+**Recommended Quality Settings:**
+
+| Use Case | Quality | Effect |
+|----------|---------|--------|
+| High-quality archive | 90 | Near-lossless, slightly smaller than PNG |
+| Web sharing (WeChat/QQ/forums) | 80 | Good quality, significantly smaller file |
+| Extreme compression (email attachment) | 60 | Acceptable artifacts for minimum size |
+
+### Key Changes
+
+#### New Classes
+
+| Class | Lines | Purpose |
+|-------|-------|---------|
+| `ExportWorkerSignals` | ~15 | Signal container (QObject subclass for pyqtSignal support) |
+| `ExportWorker` | ~120 | QRunnable implementation with cancel support |
+| `ExportProgressDialog` | ~120 | Modal dialog with progress bar and cancel button |
+
+#### Modified Methods
+
+| Method | Before | After |
+|--------|--------|-------|
+| `_export_to_a4()` | Synchronous: direct render call → QMessageBox result | Async: create worker → thread pool start → show progress dialog |
+| `ExportDialog._setup_ui()` | PNG/PDF format options only | Added JPG option + quality slider (conditional visibility) |
+| *New* `_render_to_a4_jpg()` | N/A | Full A4 rendering pipeline with JPEG compression quality parameter |
+
+#### Translation Keys Added (28 new keys)
+
+| Section | Count | Description |
+|---------|-------|-------------|
+| `export_dialog` | 20 | Format names, track selection, page range, file filters, JPG quality labels/tooltips |
+| `export_progress` | 8 | Window title, status messages (collecting/rendering/saving/done/cancelled), button text |
+
+### Test Cases (10 Scenarios)
+
+| Case | Scenario | Expected Result |
+|------|----------|-----------------|
+| 1 | Single image score + PNG format | Progress dialog appears → completes quickly → success message → PNG file generated |
+| 2 | GTP multi-track (4 tracks) + all tracks + PDF | Progress shows "Rendering: track 1/4" ... "4/4" → complete → 1 PDF file |
+| 3 | Large file (50 pages GTP) + JPG quality 80 | Real-time progress updates → completes in ~3-5s → JPG file (~1/4 of PNG size) |
+| 4 | Click Cancel during export | Status changes to "Export cancelled" → auto-close after 800ms → no/partial output files |
+| 5 | JPG quality slider visibility | Hidden when PNG/PDF selected; immediately visible when switching to JPG |
+| 6 | JPG quality=60 extreme compression | Very small file but slight text edge aliasing (acceptable) |
+| 7 | JPG quality=100 max quality | Slightly smaller than PNG but nearly lossless |
+| 8 | Non-GTP file (image/PDF) + JPG export | Normal JPG export, same behavior as PNG except format |
+| 9 | Operate UI during export | UI remains responsive (scroll/zoom/play), not blocked |
+| 10 | No content + click export button | Direct "cannot export" warning (no progress dialog shown) |
+
+### Modified Files
+
+| File | Action | Description |
+|------|--------|-------------|
+| `TAB Score Viewer.py` | **Modified** | Added `ExportWorkerSignals`, `ExportWorker`, `ExportProgressDialog`; refactored `_export_to_a4()` to v3 async; added `_render_to_a4_jpg()`; updated `ExportDialog` with JPG option + quality slider |
+| `locales/zh_CN.json` | **Modified** | +28 new translation keys (export_dialog + export_progress) |
+| `locales/en_US.json` | **Modified** | +28 corresponding English translation keys |
+| `readme/功能更新.md` | **Updated** | Complete v2.0.7 changelog |
 
 ---
 
@@ -413,8 +522,8 @@ Library SynthEngine:                                Library SynthEngine:
 
 | Metric | Value |
 |--------|-------|
-| **Total Versions** | 13 (v1.0.0 → v2.0.6) |
-| **Development Duration** | 9 days (2026-06-06 → 2026-06-14) |
+| **Total Versions** | 14 (v1.0.0 → v2.0.7) |
+| **Development Duration** | 10 days (2026-06-06 → 2026-06-15) |
 | **Lines of Code** | ~6500+ (main program + library) |
 | **Bug Fixes** | 40+ issues resolved |
 | **Design Patterns Used** | 7 (MVC, Observer, Singleton, Factory, Command, Facade, Strategy) |
@@ -426,7 +535,6 @@ Library SynthEngine:                                Library SynthEngine:
 
 ## Planned for Future Versions
 
-- [ ] Annotation import/export feature enhancement
 - [ ] Recently opened files list
 - [ ] Fullscreen mode
 - [ ] More playing technique symbol extensions

@@ -23,7 +23,7 @@ A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhu
 | **Speed Curve Editor**       | Bezier curve visualization with preset templates (Image/PDF mode only)                                |
 | **Loop Playback**            | No loop / Global loop / A-B region loop                                                               |
 | **Text Annotations**         | Double-click to add notes with color/font/bold styles, hover to show delete button                    |
-| **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/PDF A4 export                          |
+| **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/**JPG**/PDF A4 export (async with progress bar, cancel support) |
 | **Global Undo/Redo**         | Ctrl+Z / Ctrl+Y, max 50 steps                                                                         |
 | **Annotation Manager**       | Batch management with create/edit/delete                                                              |
 | **Click-to-Play**            | Click anywhere on score to jump and start playback                                                    |
@@ -279,7 +279,7 @@ The code in this project is **AI-assisted (GLM-5V-Turbo)**. The author is respon
 | **速度曲线编辑器**   | 贝塞尔曲线可视化编辑，预设模板（渐快/渐慢/先慢后快等），适用于变速练习（图片/PDF模式）                       |
 | **循环播放**      | 不循环 / 全局循环 / A-B 区域循环三种模式                                            |
 | **文本标注系统**    | 双击谱面任意位置添加演奏技巧说明，支持颜色、字体大小、粗体等样式，悬停显示删除按钮                            |
-| **标注自动导入/导出** | 自动加载同名 `.anno.json` 文件，实时保存，支持分轨/分页 PNG/PDF A4导出（含标注）                |
+| **标注自动导入/导出** | 自动加载同名 `.anno.json` 文件，实时保存，支持分轨/分页 PNG/**JPG**/PDF A4导出（含标注，异步导出+进度条+可取消）                |
 | **标注全局撤销重做**  | Ctrl+Z 撤销 / Ctrl+Y 重做，最大50步深度                                        |
 | **标注管理器**     | 批量管理标注，支持新建/编辑/删除                                                    |
 | **点击跳转播放**    | 单击谱面任意位置自动跳转并开始播放                                                    |
