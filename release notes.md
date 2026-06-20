@@ -535,11 +535,10 @@ Library SynthEngine:                                Library SynthEngine:
 
 ## Planned for Future Versions
 
-- [ ] Recently opened files list
+- [x] Recently opened files list
 - [ ] Fullscreen mode
 - [ ] More playing technique symbol extensions
 - [ ] Plugin system
-- [ ] Cross-platform compatibility enhancement
 
 ---
 

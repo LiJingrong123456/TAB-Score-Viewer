@@ -28,7 +28,10 @@
     "audio_tooltip": "Click to switch audio mode\nAll tracks mix / Current track only / Audio off",
     "audio_error_tooltip": "Audio engine init failed, please check dependency installation",
     "file_label": "{name}",
-    "theme_tooltip": "Click to switch Dark/Light theme\nDark mode: Eye-friendly, for night use\nLight mode: Bright, for day use/printing"
+    "theme_tooltip": "Click to switch Dark/Light theme\nDark mode: Eye-friendly, for night use\nLight mode: Bright, for day use/printing",
+    "fullscreen_btn": "Fullscreen",
+    "fullscreen_tooltip": "Enter Fullscreen (F11)\nMaximize display area",
+    "exit_fullscreen_tooltip": "Exit Fullscreen (F11)\nRestore window view"
   },
   "control_panel": {
     "playback_control": "Playback Control",

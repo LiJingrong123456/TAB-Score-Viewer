@@ -34,14 +34,14 @@ A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhu
 | **Dark/Light Theme**         | Modern dark/light UI with custom components + SVG icons (Lucide-style)                                |
 | **Keyboard Shortcuts**       | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close                                           |
 | **Multilingual UI**          | Chinese (Simplified) / English, one-click switch in settings                                          |
-| **Application Icon**         | Custom icon (icon.ico) for window + taskbar                                                           |
-| **EXE Packaging**            | PyInstaller one-click packaging to standalone Windows executable                                      |
+| **Application Icon**         | Custom icon (icon.ico / icon.png) for window + taskbar                                                           |
+| **Cross-Platform Packaging** | PyInstaller packaging: Windows EXE, Linux DEB/ZIP, macOS APP (see [Packaging](#packaging--distribution)) |
 
 ## Quick Start
 
 ### Option 1: Run from Source (Requires Python)
 
-**Requirements:** Python 3.8+, Windows / Linux (No MIDI audio on Linux)
+**Requirements:** Python 3.8+, Windows / Linux / macOS
 
 ```bash
 # Create virtual environment
@@ -84,6 +84,38 @@ pyinstaller "TAB Score Viewer.spec"
 
 # Double-click TAB Score Viewer.exe to run
 ```
+
+### Option 3: Linux DEB Package (Recommended)
+
+> Pre-packaged `.deb` with auto dependency resolution, system-wide `tabsv` command.
+
+```bash
+# Install from .deb file (auto-resolves dependencies)
+sudo dpkg -i tab-score-viewer_2.0.7_*.deb
+sudo apt-get install -f  # Fix any missing deps
+
+# Run (global command)
+tabsv
+```
+
+> **Build your own DEB**: See [Packaging & Distribution](#packaging--distribution) for full instructions using `build_deb.sh`.
+
+### Option 4: Linux ZIP Archive (Portable)
+
+> Extract and run, but requires manual dependency installation.
+
+```bash
+# 1. Install system dependencies first
+sudo apt-get install libfluidsynth3 libsndfile1 libpulse0 libasound2 \
+    libqt5widgets5 libqt5gui5 libqt5core5a libc6
+
+# 2. Extract and run
+unzip tab-score-viewer-linux.zip
+cd "TAB Score Viewer"
+./"TAB Score Viewer"
+```
+
+> **Note**: For other distros (Fedora/Arch), see dependency commands in [Packaging & Distribution](#packaging--distribution).
 
 ### Usage
 
@@ -357,7 +389,7 @@ The code in this project is **AI-assisted (GLM-5V-Turbo)**. The author is respon
 | **键盘快捷键**     | 空格播放/暂停、方向键调速/Ctrl+Z撤销/Ctrl+Y重做/ESC关闭                                   |
 | **多语言界面**     | 支持中文(简体)/英文切换，翻译文件位于 locales/ 目录，设置中一键切换                             |
 | **应用图标**      | 自定义图标(icon.ico)，窗口图标 + 任务栏图标统一显示                                     |
-| **EXE打包**     | 支持 PyInstaller 一键打包为独立的 Windows 可执行程序（无需Python环境）                    |
+| **跨平台打包**     | 支持 PyInstaller 打包：Windows EXE / Linux DEB+ZIP（详见[打包发布说明](#打包发布说明)） |
 
 ## 快速开始
 
@@ -366,7 +398,7 @@ The code in this project is **AI-assisted (GLM-5V-Turbo)**. The author is respon
 #### 环境要求
 
 - Python 3.8+
-- Windows
+- Windows / Linux / macOS
 
 #### 安装步骤
 
@@ -417,6 +449,38 @@ pyinstaller "TAB Score Viewer.spec"
 
 # 双击运行 TAB Score Viewer.exe
 ```
+
+### 方式三：Linux DEB 安装包（推荐）
+
+> 预打包的 `.deb` 文件，自动解决依赖关系，安装后全局可用 `tabsv` 命令。
+
+```bash
+# 安装 .deb 包（自动处理依赖）
+sudo dpkg -i tab-score-viewer_2.0.7_*.deb
+sudo apt-get install -f  # 自动修复缺失的依赖
+
+# 运行（全局命令，无需输入路径）
+tabsv
+```
+
+> **自行构建 DEB 包**: 详见 [打包发布说明](#打包发布说明) 中 `build_deb.sh` 的使用方法。
+
+### 方式四：Linux ZIP 压缩包（便携版）
+
+> 解压即用，但需要手动安装系统依赖库。
+
+```bash
+# 1. 先安装系统依赖
+sudo apt-get install libfluidsynth3 libsndfile1 libpulse0 libasound2 \
+    libqt5widgets5 libqt5gui5 libqt5core5a libc6
+
+# 2. 解压并运行
+unzip tab-score-viewer-linux.zip
+cd "TAB Score Viewer"
+./"TAB Score Viewer"
+```
+
+> **注意**: Fedora/Arch 等其他发行版的依赖安装命令请参考 [打包发布说明](#打包发布说明)。
 
 ### 使用方法
 

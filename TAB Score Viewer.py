@@ -41,10 +41,12 @@ Core Features / 核心功能:
      国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
  17. GTP track volume control - DAW-style vertical sliders with dB scale (-∞ ~ +12dB)
      GTP音轨音量控制 - 专业DAW风格垂直滑块(dB刻度)，支持每轨独立调节+Master总音量
+ 18. Fullscreen mode - F11 toggle / toolbar button / smart ESC behavior (exit fullscreen instead of close)
+     全屏模式 - F11切换/工具栏按钮/ESC智能行为(全屏时退出全屏而非关闭)
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-06-14 (v2.0.6 - GTP音轨音量控制滑块)
-最后修改: 2026-06-14 (v2.0.6 - GTP音轨音量控制滑块)
+Last Modified: 2026-06-20 (v2.1.0 - Fullscreen Mode)
+最后修改: 2026-06-20 (v2.1.0 - 全屏模式)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -3098,6 +3100,12 @@ class DisplayWindow(QMainWindow):
         # 当用户暂停播放时，保存当前音频时间，恢复播放时从此位置继续
         self._paused_time_ms:float=0.0
 
+        # === 全屏模式状态(v2.1.0新增) ===
+        # is_fullscreen: 当前是否处于全屏模式
+        # _saved_geometry: 进入全屏前保存的窗口几何信息(位置+大小)，用于退出时精确恢复
+        self.is_fullscreen:bool=False
+        self._saved_geometry=None  # 类型: Optional[QByteArray]
+
         self.init_ui()
         self._load_annotations()               # 加载已有标注
         self.load_content_async()              # 异步加载内容
@@ -3327,6 +3335,14 @@ class DisplayWindow(QMainWindow):
         self.print_btn.clicked.connect(lambda: self._print_score(use_preview=False))
 
         tb.addWidget(self.print_btn)
+
+        # 全屏模式按钮 (v2.1.0新增) (SVG图标: 展开四角箭头)
+        # 位置: 打印按钮之后，速度曲线按钮之前
+        # 功能: 切换全屏/窗口模式(F11快捷键)，最大化谱面显示区域
+        self.fullscreen_btn=ModernButton(I18n.t("toolbar.fullscreen_btn"),'accent','fullscreen')
+        self.fullscreen_btn.setToolTip(I18n.t("toolbar.fullscreen_tooltip"))
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
+        tb.addWidget(self.fullscreen_btn)
 
         # 速度曲线按钮 (SVG图标: 趋势线图表)
         self.curve_btn=ModernButton(I18n.t("toolbar.curve_btn"),'primary','chart')
@@ -3980,14 +3996,10 @@ class DisplayWindow(QMainWindow):
                 self.curve_status_label.setVisible(is_off)
 
             # 重建播放光标时间线（如果布局数据可用）
-            if (self.images and self._page_layouts and 
+            if (self.images and self._page_layouts and
                 mode != GTPPlayer.MODE_OFF):
-                display_w = max(self.display_widget.width() - 20, 100)
-                self.gtp_player.build_timeline(
-                    self._page_layouts, self.images, display_w
-                )
-                self._playhead_timeline = self.gtp_player.playhead_timeline
-                self._total_audio_duration_ms = self.gtp_player.total_duration_ms
+                # 使用统一的_build_playhead_timeline()方法(内部会记录宽度用于resizeEvent检测)
+                self._build_playhead_timeline()
         else:
             # 无GTP播放器时只更新UI
             self._update_audio_button_ui(mode)
@@ -4064,6 +4076,10 @@ class DisplayWindow(QMainWindow):
         # 更新主程序的时间线数据
         self._playhead_timeline = timeline
         self._total_audio_duration_ms = self.gtp_player.total_duration_ms
+
+        # [v2.1.0] 记录构建timeline时的display_widget宽度
+        # 用于resizeEvent中检测宽度变化以决定是否需要重建timeline(修复全屏滚动偏移)
+        self._last_timeline_build_width = self.display_widget.width()
     
     def _update_playhead(self, time_ms: float = None)->None:
         """
@@ -5767,6 +5783,108 @@ class DisplayWindow(QMainWindow):
             secs = int(effective_speed * self.TIME_SCALE)
             self.time_end_label.setText(f"{secs//60:02d}:{secs%60:02d}")
 
+    # ========== 全屏模式(v2.1.0新增) ==========
+
+    def toggle_fullscreen(self)->None:
+        """
+        切换全屏/窗口模式
+
+        原理: 检查当前is_fullscreen状态，调用对应的进入/退出方法
+        调用方式: 工具栏按钮点击 / F11快捷键
+
+        可调整参数: 无（纯状态切换）
+        """
+        if self.is_fullscreen:
+            self.exit_fullscreen()
+        else:
+            self.enter_fullscreen()
+
+    def enter_fullscreen(self)->None:
+        """
+        进入全屏模式
+
+        执行步骤:
+          1. 保存当前窗口几何信息(位置+大小)到_saved_geometry
+          2. 设置is_fullscreen标志为True
+          3. 调用Qt的showFullScreen()API使窗口填满屏幕
+          4. 更新工具栏按钮图标和提示文字
+
+        技术说明:
+          - saveGeometry()返回QByteArray，包含窗口位置、大小、状态(最大化/最小化等)
+          - showFullScreen()会自动隐藏窗口标题栏和边框(FramelessWindowHint)
+          - 全屏后谱面画布自动扩展填充整个屏幕空间
+        """
+        # 步骤1: 保存当前窗口状态（用于退出时恢复）
+        self._saved_geometry=self.saveGeometry()
+        print(f"[Fullscreen] 已保存窗口几何信息，准备进入全屏模式")
+
+        # 步骤2: 更新状态标志
+        self.is_fullscreen=True
+
+        # 步骤3: 进入全屏显示
+        self.showFullScreen()
+
+        # 步骤4: 更新按钮UI
+        self._update_fullscreen_button()
+
+        print(f"[Fullscreen] ✓ 已进入全屏模式")
+
+    def exit_fullscreen(self)->None:
+        """
+        退出全屏模式，恢复之前的窗口状态
+
+        执行步骤:
+          1. 设置is_fullscreen标志为False
+          2. 调用showNormal()恢复正常窗口显示
+          3. 如有保存的几何信息则恢复窗口位置和大小
+          4. 更新工具栏按钮图标和提示文字
+
+        边界情况处理:
+          - 如果_saved_geometry为None(异常情况)，使用默认大小1100x850
+          - restoreGeometry()在窗口不可见时可能失败，因此先showNormal()再restoreGeometry()
+        """
+        # 步骤1: 更新状态标志
+        self.is_fullscreen=False
+
+        # 步骤2: 先恢复正常窗口模式（这会让标题栏和边框重新显示）
+        self.showNormal()
+
+        # 步骤3: 恢复之前保存的窗口位置和大小
+        if self._saved_geometry is not None:
+            self.restoreGeometry(self._saved_geometry)
+            print(f"[Fullscreen] 已恢复窗口几何信息")
+        else:
+            # 异常降级: 使用默认大小
+            self.setGeometry(150,80,1100,850)
+            print(f"[Fullscreen] ⚠ 无保存的几何信息，使用默认大小")
+
+        # 步骤4: 更新按钮UI
+        self._update_fullscreen_button()
+
+        print(f"[Fullscreen] ✓ 已退出全屏模式，恢复正常窗口")
+
+    def _update_fullscreen_button(self)->None:
+        """
+        更新全屏按钮的图标和提示文字
+
+        原理: 根据is_fullscreen状态切换按钮视觉反馈
+          - 非全屏: 显示"展开"图标 + "进入全屏"提示
+          - 全屏模式: 显示"收缩"图标 + "退出全屏"提示
+
+        调用时机: enter_fullscreen() / exit_fullscreen() / toggle_fullscreen()
+        """
+        if not hasattr(self,'fullscreen_btn'):
+            return  # 按钮尚未创建时跳过(初始化阶段)
+
+        if self.is_fullscreen:
+            # 全屏模式: 显示退出图标和提示
+            self.fullscreen_btn.setIcon(QIcon('icons/exit-fullscreen.svg'))
+            self.fullscreen_btn.setToolTip(I18n.t("toolbar.exit_fullscreen_tooltip"))
+        else:
+            # 窗口模式: 显示进入图标和提示
+            self.fullscreen_btn.setIcon(QIcon('icons/fullscreen.svg'))
+            self.fullscreen_btn.setToolTip(I18n.t("toolbar.fullscreen_tooltip"))
+
     # ========== 键盘事件 ==========
 
     def keyPressEvent(self,event:QKeyEvent)->None:
@@ -5794,8 +5912,13 @@ class DisplayWindow(QMainWindow):
                 self.speed_spin.setValue(max(350,self.speed_spin.value()-25))
             elif event.key()==Qt.Key_Right:         # 右箭头: 加速
                 self.speed_spin.setValue(min(700,self.speed_spin.value()+25))
-            elif event.key()==Qt.Key_Escape:        # ESC: 关闭
-                self.close()
+            elif event.key()==Qt.Key_F11:           # F11: 切换全屏模式(v2.1.0新增)
+                self.toggle_fullscreen()
+            elif event.key()==Qt.Key_Escape:        # ESC: 全屏时退出全屏，否则关闭窗口
+                if self.is_fullscreen:
+                    self.exit_fullscreen()  # v2.1.0修改: 全屏模式下ESC退出全屏而非关闭
+                else:
+                    self.close()             # 窗口模式保持原有行为: 关闭窗口
             super().keyPressEvent(event)
         except Exception:
             pass
@@ -5806,9 +5929,40 @@ class DisplayWindow(QMainWindow):
         self._calculate_total_distance()
 
     def resizeEvent(self,event:QResizeEvent)->None:
-        """窗口大小改变"""
+        """
+        窗口大小改变事件
+
+        功能:
+          1. 重新计算总滚动距离(_calculate_total_distance)
+          2. [v2.1.0修复] GTP模式下的播放光标时间线重建
+
+        v2.1.0修复说明:
+          全屏模式切换时窗口宽度变化导致图片缩放比例改变，
+          但GTPPlayer._playhead_timeline中的scroll_y值基于旧的display_width计算，
+          造成BPM驱动的滚动位置与实际渲染内容不匹配
+          （症状: 播放条和小节高亮"多走/少走"几行）。
+
+          修复方案: 检测到GTP模式+宽度显著变化(>50px)时自动重建timeline，
+          使用新的display_widget.width()重新计算所有scroll_y值。
+        """
         super().resizeEvent(event)
+
+        # 基础功能: 重新计算总可滚动距离
         self._calculate_total_distance()
+
+        # [v2.1.0] GTP模式: 宽度变化时重建播放时间线(修复全屏滚动偏移bug)
+        if self.gtp_player and self.gtp_player.is_loaded and self.images and self._page_layouts:
+            new_width = self.display_widget.width()
+            # 获取上次构建timeline时的宽度(默认0表示首次或未记录)
+            old_width = getattr(self, '_last_timeline_build_width', 0)
+            # 宽度变化超过50px阈值时才重建(避免每次微小resize都重建的性能开销)
+            # 阈值说明: 50px约等于拖动窗口边缘的常规变化量，
+            #           全屏切换通常变化几百px(如1080→1920)，远超此阈值
+            if old_width > 0 and abs(new_width - old_width) > 50:
+                print(f"[ResizeEvent] 检测到宽度变化 {old_width}→{new_width} (Δ={new_width-old_width}px)，重建GTP播放时间线")
+                self._build_playhead_timeline()
+            # 记录当前宽度(用于下次比较)
+            self._last_timeline_build_width = new_width
 
 
 # ========== 导出设置对话框 ==========
