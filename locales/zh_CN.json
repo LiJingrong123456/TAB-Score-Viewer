@@ -237,6 +237,13 @@
     "locate_fail_title": "定位失败",
     "locate_fail_msg": "无法在资源管理器中打开:\n{path}",
     "open_fail_title": "打开失败",
-    "open_fail_msg": "无法打开文件:\n{error}"
+    "open_fail_msg": "无法打开文件:\n{error}",
+    "recent_files_header": "── 最近打开 ──",
+    "recent_file_tooltip": "点击打开此文件",
+    "recent_empty": "(暂无最近打开的文件)",
+    "recent_remove": "从列表中移除",
+    "recent_list_label": "最近文件",
+    "recent_expand": "展开 ▼",
+    "recent_collapse": "折叠 ▲"
   }
 }

@@ -237,6 +237,13 @@
     "locate_fail_title": "Locate Failed",
     "locate_fail_msg": "Cannot open in file explorer:\n{path}",
     "open_fail_title": "Open Failed",
-    "open_fail_msg": "Cannot open file:\n{error}"
+    "open_fail_msg": "Cannot open file:\n{error}",
+    "recent_files_header": "── Recent Files ──",
+    "recent_file_tooltip": "Click to open this file",
+    "recent_empty": "(No recent files)",
+    "recent_remove": "Remove from list",
+    "recent_list_label": "Recent Files",
+    "recent_expand": "Expand ▼",
+    "recent_collapse": "Collapse ▲"
   }
 }
