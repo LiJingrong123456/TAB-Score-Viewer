@@ -1,6 +1,6 @@
 # TAB Score Viewer - Guitar TAB Score Viewer / 万能吉他谱查看器
 
-**[English](#english)** | [中文](#中文)**
+**[English](#english)** | **[中文](#中文)**
 
 A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) engine, with multi-format support, 30fps smooth auto-scroll playback, speed curve control, text annotations, loop playback, audio synthesis, and multilingual UI.
 
