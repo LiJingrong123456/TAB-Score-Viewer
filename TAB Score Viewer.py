@@ -6761,7 +6761,13 @@ class SettingsDialog(QDialog):
 class SelectionWindow(QMainWindow):
     """
     选择主窗口(原 SettingsWindow)
-    功能: 文件夹浏览、文件列表、搜索、最近文件、打开设置面板、启动谱面显示窗口
+    功能: 文件夹浏览、文件列表、搜索、最近文件(可折叠/展开)、打开设置面板、启动谱面显示窗口
+
+    最近文件功能:
+      - 独立控件(与文件夹文件列表分离)，支持折叠/展开按钮
+      - 折叠状态只显示最新1个文件，展开显示全部(最多4个)
+      - 数据持久化到 config/settings.json 的 recent_files 字段
+      - 每次通过 show_display() 打开文件时自动更新(去重+截断)
     """
 
     def __init__(self):
@@ -6771,6 +6777,9 @@ class SelectionWindow(QMainWindow):
         self.current_directory:str=""
         self.is_loading:bool=False
         self._loaded_files:List[Tuple]=[]
+        self._recent_files:List[str]=[]   # 最近打开的文件路径列表(最多4条)
+        self.MAX_RECENT_FILES:int=4       # 最大记录数 (可调范围: 1-10)
+        self._recent_expanded:bool=False  # 最近文件列表折叠状态 (默认折叠)
 
         self.init_ui()
         self._apply_theme()  # 应用深色主题
@@ -6805,6 +6814,26 @@ class SelectionWindow(QMainWindow):
         folder_layout.addWidget(self.settings_btn)
         main_layout.addLayout(folder_layout)
 
+        # === 最近打开文件列表 (独立控件，支持折叠/展开) ===
+        # Recent files list (separate widget, collapsible)
+
+        # 标题行: 标签 + 展开/折叠按钮 (水平布局) / Title row: label + toggle button
+        recent_header_layout=QHBoxLayout()
+        recent_header_layout.setContentsMargins(0,0,0,4)  # 减少底部间距
+        self.recent_label=QLabel(I18n.t("settings_window.recent_list_label"))
+        self.recent_toggle_btn=QPushButton(I18n.t("settings_window.recent_expand"))
+        self.recent_toggle_btn.setFixedHeight(24)  # 紧凑按钮高度
+        self.recent_toggle_btn.clicked.connect(self._toggle_recent_list)
+        recent_header_layout.addWidget(self.recent_label)
+        recent_header_layout.addStretch()
+        recent_header_layout.addWidget(self.recent_toggle_btn)
+
+        self.recent_list=QListWidget()
+        self.recent_list.setObjectName("recent_list_widget")  # CSS选择器ID
+        self.recent_list.itemClicked.connect(self._on_recent_file_clicked)  # 单击打开最近文件
+        self.recent_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.recent_list.customContextMenuRequested.connect(self._show_recent_context_menu)
+
         # 文件列表
         file_list_label=QLabel(I18n.t("settings_window.file_list_label"))
         search_layout=QHBoxLayout()
@@ -6825,6 +6854,9 @@ class SelectionWindow(QMainWindow):
         self.original_items:List[Tuple]=[]
         self.is_searching:bool=False
 
+        main_layout.addLayout(recent_header_layout)       # 标题行(标签+展开/折叠按钮)
+        main_layout.addWidget(self.recent_list)            # 最近文件列表(独立控件)
+        main_layout.addSpacing(8)                         # 两列表之间间距: 8px (可调范围5-10px)
         main_layout.addWidget(file_list_label)
         main_layout.addLayout(search_layout)
         main_layout.addWidget(self.file_list)
@@ -6845,6 +6877,12 @@ class SelectionWindow(QMainWindow):
             QSlider::groove:horizontal{{border:none;height:6px;background:{t['bg_surface']};border-radius:3px;}}
             QSlider::handle:horizontal{{background:{t['primary']};width:16px;margin:-6px 0;border-radius:8px;
                 border:2px solid{t['bg_primary']};}}
+            /* 最近文件列表样式 (独立控件，带强调色) / Recent list with accent color */
+            QListWidget#recent_list_widget{{background-color:{t['bg_surface']};color:{t['accent']};
+                border:1px solid{t['accent']};border-radius:6px;outline:none;}}
+            QListWidget#recent_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};color:{t['accent']};}}
+            QListWidget#recent_list_widget::item:selected{{background-color:{t['accent']};color:{t['bg_primary']};font-weight:bold;}}
+            QListWidget#recent_list_widget::item:hover{{background-color:{t['accent']};opacity:0.15;border-radius:4px;}}
             QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
                 border:1px solid{t['border']};border-radius:6px;outline:none;}}
             QListWidget::item{{padding:6px;border-bottom:1px solid{t['border']};}}
@@ -6860,6 +6898,8 @@ class SelectionWindow(QMainWindow):
         """加载配置并恢复状态 - 包含目录有效性检查"""
         try:
             self.load_config()
+            # 刷新最近文件列表 / Refresh recent files list
+            self._refresh_recent_list()
             # 恢复上次打开的文件夹(带完整性检查)
             if hasattr(self,'last_folder') and self.last_folder:
                 if os.path.isdir(self.last_folder) and os.access(self.last_folder, os.R_OK):
@@ -6875,12 +6915,15 @@ class SelectionWindow(QMainWindow):
             print(f"恢复配置出错: {e}")
 
     def load_config(self)->None:
-        """加载配置文件 - 恢复目录、语言、主题、字体和 GTP 渲染参数"""
+        """加载配置文件 - 恢复目录、语言、主题、字体、GTP渲染参数和最近文件"""
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE,'r',encoding='utf-8') as f:
                     cfg=json.load(f)
                     self.last_folder=cfg.get('last_folder','')
+                    # 加载最近文件列表(过滤不存在的文件) / Load recent files (filter missing)
+                    raw_recent=cfg.get('recent_files', [])
+                    self._recent_files=[p for p in raw_recent if os.path.isfile(p)]
                     # 应用语言/主题/UI字体/GTP渲染参数
                     apply_config_settings(cfg)
             else:
@@ -6890,7 +6933,7 @@ class SelectionWindow(QMainWindow):
             self.last_folder=''
 
     def save_config(self)->None:
-        """保存配置文件 - 包含目录、语言、主题、字体和 GTP 渲染参数"""
+        """保存配置文件 - 包含目录、语言、主题、字体、GTP渲染参数和最近文件"""
         try:
             cfg={
                 'last_folder': self.current_directory,
@@ -6898,6 +6941,7 @@ class SelectionWindow(QMainWindow):
                 'theme': ThemeManager.current_name(),
                 'ui_font': _UI_FONT_FAMILY,
                 'gtp_font': getattr(RenderConfig, 'NOTE_FONT_FAMILY', 'Arial'),
+                'recent_files': self._recent_files,  # 保存最近文件列表
                 'render_config': {
                     attr: getattr(RenderConfig, attr)
                     for attr, _, _, _, _, _ in _RENDER_PARAMS
@@ -7087,6 +7131,10 @@ class SelectionWindow(QMainWindow):
             self.display_window.update_content(fpath,ftype,speed)
         self.display_window.show()
 
+        # 记录到最近文件(仅单个文件)/Record to recent files (single file only)
+        if isinstance(fpath, str):
+            self._add_recent_file(fpath)
+
     def filter_file_list(self)->None:
         """搜索过滤"""
         text=self.search_edit.text().strip()
@@ -7112,6 +7160,181 @@ class SelectionWindow(QMainWindow):
             item=QListWidgetItem(name)
             item.setData(Qt.UserRole,fpath);item.setData(Qt.UserRole+1,is_dir)
             self.file_list.addItem(item)
+
+    # ============================================================
+    # 最近文件功能 / Recent Files
+    # ============================================================
+
+    def _add_recent_file(self, file_path: str) -> None:
+        """
+        将文件添加到最近打开列表
+
+        原理:
+          1. 将新文件插入到列表头部(最新的在最前面)
+          2. 去重: 如果文件已在列表中，先移除旧位置再插入头部
+          3. 截断: 只保留最近的 MAX_RECENT_FILES(4) 条记录
+          4. 持久化: 立即保存到 config/settings.json
+
+        参数:
+            file_path: 文件的绝对路径
+        """
+        if not file_path or not isinstance(file_path, str):
+            return
+
+        # 统一转为绝对路径 / Convert to absolute path
+        abs_path = os.path.abspath(file_path)
+
+        # 检查是否为支持的文件格式 / Check if supported format
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext not in SUPPORTED_ALL_EXTENSIONS:
+            return
+
+        # 去重: 先移除已存在的相同路径 / Deduplicate: remove existing
+        if abs_path in self._recent_files:
+            self._recent_files.remove(abs_path)
+
+        # 插入到列表头部 / Insert at head (most recent first)
+        self._recent_files.insert(0, abs_path)
+
+        # 截断到最大数量 / Truncate to max count
+        self._recent_files = self._recent_files[:self.MAX_RECENT_FILES]
+
+        # 持久化保存 + 刷新UI / Persist and refresh UI
+        self.save_config()
+        self._refresh_recent_list()
+
+    def _on_recent_file_clicked(self, item: QListWidgetItem) -> None:
+        """
+        最近文件列表项单击处理 - 单击即可打开文件
+
+        参数:
+            item: 被单击的最近文件 QListWidgetItem 对象
+        """
+        if not item or self.is_loading:
+            return
+
+        fpath = item.data(Qt.UserRole)
+        if fpath and os.path.isfile(fpath):
+            ext = os.path.splitext(fpath)[1].lower()
+            if ext in SUPPORTED_PDF_EXTENSIONS:
+                self.show_display(fpath, 'pdf')
+            elif ext in SUPPORTED_IMAGE_EXTENSIONS:
+                self.show_display([fpath], 'images')
+            elif ext in SUPPORTED_GTP_EXTENSIONS:
+                self.show_display(fpath, 'gtp')
+
+    def _show_recent_context_menu(self, pos: QPoint) -> None:
+        """
+        最近文件列表的右键菜单
+
+        功能: 提供打开文件、在资源管理器中定位、从列表移除
+        """
+        item=self.recent_list.itemAt(pos)
+        if not item:return
+        fpath=item.data(Qt.UserRole)
+        if not fpath or not os.path.isfile(fpath):return
+
+        menu=QMenu(self)
+        menu.addAction(I18n.t("settings_window.context_view_file"),
+                      lambda:self._open_recent_file_by_path(fpath))
+        menu.addSeparator()
+        menu.addAction(I18n.t("settings_window.context_open_location"),
+                      lambda:self.open_file_location(fpath))
+        menu.addAction(I18n.t("settings_window.recent_remove"),
+                      lambda:self._remove_recent_file(fpath))
+        menu.exec_(self.recent_list.mapToGlobal(pos))
+
+    def _open_recent_file_by_path(self, fpath: str) -> None:
+        """根据路径打开最近文件(供右键菜单调用)"""
+        if not fpath or not os.path.isfile(fpath):
+            return
+        ext = os.path.splitext(fpath)[1].lower()
+        if ext in SUPPORTED_PDF_EXTENSIONS:
+            self.show_display(fpath, 'pdf')
+        elif ext in SUPPORTED_IMAGE_EXTENSIONS:
+            self.show_display([fpath], 'images')
+        elif ext in SUPPORTED_GTP_EXTENSIONS:
+            self.show_display(fpath, 'gtp')
+
+    def _remove_recent_file(self, fpath: str) -> None:
+        """
+        从最近文件列表中移除指定文件
+
+        参数:
+            fpath: 要移除的文件绝对路径
+        """
+        if fpath in self._recent_files:
+            self._recent_files.remove(fpath)
+            self.save_config()  # 持久化
+            self._refresh_recent_list()  # 刷新UI
+
+    def _refresh_recent_list(self) -> None:
+        """
+        刷新最近文件列表控件 (独立recent_list)
+
+        原理:
+          1. 清空 recent_list 控件
+          2. 折叠时只显示最新1项，展开时显示全部
+          3. 跳过不存在的文件
+        """
+        self.recent_list.clear()
+
+        if not self._recent_files:
+            # 无最近文件时显示提示 / Show hint when empty
+            empty_item=QListWidgetItem(I18n.t("settings_window.recent_empty"))
+            empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsEnabled)
+            empty_item.setForeground(QColor(ThemeManager.get('text_muted')))
+            self.recent_list.addItem(empty_item)
+            row_h=self.recent_list.sizeHintForRow(0) if self.recent_list.count()>0 else 28
+            self.recent_list.setFixedHeight(row_h + 12)
+            return
+
+        # 折叠只显示最新1项，展开显示全部 / Collapsed=1 latest, expanded=all
+        files_to_show = self._recent_files if self._recent_expanded else self._recent_files[:1]
+
+        for recent_path in files_to_show:
+            if not os.path.isfile(recent_path):
+                continue
+
+            filename=os.path.basename(recent_path)
+            item=QListWidgetItem(f"📄 {filename}")
+            item.setData(Qt.UserRole, recent_path)
+            item.setToolTip(I18n.t("settings_window.recent_file_tooltip") + f"\n{recent_path}")
+            self.recent_list.addItem(item)
+
+        # 根据展开/折叠状态设置高度 / Set height based on expand/collapse state
+        self._apply_recent_list_height()
+
+    def _apply_recent_list_height(self) -> None:
+        """
+        根据展开/折叠状态设置最近列表高度
+
+        原理: 高度 = sizeHintForRow(0) × 实际项数 + 12px边距
+        """
+        if self.recent_list.count() <= 0:
+            self.recent_list.setFixedHeight(32)
+            return
+
+        row_h = self.recent_list.sizeHintForRow(0)
+        self.recent_list.setFixedHeight(row_h * self.recent_list.count() + 12)
+
+    def _toggle_recent_list(self) -> None:
+        """
+        切换最近文件列表的展开/折叠状态
+
+        原理:
+          1. 翻转 _recent_expanded 布尔值
+          2. 更新按钮文字(展开↔折叠)
+          3. 重新构建列表内容(折叠只显示1项，展开显示全部)
+        """
+        self._recent_expanded = not self._recent_expanded
+
+        if self._recent_expanded:
+            self.recent_toggle_btn.setText(I18n.t("settings_window.recent_collapse"))
+        else:
+            self.recent_toggle_btn.setText(I18n.t("settings_window.recent_expand"))
+
+        self._refresh_recent_list()
 
 
 # ============================================================
