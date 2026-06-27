@@ -122,6 +122,28 @@ cd "TAB Score Viewer"
 
 > **Note**: For other distros (Fedora/Arch), see dependency commands in [Packaging & Distribution](#packaging--distribution).
 
+### Option 5: macOS DMG Package (Recommended for macOS)
+
+> Pre-packaged `.dmg` disk image with drag-and-drop installation. The DMG includes both the `.app` bundle and an `/Applications` shortcut for convenient installation.
+
+```bash
+# Build from source (requires dependencies installed first, see Option 1 steps 1-4)
+
+# 1. Run preparation script (collects FluidSynth dylibs and fixes @rpath)
+bash prepare_macos_build.sh
+
+# 2. Build with macOS-specific spec file
+pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
+pyinstaller "TAB Score Viewer_macOS.spec"
+
+# 3. Generate DMG disk image
+bash build_dmg.sh
+
+# Output: dist/TAB Score Viewer_2.0.7.dmg
+```
+
+> **Installation**: Double-click the `.dmg` → drag `TAB Score Viewer.app` into the `Applications` folder.
+
 ### Usage
 
 1. Launch the program, click "Select Folder" button to choose your guitar tab directory
@@ -163,7 +185,10 @@ cd "TAB Score Viewer"
 ```
 TAB Score Viewer/
 ├── TAB Score Viewer.py      # Main program (includes I18n class, icon loader)
-├── TAB Score Viewer.spec    # PyInstaller packaging config (onedir mode)
+├── TAB Score Viewer.spec    # PyInstaller packaging config (onedir mode, Windows)
+├── build_dmg.sh             # macOS DMG packaging script
+├── prepare_macos_build.sh   # macOS: collect dylibs and fix @rpath
+├── runtime_hook_macos.py    # macOS runtime hook: preload dylibs
 ├── icons/                   # SVG icon files (Lucide-style toolbar icons)
 │   ├── annotate.svg         # Pencil/edit icon
 │   ├── export.svg           # Download arrow icon
@@ -253,15 +278,37 @@ xcode-select --install                    # Xcode Command Line Tools
 pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
+**Preparation (required once before building):**
+
+```bash
+# Collect FluidSynth dylibs and fix @rpath dependency paths
+bash prepare_macos_build.sh
+```
+
+> This script copies FluidSynth and its dependent dylibs to `_dylibs/`, then rewrites their dependency paths using `install_name_tool` so that dyld can resolve them via `@rpath` at runtime.
+
 **Build:**
 
 ```bash
-# Build with PyInstaller (same spec file, macOS PyInstaller auto-detects)
-pyinstaller "TAB Score Viewer.spec"
+# Build with macOS-specific spec file (includes runtime_hook_macos.py)
+pyinstaller "TAB Score Viewer_macOS.spec"
 
 # The .app bundle will be generated at:
 #   dist/TAB Score Viewer.app
+
+# (Optional) Generate DMG disk image for distribution:
+bash build_dmg.sh
+# Output: dist/TAB Score Viewer_2.0.7.dmg
 ```
+
+**Build Components:**
+
+| File | Purpose |
+|------|---------|
+| `prepare_macos_build.sh` | Collects FluidSynth dylibs, fixes @rpath |
+| `TAB Score Viewer_macOS.spec` | macOS-specific PyInstaller config (uses _dylibs/) |
+| `runtime_hook_macos.py` | Runtime hook: sets DYLD_LIBRARY_PATH, preloads dylibs |
+| `build_dmg.sh` | Packages .app into compressed DMG with /Applications shortcut |
 
 **Run:**
 
@@ -269,6 +316,9 @@ pyinstaller "TAB Score Viewer.spec"
 # Option A: Double-click TAB Score Viewer.app in Finder
 # Option B: Run from terminal
 open "dist/TAB Score Viewer.app"
+
+# If installed via DMG: open from /Applications
+open "/Applications/TAB Score Viewer.app"
 ```
 
 **System Dependencies (required for GTP audio playback):**
@@ -285,6 +335,7 @@ sudo port install fluidsynth libsndfile
 
 **macOS-Specific Notes:**
 - The `.app` bundle includes all dependencies (Python runtime, PyQt5, libraries, locales, icons)
+- `runtime_hook_macos.py` runs before the main script, setting `DYLD_LIBRARY_PATH` and preloading all dylibs with `RTLD_GLOBAL` to ensure `pyfluidsynth` can find them
 - macOS Gatekeeper may block unsigned apps: go to **System Settings → Privacy & Security** and click "Open Anyway"
 - For distribution, sign the app with `codesign` or notarize via Apple Developer account
 - First launch may be slow due to macOS quarantine check; run `xattr -rd com.apple.quarantine "TAB Score Viewer.app"` to bypass
@@ -372,7 +423,7 @@ sudo apt-get install fluid-soundfont-gm    # Ubuntu/Debian
 | Data files  | locales/, DLLs, icons/, soundfont/, icon.ico | Translations/audio libs/icons/SoundFont/icon |
 | Hidden imports | ApolloTab.* etc.           | Dynamically imported modules declared   |
 
-> **Note**: macOS uses the same `.spec` file as Windows — PyInstaller on macOS automatically detects the platform and produces a `.app` bundle. The Linux build uses its own `TAB Score Viewer_linux.spec` for platform-specific configuration.
+> **Note**: macOS uses its own `TAB Score Viewer_macOS.spec` (paired with `runtime_hook_macos.py` for dylib loading), not the Windows `.spec` file. Run `bash prepare_macos_build.sh` before building to collect and fix dylibs. Linux uses `TAB Score Viewer_linux.spec` for platform-specific configuration.
 
 ## Third-Party Components
 
@@ -420,8 +471,8 @@ The code in this project is **AI-assisted**. The author is responsible for archi
 # 中文
 
 <p align="center">
-  <img src="renderedlight (1).png" alt="TAB Score Viewer 浅色主题截图1" width="45%" />
-  <img src="renderedlight (2).png" alt="TAB Score Viewer 浅色主题截图2" width="45%" />
+  <img src="renderedlight (1).png" alt="TAB Score Viewer 浅色主题截图" width="45%" />
+  <img src="renderedlight (2).png" alt="TAB Score Viewer 深色主题截图" width="45%" />
 </p>
 
 ## 功能特性
@@ -542,6 +593,28 @@ cd "TAB Score Viewer"
 
 > **注意**: Fedora/Arch 等其他发行版的依赖安装命令请参考 [打包发布说明](#打包发布说明)。
 
+### 方式五：macOS DMG 安装包（macOS 推荐）
+
+> 预打包的 `.dmg` 磁盘映像，拖拽安装。DMG 包含 `.app` 应用包和 `/Applications` 快捷方式，安装方便。
+
+```bash
+# 从源码自行打包（需要先安装依赖，见方式一第1-4步）
+
+# 1. 运行准备脚本（收集 FluidSynth 动态库并修复 @rpath 路径）
+bash prepare_macos_build.sh
+
+# 2. 安装 PyInstaller 并使用 macOS 专用 spec 打包
+pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
+pyinstaller "TAB Score Viewer_macOS.spec"
+
+# 3. 生成 DMG 安装镜像
+bash build_dmg.sh
+
+# 输出: dist/TAB Score Viewer_2.0.7.dmg
+```
+
+> **安装方式**：双击 `.dmg` → 将 `TAB Score Viewer.app` 拖入 `Applications` 文件夹。
+
 ### 使用方法
 
 1. 启动程序后，点击「选择文件夹」按钮选择存放吉他谱的目录
@@ -588,6 +661,9 @@ TAB Score Viewer/
 ├── TAB Score Viewer.spec    # PyInstaller 打包配置 - Windows 版
 ├── TAB Score Viewer_linux.spec  # PyInstaller 打包配置 - Linux 版
 ├── build_deb.sh             # DEB 包自动化构建脚本（含启动脚本+桌面快捷方式）
+├── build_dmg.sh             # macOS DMG 打包脚本
+├── prepare_macos_build.sh   # macOS 准备脚本：收集动态库并修复 @rpath
+├── runtime_hook_macos.py    # macOS 运行时钩子：预加载动态库
 ├── icons/                   # SVG 图标目录（Lucide 风格工具栏图标）
 │   ├── annotate.svg         # 铅笔/编辑图标
 │   ├── export.svg           # 下载箭头图标
@@ -694,12 +770,25 @@ pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
 **构建：**
 
 ```bash
-# 使用 PyInstaller 打包（与 Windows 共用同一 spec 文件）
-pyinstaller "TAB Score Viewer.spec"
+# 使用 macOS 专用 spec 文件打包（含 runtime_hook_macos.py）
+pyinstaller "TAB Score Viewer_macOS.spec"
 
 # 生成的 .app 包位于：
 #   dist/TAB Score Viewer.app
+
+# （可选）生成 DMG 安装镜像以便分发：
+bash build_dmg.sh
+# 输出: dist/TAB Score Viewer_2.0.7.dmg
 ```
+
+**构建组件说明：**
+
+| 文件 | 作用 |
+|------|------|
+| `prepare_macos_build.sh` | 收集 FluidSynth 动态库并修复 @rpath 依赖路径 |
+| `TAB Score Viewer_macOS.spec` | macOS 专用 PyInstaller 配置（使用 _dylibs/ 目录） |
+| `runtime_hook_macos.py` | 运行时钩子：设置 DYLD_LIBRARY_PATH，预加载所有 dylib |
+| `build_dmg.sh` | 将 .app 打包为压缩 DMG 镜像，含 /Applications 快捷方式 |
 
 **运行：**
 
@@ -707,6 +796,9 @@ pyinstaller "TAB Score Viewer.spec"
 # 方式 A：在 Finder 中双击 TAB Score Viewer.app
 # 方式 B：从终端运行
 open "dist/TAB Score Viewer.app"
+
+# 如果通过 DMG 安装：从 /Applications 启动
+open "/Applications/TAB Score Viewer.app"
 ```
 
 **系统依赖（GTP 音频播放需要）：**
@@ -723,6 +815,7 @@ sudo port install fluidsynth libsndfile
 
 **macOS 特别说明：**
 - `.app` 包包含所有依赖（Python 运行时、PyQt5、动态库、翻译文件、图标等）
+- `runtime_hook_macos.py` 在主脚本之前执行，设置 `DYLD_LIBRARY_PATH` 并以 `RTLD_GLOBAL` 模式预加载所有 dylib，确保 `pyfluidsynth` 能正常加载 FluidSynth
 - macOS Gatekeeper 可能阻止未签名的应用：前往 **系统设置 → 隐私与安全性**，点击「仍然打开」
 - 如需分发，请使用 `codesign` 签名或通过 Apple Developer 账户公证
 - 首次启动可能因 macOS 隔离检查而较慢；可运行 `xattr -rd com.apple.quarantine "TAB Score Viewer.app"` 绕过
@@ -810,7 +903,7 @@ sudo apt-get install fluid-soundfont-gm    # Ubuntu/Debian
 | 包含数据  | locales/, DLLs, icons/, soundfont/, icon.ico | 翻译/音频库/图标/音色库/图标         |
 | 隐藏导入  | ApolloTab.\* 等           | 动态导入模块显式声明          |
 
-> **注意**：macOS 使用与 Windows 相同的 `.spec` 文件 —— macOS 上的 PyInstaller 会自动检测平台并生成 `.app` 包。Linux 构建使用独立的 `TAB Score Viewer_linux.spec` 进行平台特定配置。
+> **注意**：macOS 使用独立的 `TAB Score Viewer_macOS.spec` 文件（配合 `runtime_hook_macos.py` 运行时钩子处理动态库加载），而非 Windows 的 spec 文件。构建前需先运行 `bash prepare_macos_build.sh` 收集并修复动态库。Linux 构建使用独立的 `TAB Score Viewer_linux.spec` 进行平台特定配置。
 
 ## 第三方组件许可证
 
