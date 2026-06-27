@@ -248,5 +248,21 @@
     "recent_list_label": "最近文件",
     "recent_expand": "展开 ▼",
     "recent_collapse": "折叠 ▲"
+  },
+  "settings_dialog": {
+    "window_title": "设置",
+    "tab_general": "常规",
+    "tab_gtp": "GTP 渲染",
+    "language_label": "语言:",
+    "theme_label": "主题:",
+    "ui_font_label": "UI 字体:",
+    "gtp_font_label": "GTP 渲染字体:",
+    "render_params_group": "渲染参数（重新打开 GTP 文件后生效）",
+    "ok_btn": "确定",
+    "cancel_btn": "取消",
+    "reset_btn": "恢复默认",
+    "reset_confirm_title": "恢复默认设置",
+    "reset_confirm_msg": "确定要恢复所有设置为默认值吗？\n此操作不会立即保存，需点击「确定」后生效。",
+    "restart_hint": "设置已保存。GTP 渲染参数将在重新打开文件后生效。"
   }
 }

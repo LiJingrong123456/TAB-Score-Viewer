@@ -1,0 +1,16 @@
+- [x] `SettingsDialog` 类已创建并能在 `SelectionWindow` 中打开
+- [x] 设置对话框包含「常规」和「GTP 渲染」两个分组/标签页
+- [x] 语言和主题选择已从主界面移除并迁移到设置对话框
+- [x] UI 字体选择控件已实现并支持实时应用
+- [x] GTP 渲染字体选择控件已实现并能修改 `RenderConfig.NOTE_FONT_FAMILY`
+- [x] `RenderConfig` 第 359–390 行的所有参数都已在设置对话框中可配置
+- [x] `config/settings.json` 正确保存 `ui_font`、`gtp_font`、`render_config` 字段
+- [x] 应用启动时能正确读取并恢复上述新增配置
+- [x] 主题切换仍能实时刷新所有窗口
+- [x] 语言切换仍保存配置并提示重启
+- [x] `locales/zh_CN.json` 和 `locales/en_US.json` 已添加设置面板相关翻译
+- [x] `locales/ru_RU.json` 已补充 `settings_dialog` 翻译键
+- [x] `readme/功能更新.md` 已更新（文件长度 ≤ 200 行）
+- [x] `readme/开发文档.md` 和 `readme/实施文档.md` 已同步更新
+- [x] `TAB Score Viewer.py` 文件头注释已更新
+- [x] `python -m py_compile "TAB Score Viewer.py"` 通过无报错

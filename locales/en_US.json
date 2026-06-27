@@ -104,7 +104,7 @@
     "preset_linear": "Linear",
     "preset_ease_in": "Ease In",
     "preset_ease_out": "Ease Out",
-    "preset_ease_in_out": "Slow-Fast-Slow",
+    "preset_ease_in_out": "Slow-Fast",
     "preset_slow_fast_slow": "Slow-Fast-Slow",
     "btn_apply": "Apply",
     "btn_close": "Close",
@@ -248,5 +248,21 @@
     "recent_list_label": "Recent Files",
     "recent_expand": "Expand ▼",
     "recent_collapse": "Collapse ▲"
+  },
+  "settings_dialog": {
+    "window_title": "Settings",
+    "tab_general": "General",
+    "tab_gtp": "GTP Rendering",
+    "language_label": "Language:",
+    "theme_label": "Theme:",
+    "ui_font_label": "UI Font:",
+    "gtp_font_label": "GTP Font:",
+    "render_params_group": "Rendering Parameters (effective after reopening GTP file)",
+    "ok_btn": "OK",
+    "cancel_btn": "Cancel",
+    "reset_btn": "Restore Defaults",
+    "reset_confirm_title": "Restore Default Settings",
+    "reset_confirm_msg": "Are you sure you want to restore all settings to defaults?\nThis will not be saved until you click OK.",
+    "restart_hint": "Settings saved. GTP rendering parameters will take effect after reopening the file."
   }
 }

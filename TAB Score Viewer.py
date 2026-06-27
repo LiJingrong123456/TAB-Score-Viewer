@@ -37,18 +37,20 @@ Core Features / 核心功能:
      播放光标 - 竖线跟随播放进度移动，当前小节高亮显示
  15. Playback performance optimization - image scale cache + UI throttle updates
      播放性能优化 - 图片缩放缓存+UI节流更新，解决播放卡顿
- 16. Internationalization (i18n) - Chinese/English bilingual, JSON translation files
-     国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
+ 16. Internationalization (i18n) - Chinese/English/Russian trilingual, JSON translation files
+     国际化支持(i18n) - 中文/英文/俄文三语切换，JSON翻译文件
  17. GTP track volume control - DAW-style vertical sliders with dB scale (-∞ ~ +12dB)
      GTP音轨音量控制 - 专业DAW风格垂直滑块(dB刻度)，支持每轨独立调节+Master总音量
  18. Platform-aware default fonts - automatically selects system-preinstalled fonts on Windows/Linux/macOS
      平台自适应默认字体 - 根据 Windows/Linux/macOS 自动选择系统预装字体
  19. Selection Window rename - main file browser window renamed from "Settings" to "Selection Window"
      选择窗口重命名 - 主文件浏览窗口从"设置"重命名为"选择窗口"
+ 20. Settings panel - centralized configuration for language, theme, UI font, GTP rendering parameters, and restore defaults
+     设置面板 - 集中管理语言/主题/UI字体/GTP渲染参数，支持一键恢复默认，支持持久化与实时预览
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-06-27 (v2.0.7 - 平台自适应字体 + 选择窗口重命名)
-最后修改: 2026-06-27 (v2.0.7 - 平台自适应字体 + 选择窗口重命名)
+Last Modified: 2026-06-27 (v2.0.10 - 设置面板添加恢复默认功能)
+最后修改: 2026-06-27 (v2.0.10 - 设置面板添加恢复默认功能)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -69,7 +71,7 @@ Project Structure / 项目结构:
   TAB Score Viewer.py     - Main program (this file, includes I18n class) / 主程序(本文件，含I18n国际化类)
   TAB Score Viewer.spec   - PyInstaller packaging config / PyInstaller打包配置
   icons/                  - SVG icon files (Lucide-style, for toolbar buttons) / SVG图标目录(Lucide风格工具栏图标)
-  locales/                - Translation file directory (zh_CN.json/en_US.json) / 翻译文件目录
+  locales/                - Translation file directory (zh_CN.json/en_US.json/ru_RU.json) / 翻译文件目录
   soundfont/              - SoundFont directory (GTP audio required, download FluidR3_GM.sf2) / SoundFont音色库目录
   config/settings.json    - User settings (language/theme, auto-generated at runtime) / 用户配置
   data/annotations/       - Annotation data storage (JSON format) / 标注数据存储
@@ -86,19 +88,20 @@ import copy
 import uuid
 import bisect
 import platform  # 检测操作系统, 用于选择平台默认字体
-from typing import List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple, Optional
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 # Qt GUI组件
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QPushButton, QFileDialog, QSlider, QListWidget,
     QListWidgetItem, QMenu, QAction, QMessageBox, QLineEdit,
     QDialog, QTextEdit, QDialogButtonBox, QGroupBox, QCheckBox,
-    QSpinBox, QColorDialog, QFontDialog, QSplitter, QFrame,
-    QScrollArea, QGraphicsDropShadowEffect, QSizePolicy, QToolTip,
-    QProgressBar, QComboBox, QTabWidget, QToolButton, QRadioButton
+    QSpinBox, QDoubleSpinBox, QColorDialog, QFontDialog, QFontComboBox,
+    QSplitter, QFrame, QScrollArea, QGraphicsDropShadowEffect, QSizePolicy,
+    QToolTip, QProgressBar, QComboBox, QTabWidget, QToolButton, QRadioButton,
+    QAbstractButton
 )
 from PyQt5.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog  # 打印支持(用于打印曲谱到物理打印机+预览)
 from PyQt5.QtGui import (
@@ -106,7 +109,7 @@ from PyQt5.QtGui import (
     QImage, QCursor, QPainterPath, QLinearGradient, QRadialGradient,
     QMouseEvent, QKeyEvent, QWheelEvent, QResizeEvent, QShowEvent,
     QContextMenuEvent,
-    QKeySequence, QPalette, QBrush, QTransform, QPolygonF
+    QKeySequence, QPalette, QBrush, QTransform, QPolygonF, QFontDatabase
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QRect, QSize, QPoint, QRunnable, QThreadPool,
@@ -117,6 +120,7 @@ from PyQt5.QtCore import (
 # 第三方库
 import fitz  # PyMuPDF - PDF解析 (开源库)
 from PIL import Image as PILImage  # Pillow - 图片处理(含WEBP) (开源库)
+from ApolloTab.utils.constants import RenderConfig  # ApolloTab 渲染配置类 (开源库: ApolloTab 0.3.7)
 
 
 # ============================================================
@@ -283,12 +287,17 @@ def get_font_families(font_type: str = "ui") -> List[str]:
         else:
             return ["DejaVu Sans", "Noto Sans CJK SC", "WenQuanYi Micro Hei", "sans-serif"]
     else:  # "ui" 默认
+        defaults = []
         if sys_name == "Windows":
-            return ["Microsoft YaHei", "Segoe UI", "Arial", "sans-serif"]
+            defaults = ["Microsoft YaHei", "Segoe UI", "Arial", "sans-serif"]
         elif sys_name == "Darwin":
-            return ["PingFang SC", "Heiti SC", "STHeiti", "Helvetica Neue", "Arial", "sans-serif"]
+            defaults = ["PingFang SC", "Heiti SC", "STHeiti", "Helvetica Neue", "Arial", "sans-serif"]
         else:
-            return ["Noto Sans CJK SC", "WenQuanYi Micro Hei", "DejaVu Sans", "sans-serif"]
+            defaults = ["Noto Sans CJK SC", "WenQuanYi Micro Hei", "DejaVu Sans", "sans-serif"]
+        # 如果用户通过设置面板指定了 UI 字体，则放在首位优先使用
+        if font_type == "ui" and _UI_FONT_FAMILY and _UI_FONT_FAMILY not in defaults:
+            return [_UI_FONT_FAMILY] + defaults
+        return defaults
 
 
 def get_font_family(font_type: str = "ui") -> str:
@@ -308,6 +317,26 @@ def get_font_family_css(font_type: str = "ui") -> str:
         QLabel {{ font-family: {get_font_family_css('ui')}; }}
     """
     return ", ".join(f"'{f}'" for f in get_font_families(font_type))
+
+
+# 用户自定义 UI 字体，None 表示使用平台默认推荐字体
+# 通过设置面板修改后，全局样式表会优先使用该字体
+_UI_FONT_FAMILY: Optional[str] = None
+
+
+def set_ui_font(family: Optional[str]) -> None:
+    """
+    设置用户自定义 UI 字体
+
+    参数:
+        family: 字体族名称，None 或空字符串表示恢复平台默认
+
+    说明:
+        修改后需手动调用各窗口的 _apply_theme() / _refresh_theme()
+        重新应用样式表，才能看到实时效果
+    """
+    global _UI_FONT_FAMILY
+    _UI_FONT_FAMILY = family if family else None
 
 
 # ============================================================
@@ -567,7 +596,7 @@ class I18n:
     国际化翻译管理器（单例模式）
     
     功能:
-      1. 从 locales/ 目录加载JSON翻译文件(如 zh_CN.json, en_US.json)
+      1. 从 locales/ 目录加载JSON翻译文件(如 zh_CN.json, en_US.json, ru_RU.json)
       2. 提供 t(key, **kwargs) 方法获取翻译文本，支持 {} 占位符格式化
       3. 支持运行时语言切换，切换后通过 language_changed 信号通知UI刷新
       4. 缺失翻译自动回退到中文(zh_CN)，确保UI不会出现空白字符串
@@ -579,7 +608,7 @@ class I18n:
                    fmt="PDF", path="/tmp/a.pdf", count=3)
       
       # 切换语言
-      I18n.set_language("en_US")
+      I18n.set_language("en_US")  # 或 "ru_RU" 切换到俄语
     
     翻译文件格式 (locales/xx_XX.json):
       {
@@ -590,7 +619,7 @@ class I18n:
       }
     
     调整说明:
-      - 新增语言: 在 locales/ 下新建 xx_XX.json 文件即可
+      - 新增语言: 在 locales/ 下新建 xx_XX.json 文件即可，程序会自动识别
       - 新增翻译项: 同时更新所有语言的JSON文件中的对应key
       - 缺失key: 自动回退到zh_CN的值，控制台打印警告
     """
@@ -679,7 +708,7 @@ class I18n:
         切换当前语言（类方法）
         
         参数:
-            lang_code: 目标语言代码，如 "zh_CN", "en_US"
+            lang_code: 目标语言代码，如 "zh_CN", "en_US", "ru_RU"
                      必须与 locales/ 下的JSON文件名(不含扩展名)一致
         
         返回:
@@ -720,7 +749,7 @@ class I18n:
         获取所有可用语言列表
         
         返回:
-            [(code, name), ...] 如 [("zh_CN", "简体中文"), ("en_US", "English")]
+            [(code, name), ...] 如 [("zh_CN", "简体中文"), ("en_US", "English"), ("ru_RU", "Русский")]
         """
         instance = cls()
         languages = []
@@ -3234,7 +3263,7 @@ class DisplayWindow(QMainWindow):
         主题切换时刷新DisplayWindow所有UI组件样式
         
         调用时机:
-          - SelectionWindow._on_theme_changed() 切换主题时调用
+          - SettingsDialog 中切换主题时调用
           - 也可连接到 ThemeManager.theme_changed 信号
         
         刷新内容:
@@ -6352,13 +6381,387 @@ class ExportProgressDialog(QDialog):
 
 
 # ============================================================
+# 设置面板 (SettingsDialog) - v2.0.9 新增
+# ============================================================
+
+# GTP 渲染参数定义 (对应 ApolloTab.utils.constants.RenderConfig 第 359-390 行)
+# 每个元组: (类属性名, 中文标签, 类型, 最小值, 最大值, 步长)
+# 说明: 修改这些参数后需要重新打开 GTP 文件才能看到效果
+_RENDER_PARAMS = [
+    ("TAB_LINE_SPACING", "弦线间距 (px)", int, 1, 100, 1),
+    ("TAB_LINE_WIDTH_PER_STRING", "每弦水平宽度 (px)", int, 5, 200, 1),
+    ("TAB_LINE_THICKNESS", "弦线粗细 (px)", int, 1, 20, 1),
+    ("NOTE_FONT_SIZE", "品格数字字号 (px)", int, 4, 64, 1),
+    ("NOTE_MIN_SPACING", "相邻拍最小间距 (px)", int, 10, 300, 1),
+    ("NOTE_EXTRA_WIDTH_PER_CHAR", "多位数字额外宽度 (px/字符)", int, 0, 50, 1),
+    ("STEM_HEIGHT", "符干高度 (px)", int, 5, 120, 1),
+    ("STEM_THICKNESS", "符干粗细 (px)", int, 1, 20, 1),
+    ("BEAM_HEIGHT", "符尾横杠高度 (px)", int, 1, 60, 1),
+    ("BEAM_SLOPE_MAX", "符尾最大斜率", float, 0.0, 2.0, 0.05),
+    ("BARLINE_THICKNESS", "小节线粗细 (px)", float, 0.1, 10.0, 0.1),
+    ("BARLINE_HEIGHT_EXTEND", "小节线延伸量 (px)", int, 0, 80, 1),
+    ("MEASURE_PADDING_LEFT", "小节左侧内边距 (px)", int, 0, 100, 1),
+    ("MEASURE_PADDING_RIGHT", "小节右侧内边距 (px)", int, 0, 100, 1),
+    ("INFO_SECTION_HEIGHT", "顶部信息区高度 (px)", int, 10, 200, 1),
+    ("INFO_FONT_SIZE", "信息文字大小 (px)", int, 4, 64, 1),
+    ("TRACK_NAME_FONT_SIZE", "音轨名称字号 (px)", int, 4, 80, 1),
+    ("LINE_SPACING", "行间距 (px)", int, 5, 300, 1),
+    ("SYSTEM_SPACING", "系统间距 (px)", int, 0, 300, 1),
+]
+
+# 渲染参数默认值快照（用于"恢复默认"功能）
+# 在模块加载时捕获 RenderConfig 类属性的初始值, 避免被运行时修改影响
+_DEFAULT_RENDER_VALUES: Dict[str, Any] = {
+    attr: getattr(RenderConfig, attr)
+    for attr, _, _, _, _, _ in _RENDER_PARAMS
+}
+_DEFAULT_GTP_FONT: str = RenderConfig.NOTE_FONT_FAMILY  # "Arial"
+_DEFAULT_LANGUAGE: str = "zh_CN"
+_DEFAULT_THEME: str = "dark"
+
+
+def apply_config_settings(cfg: dict) -> None:
+    """
+    从配置字典应用语言、主题、字体和 GTP 渲染参数
+
+    参数:
+        cfg: 从 config/settings.json 读取到的字典
+
+    说明:
+        兼容旧配置: 缺少新字段时使用 RenderConfig 默认值, 不报错
+    """
+    global _UI_FONT_FAMILY
+
+    # 语言
+    lang = cfg.get("language", "zh_CN")
+    if lang != I18n.current_language():
+        I18n.set_language(lang)
+
+    # 主题
+    theme = cfg.get("theme", "dark")
+    if theme != ThemeManager.current_name():
+        ThemeManager.set_theme(theme)
+
+    # UI 字体
+    ui_font = cfg.get("ui_font")
+    _UI_FONT_FAMILY = ui_font if ui_font else None
+
+    # GTP 渲染字体
+    gtp_font = cfg.get("gtp_font")
+    if gtp_font:
+        RenderConfig.NOTE_FONT_FAMILY = gtp_font
+
+    # GTP 渲染数值参数
+    render_cfg = cfg.get("render_config", {})
+    for attr, _, typ, *_ in _RENDER_PARAMS:
+        if attr not in render_cfg:
+            continue
+        try:
+            val = render_cfg[attr]
+            if typ is int:
+                val = int(val)
+            elif typ is float:
+                val = float(val)
+            setattr(RenderConfig, attr, val)
+        except Exception:
+            pass
+
+
+class SettingsDialog(QDialog):
+    """
+    设置对话框
+
+    功能:
+      - 集中管理应用常规设置(语言/主题/UI字体)
+      - 集中管理 GTP 六线谱渲染参数(字体/线宽/间距等)
+      - 支持实时预览主题与 UI 字体, 取消时恢复
+      - 支持一键恢复所有设置为出厂默认值
+      - 所有设置保存到 config/settings.json
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._parent_window = parent
+        self.setWindowTitle(I18n.t("settings_dialog.window_title"))
+        self.setWindowIcon(get_app_icon())
+        self.resize(560, 520)
+
+        # 记录原始值, 用于取消时恢复主题和 UI 字体预览
+        self._original_theme = ThemeManager.current_name()
+        self._original_ui_font = _UI_FONT_FAMILY
+
+        # 渲染参数控件映射 {属性名: QSpinBox/QDoubleSpinBox}
+        self._render_spinboxes: Dict[str, QSpinBox] = {}
+
+        self._setup_ui()
+        self._apply_theme()
+        self._load_current_values()
+
+    def _setup_ui(self) -> None:
+        """初始化设置对话框 UI"""
+        main_layout = QVBoxLayout(self)
+
+        # 标签页容器
+        self.tabs = QTabWidget()
+
+        # 常规设置页
+        self.general_tab = QWidget()
+        general_layout = QFormLayout(self.general_tab)
+        general_layout.setLabelAlignment(Qt.AlignRight)
+
+        # 语言选择
+        self.lang_combo = QComboBox()
+        for code, name in I18n.available_languages():
+            self.lang_combo.addItem(name, code)
+        general_layout.addRow(I18n.t("settings_dialog.language_label"), self.lang_combo)
+
+        # 主题选择
+        self.theme_combo = QComboBox()
+        for name, display_name in ThemeManager.available_themes():
+            self.theme_combo.addItem(display_name, name)
+        general_layout.addRow(I18n.t("settings_dialog.theme_label"), self.theme_combo)
+
+        # UI 字体选择
+        self.ui_font_combo = QFontComboBox()
+        # 仅显示可缩放字体, 保证跨平台一致性
+        self.ui_font_combo.setFontFilters(QFontComboBox.ScalableFonts)
+        general_layout.addRow(I18n.t("settings_dialog.ui_font_label"), self.ui_font_combo)
+
+        self.tabs.addTab(self.general_tab, I18n.t("settings_dialog.tab_general"))
+
+        # GTP 渲染设置页
+        self.gtp_tab = QWidget()
+        gtp_layout = QFormLayout(self.gtp_tab)
+        gtp_layout.setLabelAlignment(Qt.AlignRight)
+
+        # GTP 渲染字体
+        self.gtp_font_combo = QFontComboBox()
+        self.gtp_font_combo.setFontFilters(QFontComboBox.ScalableFonts)
+        gtp_layout.addRow(I18n.t("settings_dialog.gtp_font_label"), self.gtp_font_combo)
+
+        # 渲染参数分组标签
+        render_group = QLabel(I18n.t("settings_dialog.render_params_group"))
+        render_group.setStyleSheet("font-weight:bold;margin-top:8px;")
+        gtp_layout.addRow(render_group)
+
+        # 渲染参数输入控件
+        for attr, label, typ, min_val, max_val, step in _RENDER_PARAMS:
+            if typ is int:
+                spin = QSpinBox()
+                spin.setRange(min_val, max_val)
+                spin.setSingleStep(step)
+            else:
+                spin = QDoubleSpinBox()
+                spin.setRange(min_val, max_val)
+                spin.setSingleStep(step)
+                spin.setDecimals(1 if step >= 0.1 else 2)
+            spin.setMinimumWidth(90)
+            # 中文 tooltip: 说明参数作用与调整效果
+            spin.setToolTip(f"RenderConfig.{attr}: 当前参数控制 {label}。数值越大通常间距/字号越大, 越小越紧凑。")
+            gtp_layout.addRow(label, spin)
+            self._render_spinboxes[attr] = spin
+
+        self.tabs.addTab(self.gtp_tab, I18n.t("settings_dialog.tab_gtp"))
+        main_layout.addWidget(self.tabs)
+
+        # 按钮: 确定 / 取消 / 恢复默认
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.reset_btn = self.button_box.addButton(
+            I18n.t("settings_dialog.reset_btn"), QDialogButtonBox.ResetRole
+        )
+        self.button_box.accepted.connect(self._on_accept)
+        self.button_box.rejected.connect(self._on_reject)
+        self.button_box.clicked.connect(self._on_button_clicked)
+        main_layout.addWidget(self.button_box)
+
+        # 实时预览连接 (主题和 UI 字体)
+        self.theme_combo.currentIndexChanged.connect(self._preview_theme)
+        self.ui_font_combo.currentFontChanged.connect(self._preview_ui_font)
+
+    def _apply_theme(self) -> None:
+        """应用当前主题样式到设置对话框"""
+        t = ThemeManager.current()
+        self.setStyleSheet(f"""
+            QDialog{{background-color:{t['bg_primary']};color:{t['text_primary']};
+                font-family:{get_font_family_css('ui')};}}
+            QLabel{{color:{t['text_primary']};font-size:13px;}}
+            QPushButton{{background-color:{t['primary']};color:white;border:none;
+                border-radius:6px;padding:6px 14px;font-family:{get_font_family_css('ui')};}}
+            QPushButton:hover{{background-color:{t['primary_hover']};}}
+            QLineEdit,QComboBox,QFontComboBox,QSpinBox,QDoubleSpinBox{{
+                background-color:{t['bg_surface']};color:{t['text_primary']};
+                border:1px solid {t['border']};border-radius:4px;padding:4px 8px;}}
+            QTabWidget::pane{{border:1px solid {t['border']};background-color:{t['bg_surface']};}}
+            QTabBar::tab{{background-color:{t['bg_secondary']};color:{t['text_primary']};
+                padding:6px 14px;margin:2px;border-radius:4px;}}
+            QTabBar::tab:selected{{background-color:{t['primary']};color:white;}}
+            QGroupBox{{color:{t['text_primary']};border:1px solid {t['border']};margin-top:8px;}}
+        """)
+
+    def _load_current_values(self) -> None:
+        """从当前配置和 RenderConfig 加载默认值到控件"""
+        # 语言
+        idx = self.lang_combo.findData(I18n.current_language())
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+
+        # 主题
+        idx = self.theme_combo.findData(ThemeManager.current_name())
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+
+        # UI 字体
+        ui_font = _UI_FONT_FAMILY or get_font_family('ui')
+        idx = self.ui_font_combo.findText(ui_font)
+        if idx >= 0:
+            self.ui_font_combo.setCurrentIndex(idx)
+        else:
+            self.ui_font_combo.setCurrentText(ui_font)
+
+        # GTP 渲染字体
+        gtp_font = getattr(RenderConfig, "NOTE_FONT_FAMILY", "Arial")
+        idx = self.gtp_font_combo.findText(gtp_font)
+        if idx >= 0:
+            self.gtp_font_combo.setCurrentIndex(idx)
+        else:
+            self.gtp_font_combo.setCurrentText(gtp_font)
+
+        # 渲染参数
+        for attr, spin in self._render_spinboxes.items():
+            spin.setValue(getattr(RenderConfig, attr))
+
+    def _preview_theme(self) -> None:
+        """主题下拉框变化时实时预览"""
+        theme_name = self.theme_combo.currentData()
+        if not theme_name or theme_name == ThemeManager.current_name():
+            return
+        ThemeManager.set_theme(theme_name)
+        self._apply_theme()
+        if isinstance(self._parent_window, SelectionWindow):
+            self._parent_window._apply_theme()
+            if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
+                self._parent_window.display_window._refresh_theme()
+
+    def _preview_ui_font(self) -> None:
+        """UI 字体下拉框变化时实时预览"""
+        family = self.ui_font_combo.currentFont().family()
+        set_ui_font(family)
+        self._apply_theme()
+        if isinstance(self._parent_window, SelectionWindow):
+            self._parent_window._apply_theme()
+            if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
+                self._parent_window.display_window._refresh_theme()
+
+    def _on_accept(self) -> None:
+        """点击确定: 应用语言、保存所有配置并关闭"""
+        # 语言切换
+        new_lang = self.lang_combo.currentData()
+        if new_lang and new_lang != I18n.current_language():
+            I18n.set_language(new_lang)
+            QMessageBox.information(
+                self,
+                I18n.t("settings_window.language_switch_title"),
+                I18n.t("settings_window.language_switch_msg")
+            )
+
+        # 主题和 UI 字体已在预览时应用, 这里只需要保存
+        set_ui_font(self.ui_font_combo.currentFont().family())
+        if self.theme_combo.currentData() != ThemeManager.current_name():
+            ThemeManager.set_theme(self.theme_combo.currentData())
+
+        # GTP 渲染字体
+        RenderConfig.NOTE_FONT_FAMILY = self.gtp_font_combo.currentFont().family()
+
+        # GTP 渲染参数
+        for attr, spin in self._render_spinboxes.items():
+            setattr(RenderConfig, attr, spin.value())
+
+        # 保存到 settings.json
+        if isinstance(self._parent_window, SelectionWindow):
+            self._parent_window.save_config()
+
+        self.accept()
+
+    def _on_reject(self) -> None:
+        """点击取消: 恢复主题和 UI 字体预览, 放弃其他修改"""
+        # 恢复主题
+        if ThemeManager.current_name() != self._original_theme:
+            ThemeManager.set_theme(self._original_theme)
+            if isinstance(self._parent_window, SelectionWindow):
+                self._parent_window._apply_theme()
+                if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
+                    self._parent_window.display_window._refresh_theme()
+
+        # 恢复 UI 字体
+        set_ui_font(self._original_ui_font)
+        if isinstance(self._parent_window, SelectionWindow):
+            self._parent_window._apply_theme()
+            if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
+                self._parent_window.display_window._refresh_theme()
+
+        self.reject()
+
+    def _on_button_clicked(self, button: QAbstractButton) -> None:
+        """
+        按钮点击统一处理（除确定/取消外的其他按钮）
+
+        参数:
+            button: 被点击的按钮对象
+        """
+        role = self.button_box.buttonRole(button)
+        if role == QDialogButtonBox.ResetRole:
+            self._reset_defaults()
+
+    def _reset_defaults(self) -> None:
+        """恢复所有设置为模块加载时捕获的默认值"""
+        reply = QMessageBox.question(
+            self,
+            I18n.t("settings_dialog.reset_confirm_title"),
+            I18n.t("settings_dialog.reset_confirm_msg"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 语言
+        idx = self.lang_combo.findData(_DEFAULT_LANGUAGE)
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+
+        # 主题
+        idx = self.theme_combo.findData(_DEFAULT_THEME)
+        if idx >= 0:
+            self.theme_combo.setCurrentIndex(idx)
+
+        # UI 字体 → 平台默认
+        default_ui_font = get_font_family('ui')
+        idx = self.ui_font_combo.findText(default_ui_font)
+        if idx >= 0:
+            self.ui_font_combo.setCurrentIndex(idx)
+        else:
+            self.ui_font_combo.setCurrentText(default_ui_font)
+
+        # GTP 渲染字体
+        idx = self.gtp_font_combo.findText(_DEFAULT_GTP_FONT)
+        if idx >= 0:
+            self.gtp_font_combo.setCurrentIndex(idx)
+        else:
+            self.gtp_font_combo.setCurrentText(_DEFAULT_GTP_FONT)
+
+        # 渲染数值参数
+        for attr, spin in self._render_spinboxes.items():
+            spin.setValue(_DEFAULT_RENDER_VALUES.get(attr, 0))
+
+
+# ============================================================
 # 设置窗口 - 文件浏览与配置
 # ============================================================
 
 class SelectionWindow(QMainWindow):
     """
     选择主窗口(原 SettingsWindow)
-    功能: 文件夹浏览、文件列表、语言/主题选择、启动谱面显示窗口
+    功能: 文件夹浏览、文件列表、搜索、最近文件、打开设置面板、启动谱面显示窗口
     """
 
     def __init__(self):
@@ -6387,44 +6790,20 @@ class SelectionWindow(QMainWindow):
         central=QWidget();self.setCentralWidget(central)
         main_layout=QVBoxLayout(central)
 
-        # 文件夹选择
+        # 文件夹选择 + 设置按钮
         folder_layout=QHBoxLayout()
         self.folder_label=QLabel(I18n.t("settings_window.folder_not_selected"))
         self.folder_button=QPushButton(I18n.t("settings_window.folder_btn"))
         self.folder_button.clicked.connect(self.select_folder)
+        # 设置按钮: 点击打开设置对话框, 集中管理语言/主题/字体/GTP渲染参数
+        self.settings_btn=QPushButton("⚙ " + I18n.t("settings_dialog.window_title"))
+        self.settings_btn.setToolTip(I18n.t("settings_dialog.window_title"))
+        self.settings_btn.clicked.connect(self._open_settings_dialog)
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_button)
+        folder_layout.addStretch()
+        folder_layout.addWidget(self.settings_btn)
         main_layout.addLayout(folder_layout)
-
-        # 语言选择
-        lang_layout=QHBoxLayout()
-        lang_layout.addWidget(QLabel(I18n.t("settings_window.language_label")))
-        self.lang_combo=QComboBox()
-        for code,name in I18n.available_languages():
-            self.lang_combo.addItem(name, code)
-        # 从配置恢复语言选择
-        saved_lang=self._load_saved_language()
-        idx=self.lang_combo.findData(saved_lang)
-        if idx>=0: self.lang_combo.setCurrentIndex(idx)
-        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
-        lang_layout.addWidget(self.lang_combo)
-        lang_layout.addStretch()
-        main_layout.addLayout(lang_layout)
-
-        # 主题选择 (v2.0新增)
-        theme_layout=QHBoxLayout()
-        theme_layout.addWidget(QLabel(I18n.t("settings_window.theme_label")))
-        self.theme_combo=QComboBox()
-        for name, display_name in ThemeManager.available_themes():
-            self.theme_combo.addItem(display_name, name)
-        # 从配置恢复主题选择
-        saved_theme=self._load_saved_theme()
-        idx=self.theme_combo.findData(saved_theme)
-        if idx>=0: self.theme_combo.setCurrentIndex(idx)
-        self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
-        theme_layout.addWidget(self.theme_combo)
-        theme_layout.addStretch()
-        main_layout.addLayout(theme_layout)
 
         # 文件列表
         file_list_label=QLabel(I18n.t("settings_window.file_list_label"))
@@ -6496,12 +6875,14 @@ class SelectionWindow(QMainWindow):
             print(f"恢复配置出错: {e}")
 
     def load_config(self)->None:
-        """加载配置文件"""
+        """加载配置文件 - 恢复目录、语言、主题、字体和 GTP 渲染参数"""
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE,'r',encoding='utf-8') as f:
                     cfg=json.load(f)
                     self.last_folder=cfg.get('last_folder','')
+                    # 应用语言/主题/UI字体/GTP渲染参数
+                    apply_config_settings(cfg)
             else:
                 self.last_folder=''
         except Exception as e:
@@ -6509,80 +6890,29 @@ class SelectionWindow(QMainWindow):
             self.last_folder=''
 
     def save_config(self)->None:
-        """保存配置文件（包含主题设置）"""
+        """保存配置文件 - 包含目录、语言、主题、字体和 GTP 渲染参数"""
         try:
-            cfg={'last_folder':self.current_directory,
-                 'language':I18n.current_language(),
-                 'theme':ThemeManager.current_name()}  # v2.0新增: 保存主题
+            cfg={
+                'last_folder': self.current_directory,
+                'language': I18n.current_language(),
+                'theme': ThemeManager.current_name(),
+                'ui_font': _UI_FONT_FAMILY,
+                'gtp_font': getattr(RenderConfig, 'NOTE_FONT_FAMILY', 'Arial'),
+                'render_config': {
+                    attr: getattr(RenderConfig, attr)
+                    for attr, _, _, _, _, _ in _RENDER_PARAMS
+                },
+            }
             os.makedirs(os.path.dirname(CONFIG_FILE),exist_ok=True)
             with open(CONFIG_FILE,'w',encoding='utf-8') as f:
                 json.dump(cfg,f,ensure_ascii=False,indent=2)
         except Exception as e:
             print(f"保存配置失败: {e}")
 
-    def _load_saved_language(self)->str:
-        """从配置文件加载已保存的语言设置"""
-        try:
-            if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE,'r',encoding='utf-8') as f:
-                    cfg=json.load(f)
-                    return cfg.get('language','zh_CN')
-        except Exception:
-            pass
-        return 'zh_CN'
-
-    def _on_language_changed(self,index:int)->None:
-        """语言切换处理 - 切换语言并刷新UI"""
-        lang_code=self.lang_combo.itemData(index)
-        if not lang_code or lang_code==I18n.current_language():
-            return
-        # 执行语言切换
-        I18n.set_language(lang_code)
-        # 保存语言设置
-        self.save_config()
-        # 提示用户重启应用以完全生效(部分静态文本需重建窗口才能更新)
-        QMessageBox.information(self,I18n.t("settings_window.language_switch_title"),
-                                I18n.t("settings_window.language_switch_msg"))
-
-    def _load_saved_theme(self)->str:
-        """从配置文件加载已保存的主题设置"""
-        try:
-            if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE,'r',encoding='utf-8') as f:
-                    cfg=json.load(f)
-                    return cfg.get('theme','dark')
-        except Exception:
-            pass
-        return 'dark'
-
-    def _on_theme_changed(self, index: int)->None:
-        """
-        主题切换处理 - 切换深色/浅色主题并实时刷新所有窗口
-        
-        原理:
-          1. 从下拉框获取目标主题名(dark/light)
-          2. 调用 ThemeManager.set_theme() 切换全局配色
-          3. 发射 theme_changed 信号通知所有窗口刷新样式
-          4. 保存主题设置到配置文件(持久化)
-          5. 如果有打开的DisplayWindow，同步刷新其GTP渲染主题
-        """
-        theme_name = self.theme_combo.itemData(index)
-        if not theme_name or theme_name == ThemeManager.current_name():
-            return
-
-        # 切换全局主题
-        if not ThemeManager.set_theme(theme_name):
-            return
-
-        # 刷新设置窗口自身样式
-        self._apply_theme()
-
-        # 刷新已打开的DisplayWindow（如果存在）
-        if self.display_window and hasattr(self.display_window, '_refresh_theme'):
-            self.display_window._refresh_theme()
-
-        # 保存设置
-        self.save_config()
+    def _open_settings_dialog(self)->None:
+        """打开设置对话框, 集中配置语言/主题/字体/GTP渲染参数"""
+        dialog = SettingsDialog(self)
+        dialog.exec_()
 
     def select_folder(self)->None:
         """选择文件夹"""
@@ -6796,21 +7126,18 @@ if __name__ == '__main__':
     app.setStyle('Fusion')  # 使用Fusion样式作为基础，配合自定义深色/浅色主题
     app.setWindowIcon(get_app_icon())  # 设置全局应用图标(任务栏图标/窗口默认图标)
 
-    # 初始化国际化系统 - 从配置文件加载已保存的语言设置
-    saved_lang='zh_CN'
-    saved_theme='dark'  # v2.0新增: 默认深色主题
+    # v2.0.9 修改: 统一从配置文件加载语言/主题/UI字体/GTP渲染参数
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE,'r',encoding='utf-8') as f:
                 cfg=json.load(f)
-                saved_lang=cfg.get('language','zh_CN')
-                saved_theme=cfg.get('theme','dark')  # v2.0新增: 加载保存的主题
+            apply_config_settings(cfg)
+        else:
+            I18n.set_language('zh_CN')
+            ThemeManager.set_theme('dark')
     except Exception:
-        pass
-    I18n.set_language(saved_lang)
-    
-    # v2.0新增: 应用保存的主题（在创建窗口之前）
-    ThemeManager.set_theme(saved_theme)
+        I18n.set_language('zh_CN')
+        ThemeManager.set_theme('dark')
 
     settings = SelectionWindow()
     sys.exit(app.exec_())
