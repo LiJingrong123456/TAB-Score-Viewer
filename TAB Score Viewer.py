@@ -41,12 +41,10 @@ Core Features / 核心功能:
      国际化支持(i18n) - 中文/英文双语切换，JSON翻译文件
  17. GTP track volume control - DAW-style vertical sliders with dB scale (-∞ ~ +12dB)
      GTP音轨音量控制 - 专业DAW风格垂直滑块(dB刻度)，支持每轨独立调节+Master总音量
- 18. Fullscreen mode - F11 toggle / toolbar button / smart ESC behavior (exit fullscreen instead of close)
-     全屏模式 - F11切换/工具栏按钮/ESC智能行为(全屏时退出全屏而非关闭)
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-06-26 (v2.1.1 - Fix open file location on macOS/Linux)
-最后修改: 2026-06-26 (v2.1.1 - 修复 macOS/Linux 打开文件位置功能)
+Last Modified: 2026-06-14 (v2.0.6 - GTP音轨音量控制滑块)
+最后修改: 2026-06-14 (v2.0.6 - GTP音轨音量控制滑块)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -60,8 +58,8 @@ Dependencies / 依赖库:
   - ApolloTab == 0.3.7  # GTP tablature rendering (Open Source: ApolloTab)
                        # GTP六线谱渲染 (开源项目: ApolloTab)
 
-Tech Stack / 技术栈: Python 3.8+ / PyQt5 / PyMuPDF / Pillow / pyguitarpro / ApolloTab
-Compatibility / 兼容性: Windows / Linux / Docker (all paths use relative paths)
+Tech Stack / 技术栈: Python 3.8+ / PyQt5 / PyMuPDF / Pillow / guitarpro(gtp_engine)
+Compatibility / 兼容性: Windows / Linux / macOS (all paths use relative paths)
 
 Project Structure / 项目结构:
   TAB Score Viewer.py     - Main program (this file, includes I18n class) / 主程序(本文件，含I18n国际化类)
@@ -127,30 +125,34 @@ _APP_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(_APP_BASE_DIR, "icon.ico")
 
 
+def _find_icon_file(*dirs: str) -> str:
+    """在给定目录中搜索图标文件 (支持 .icns .ico .png)"""
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        for name in ("icon.icns", "icon.ico", "icon.png"):
+            path = os.path.join(d, name)
+            if os.path.exists(path):
+                return path
+    return ""
+
+
 def get_app_icon() -> QIcon:
     """
     获取应用图标(QIcon对象)
     原理: 兼容开发和PyInstaller打包两种运行模式
-      - 开发模式: 从脚本同目录读取icon.ico
+      - 开发模式: 从脚本同目录读取图标
       - 打包模式(sys.frozen): 优先从exe所在目录读取，若不存在则从_internal/子目录读取
+    支持格式: .icns (macOS), .ico (Windows), .png (通用)
     返回: QIcon对象，文件不存在时返回空 QIcon
     """
     if getattr(sys, 'frozen', False):
-        # PyInstaller打包模式
         base = os.path.dirname(sys.executable)
-        # 优先查找exe所在目录(onedir模式数据文件可能在这里)
-        ico_path = os.path.join(base, "icon.ico")
-        if os.path.exists(ico_path):
-            return QIcon(ico_path)
-        # 次选: _internal/子目录(PyInstaller默认数据目录)
-        ico_path = os.path.join(base, "_internal", "icon.ico")
-        if os.path.exists(ico_path):
-            return QIcon(ico_path)
+        path = _find_icon_file(base, os.path.join(base, "_internal"))
     else:
-        # 开发模式: 脚本所在目录
-        ico_path = os.path.join(_APP_BASE_DIR, "icon.ico")
-        if os.path.exists(ico_path):
-            return QIcon(ico_path)
+        path = _find_icon_file(_APP_BASE_DIR)
+    if path:
+        return QIcon(path)
     return QIcon()  # 文件不存在时返回空图标
 
 
@@ -545,7 +547,7 @@ class I18n:
         self._initialized = True
         
         # 翻译文件目录: 项目根目录下的 locales/ 文件夹
-        # 使用相对路径，兼容 Windows/Linux/Docker
+        # 使用相对路径，兼容 Windows/Linux/macOS
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self._locales_dir = os.path.join(base_dir, "locales")
         
@@ -3083,15 +3085,6 @@ class DisplayWindow(QMainWindow):
         # === 点击跳转播放目标(防止_tick()音频时间覆盖点击位置) ===
         # 当用户点击谱面跳转播放时设置，_tick()在音频时间未追上之前使用此值
         self._click_jump_target:float = -1.0  # -1表示无待处理跳转
-
-        # === [v0.4.0] 反复跳回视觉偏移(Repeat Jump Visual Offset) ===
-        # 当反复记号导致播放跳回之前的谱面位置时，给滚动位置添加额外偏移，
-        # 让当前播放行显示在视口偏下位置，上方留出更多空间显示上下文。
-        # 偏移量是固定值，随着BPM驱动播放前进，time_based_pos自然增大，
-        # 偏移效果自动消失（无需衰减，不会抽搐）。
-        self._repeat_jump_offset: float = 0.0    # 当前视觉偏移量(px)
-        self._repeat_jump_base_pos: float = 0.0  # 跳回时的time_based_pos(用于判断偏移是否该消失)
-        self._repeat_jump_threshold: float = 50.0 # 跳回检测阈值(px): 位置回退>此值视为反复跳回
         
         # === 总音频时长(ms)(用于进度条百分比计算) ===
         self._total_audio_duration_ms:float=0.0
@@ -3099,12 +3092,6 @@ class DisplayWindow(QMainWindow):
         # === 暂停时保存的播放时间(用于恢复播放) ===
         # 当用户暂停播放时，保存当前音频时间，恢复播放时从此位置继续
         self._paused_time_ms:float=0.0
-
-        # === 全屏模式状态(v2.1.0新增) ===
-        # is_fullscreen: 当前是否处于全屏模式
-        # _saved_geometry: 进入全屏前保存的窗口几何信息(位置+大小)，用于退出时精确恢复
-        self.is_fullscreen:bool=False
-        self._saved_geometry=None  # 类型: Optional[QByteArray]
 
         self.init_ui()
         self._load_annotations()               # 加载已有标注
@@ -3335,14 +3322,6 @@ class DisplayWindow(QMainWindow):
         self.print_btn.clicked.connect(lambda: self._print_score(use_preview=False))
 
         tb.addWidget(self.print_btn)
-
-        # 全屏模式按钮 (v2.1.0新增) (SVG图标: 展开四角箭头)
-        # 位置: 打印按钮之后，速度曲线按钮之前
-        # 功能: 切换全屏/窗口模式(F11快捷键)，最大化谱面显示区域
-        self.fullscreen_btn=ModernButton(I18n.t("toolbar.fullscreen_btn"),'accent','fullscreen')
-        self.fullscreen_btn.setToolTip(I18n.t("toolbar.fullscreen_tooltip"))
-        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
-        tb.addWidget(self.fullscreen_btn)
 
         # 速度曲线按钮 (SVG图标: 趋势线图表)
         self.curve_btn=ModernButton(I18n.t("toolbar.curve_btn"),'primary','chart')
@@ -3892,8 +3871,6 @@ class DisplayWindow(QMainWindow):
         """
         self.timer.stop()
         self._click_jump_target = -1.0  # 清除点击跳转目标
-        self._repeat_jump_offset = 0.0  # [v0.4.0] 清除反复跳回视觉偏移
-        self._repeat_jump_base_pos = 0.0
         # Phase 3: 同时停止GTP播放器
         if self.gtp_player and self.gtp_player.is_audio_ready:
             if reset_position:
@@ -3927,22 +3904,43 @@ class DisplayWindow(QMainWindow):
         
         # === 确保SoundFont音色库可被找到(开发模式+打包模式兼容) ===
         # 原理: ApolloTab的SynthEngine使用相对路径搜索sf2文件,
-        #       PyInstaller onedir模式: 数据文件在 _internal/ 子目录
+        #       PyInstaller不同打包模式数据文件位置不同:
+        #         onedir (直接运行):     exe同目录/_internal/soundfont/
+        #         .app bundle (双击):    .app/Contents/Resources/soundfont/
+        #         onedir (直接运行exe):  exe同目录/soundfont/ (Windows spec用'.')
         #       开发模式: 脚本目录下直接访问
         try:
             from ApolloTab.audio.synth_engine import SynthEngine
             import sys
+            added = []
             if getattr(sys, 'frozen', False):
-                # PyInstaller onedir 打包模式: 数据文件在 exe所在目录/_internal/
-                app_base = os.path.join(os.path.dirname(sys.executable), '_internal')
+                # ---- 添加多个可能的打包后路径 ----
+                exe_dir = os.path.dirname(sys.executable)
+                # (1) onedir 模式: exe同目录/_internal/soundfont/
+                sf_dir_internal = os.path.join(exe_dir, '_internal', 'soundfont')
+                if sf_dir_internal not in SynthEngine.SOUNDFONT_SEARCH_PATHS and os.path.isdir(sf_dir_internal):
+                    SynthEngine.SOUNDFONT_SEARCH_PATHS.insert(0, sf_dir_internal)
+                    added.append(sf_dir_internal)
+                # (2) onedir 模式: exe同目录/soundfont/ (Windows spec用 '.')
+                sf_dir_exe = os.path.join(exe_dir, 'soundfont')
+                if sf_dir_exe not in SynthEngine.SOUNDFONT_SEARCH_PATHS and os.path.isdir(sf_dir_exe):
+                    SynthEngine.SOUNDFONT_SEARCH_PATHS.insert(0, sf_dir_exe)
+                    added.append(sf_dir_exe)
+                # (3) .app bundle 模式: .app/Contents/Resources/soundfont/
+                if '.app/Contents/MacOS' in exe_dir:
+                    resources_dir = os.path.join(os.path.dirname(exe_dir), 'Resources')
+                    sf_dir_bundle = os.path.join(resources_dir, 'soundfont')
+                    if sf_dir_bundle not in SynthEngine.SOUNDFONT_SEARCH_PATHS and os.path.isdir(sf_dir_bundle):
+                        SynthEngine.SOUNDFONT_SEARCH_PATHS.insert(0, sf_dir_bundle)
+                        added.append(sf_dir_bundle)
             else:
                 # 开发模式: 脚本所在目录
-                app_base = _APP_BASE_DIR
-            sf_dir = os.path.join(app_base, 'soundfont')
-            # 将soundfont目录插入搜索列表最前面(最高优先级)
-            if sf_dir not in SynthEngine.SOUNDFONT_SEARCH_PATHS:
-                SynthEngine.SOUNDFONT_SEARCH_PATHS.insert(0, sf_dir)
-                print(f"[Audio] SoundFont搜索路径已添加: {sf_dir}")
+                sf_dir = os.path.join(_APP_BASE_DIR, 'soundfont')
+                if sf_dir not in SynthEngine.SOUNDFONT_SEARCH_PATHS and os.path.isdir(sf_dir):
+                    SynthEngine.SOUNDFONT_SEARCH_PATHS.insert(0, sf_dir)
+                    added.append(sf_dir)
+            if added:
+                print(f"[Audio] SoundFont搜索路径已添加({len(added)}个): {added}")
         except Exception as e:
             print(f"[Audio] 警告: 无法设置SoundFont搜索路径: {e}")
         
@@ -3996,10 +3994,14 @@ class DisplayWindow(QMainWindow):
                 self.curve_status_label.setVisible(is_off)
 
             # 重建播放光标时间线（如果布局数据可用）
-            if (self.images and self._page_layouts and
+            if (self.images and self._page_layouts and 
                 mode != GTPPlayer.MODE_OFF):
-                # 使用统一的_build_playhead_timeline()方法(内部会记录宽度用于resizeEvent检测)
-                self._build_playhead_timeline()
+                display_w = max(self.display_widget.width() - 20, 100)
+                self.gtp_player.build_timeline(
+                    self._page_layouts, self.images, display_w
+                )
+                self._playhead_timeline = self.gtp_player.playhead_timeline
+                self._total_audio_duration_ms = self.gtp_player.total_duration_ms
         else:
             # 无GTP播放器时只更新UI
             self._update_audio_button_ui(mode)
@@ -4076,10 +4078,6 @@ class DisplayWindow(QMainWindow):
         # 更新主程序的时间线数据
         self._playhead_timeline = timeline
         self._total_audio_duration_ms = self.gtp_player.total_duration_ms
-
-        # [v2.1.0] 记录构建timeline时的display_widget宽度
-        # 用于resizeEvent中检测宽度变化以决定是否需要重建timeline(修复全屏滚动偏移)
-        self._last_timeline_build_width = self.display_widget.width()
     
     def _update_playhead(self, time_ms: float = None)->None:
         """
@@ -4224,19 +4222,6 @@ class DisplayWindow(QMainWindow):
             # === 时间驱动位置计算（干净版：无冷却、无模拟时钟） ===
             time_based_pos = self._time_to_scroll_pos(effective_time)
 
-            # === [v0.4.0] 反复跳回检测: 当位置突然回退时，添加视觉偏移 ===
-            # 原理: 反复记号导致 time_to_scroll_pos 返回更小的 scroll_y，
-            #       检测到回退后给 current_position 额外减去固定偏移量，
-            #       让当前播放行显示在视口偏下位置(上方留出上下文空间)。
-            #       偏移量固定不变，随着BPM驱动播放前进，time_based_pos自然增大，
-            #       当前进距离超过偏移量时偏移自动消失（无需衰减，不会抽搐）。
-            if (self._repeat_jump_offset < 1.0
-                    and (self.current_position - time_based_pos) > self._repeat_jump_threshold):
-                # 检测到跳回: 设置固定偏移量(视口高度的1/5)
-                view_h = self.display_widget.height()
-                self._repeat_jump_offset = view_h / 5.0
-                self._repeat_jump_base_pos = time_based_pos
-
             if self._click_jump_target >= 0:
                 if time_based_pos < self._click_jump_target:
                     self.current_position = self._click_jump_target
@@ -4245,16 +4230,6 @@ class DisplayWindow(QMainWindow):
                     self._click_jump_target = -1.0
             else:
                 self.current_position = time_based_pos
-
-            # === [v0.4.0] 应用反复跳回视觉偏移 ===
-            # 固定偏移: 减去offset = 谱面往上滚 = 当前行显示在偏下位置
-            # 自然消失: 当BPM驱动time_based_pos前进超过offset距离后，偏移不再有意义
-            if self._repeat_jump_offset > 1.0:
-                # 如果播放已经前进了足够远(超过偏移量)，清除偏移
-                if (time_based_pos - self._repeat_jump_base_pos) > self._repeat_jump_offset:
-                    self._repeat_jump_offset = 0.0
-                else:
-                    self.current_position = max(0.0, self.current_position - self._repeat_jump_offset)
 
             self.play_time = effective_time / 1000.0
 
@@ -5783,108 +5758,6 @@ class DisplayWindow(QMainWindow):
             secs = int(effective_speed * self.TIME_SCALE)
             self.time_end_label.setText(f"{secs//60:02d}:{secs%60:02d}")
 
-    # ========== 全屏模式(v2.1.0新增) ==========
-
-    def toggle_fullscreen(self)->None:
-        """
-        切换全屏/窗口模式
-
-        原理: 检查当前is_fullscreen状态，调用对应的进入/退出方法
-        调用方式: 工具栏按钮点击 / F11快捷键
-
-        可调整参数: 无（纯状态切换）
-        """
-        if self.is_fullscreen:
-            self.exit_fullscreen()
-        else:
-            self.enter_fullscreen()
-
-    def enter_fullscreen(self)->None:
-        """
-        进入全屏模式
-
-        执行步骤:
-          1. 保存当前窗口几何信息(位置+大小)到_saved_geometry
-          2. 设置is_fullscreen标志为True
-          3. 调用Qt的showFullScreen()API使窗口填满屏幕
-          4. 更新工具栏按钮图标和提示文字
-
-        技术说明:
-          - saveGeometry()返回QByteArray，包含窗口位置、大小、状态(最大化/最小化等)
-          - showFullScreen()会自动隐藏窗口标题栏和边框(FramelessWindowHint)
-          - 全屏后谱面画布自动扩展填充整个屏幕空间
-        """
-        # 步骤1: 保存当前窗口状态（用于退出时恢复）
-        self._saved_geometry=self.saveGeometry()
-        print(f"[Fullscreen] 已保存窗口几何信息，准备进入全屏模式")
-
-        # 步骤2: 更新状态标志
-        self.is_fullscreen=True
-
-        # 步骤3: 进入全屏显示
-        self.showFullScreen()
-
-        # 步骤4: 更新按钮UI
-        self._update_fullscreen_button()
-
-        print(f"[Fullscreen] ✓ 已进入全屏模式")
-
-    def exit_fullscreen(self)->None:
-        """
-        退出全屏模式，恢复之前的窗口状态
-
-        执行步骤:
-          1. 设置is_fullscreen标志为False
-          2. 调用showNormal()恢复正常窗口显示
-          3. 如有保存的几何信息则恢复窗口位置和大小
-          4. 更新工具栏按钮图标和提示文字
-
-        边界情况处理:
-          - 如果_saved_geometry为None(异常情况)，使用默认大小1100x850
-          - restoreGeometry()在窗口不可见时可能失败，因此先showNormal()再restoreGeometry()
-        """
-        # 步骤1: 更新状态标志
-        self.is_fullscreen=False
-
-        # 步骤2: 先恢复正常窗口模式（这会让标题栏和边框重新显示）
-        self.showNormal()
-
-        # 步骤3: 恢复之前保存的窗口位置和大小
-        if self._saved_geometry is not None:
-            self.restoreGeometry(self._saved_geometry)
-            print(f"[Fullscreen] 已恢复窗口几何信息")
-        else:
-            # 异常降级: 使用默认大小
-            self.setGeometry(150,80,1100,850)
-            print(f"[Fullscreen] ⚠ 无保存的几何信息，使用默认大小")
-
-        # 步骤4: 更新按钮UI
-        self._update_fullscreen_button()
-
-        print(f"[Fullscreen] ✓ 已退出全屏模式，恢复正常窗口")
-
-    def _update_fullscreen_button(self)->None:
-        """
-        更新全屏按钮的图标和提示文字
-
-        原理: 根据is_fullscreen状态切换按钮视觉反馈
-          - 非全屏: 显示"展开"图标 + "进入全屏"提示
-          - 全屏模式: 显示"收缩"图标 + "退出全屏"提示
-
-        调用时机: enter_fullscreen() / exit_fullscreen() / toggle_fullscreen()
-        """
-        if not hasattr(self,'fullscreen_btn'):
-            return  # 按钮尚未创建时跳过(初始化阶段)
-
-        if self.is_fullscreen:
-            # 全屏模式: 显示退出图标和提示
-            self.fullscreen_btn.setIcon(QIcon('icons/exit-fullscreen.svg'))
-            self.fullscreen_btn.setToolTip(I18n.t("toolbar.exit_fullscreen_tooltip"))
-        else:
-            # 窗口模式: 显示进入图标和提示
-            self.fullscreen_btn.setIcon(QIcon('icons/fullscreen.svg'))
-            self.fullscreen_btn.setToolTip(I18n.t("toolbar.fullscreen_tooltip"))
-
     # ========== 键盘事件 ==========
 
     def keyPressEvent(self,event:QKeyEvent)->None:
@@ -5912,13 +5785,8 @@ class DisplayWindow(QMainWindow):
                 self.speed_spin.setValue(max(350,self.speed_spin.value()-25))
             elif event.key()==Qt.Key_Right:         # 右箭头: 加速
                 self.speed_spin.setValue(min(700,self.speed_spin.value()+25))
-            elif event.key()==Qt.Key_F11:           # F11: 切换全屏模式(v2.1.0新增)
-                self.toggle_fullscreen()
-            elif event.key()==Qt.Key_Escape:        # ESC: 全屏时退出全屏，否则关闭窗口
-                if self.is_fullscreen:
-                    self.exit_fullscreen()  # v2.1.0修改: 全屏模式下ESC退出全屏而非关闭
-                else:
-                    self.close()             # 窗口模式保持原有行为: 关闭窗口
+            elif event.key()==Qt.Key_Escape:        # ESC: 关闭
+                self.close()
             super().keyPressEvent(event)
         except Exception:
             pass
@@ -5929,40 +5797,9 @@ class DisplayWindow(QMainWindow):
         self._calculate_total_distance()
 
     def resizeEvent(self,event:QResizeEvent)->None:
-        """
-        窗口大小改变事件
-
-        功能:
-          1. 重新计算总滚动距离(_calculate_total_distance)
-          2. [v2.1.0修复] GTP模式下的播放光标时间线重建
-
-        v2.1.0修复说明:
-          全屏模式切换时窗口宽度变化导致图片缩放比例改变，
-          但GTPPlayer._playhead_timeline中的scroll_y值基于旧的display_width计算，
-          造成BPM驱动的滚动位置与实际渲染内容不匹配
-          （症状: 播放条和小节高亮"多走/少走"几行）。
-
-          修复方案: 检测到GTP模式+宽度显著变化(>50px)时自动重建timeline，
-          使用新的display_widget.width()重新计算所有scroll_y值。
-        """
+        """窗口大小改变"""
         super().resizeEvent(event)
-
-        # 基础功能: 重新计算总可滚动距离
         self._calculate_total_distance()
-
-        # [v2.1.0] GTP模式: 宽度变化时重建播放时间线(修复全屏滚动偏移bug)
-        if self.gtp_player and self.gtp_player.is_loaded and self.images and self._page_layouts:
-            new_width = self.display_widget.width()
-            # 获取上次构建timeline时的宽度(默认0表示首次或未记录)
-            old_width = getattr(self, '_last_timeline_build_width', 0)
-            # 宽度变化超过50px阈值时才重建(避免每次微小resize都重建的性能开销)
-            # 阈值说明: 50px约等于拖动窗口边缘的常规变化量，
-            #           全屏切换通常变化几百px(如1080→1920)，远超此阈值
-            if old_width > 0 and abs(new_width - old_width) > 50:
-                print(f"[ResizeEvent] 检测到宽度变化 {old_width}→{new_width} (Δ={new_width-old_width}px)，重建GTP播放时间线")
-                self._build_playhead_timeline()
-            # 记录当前宽度(用于下次比较)
-            self._last_timeline_build_width = new_width
 
 
 # ========== 导出设置对话框 ==========
@@ -6451,17 +6288,8 @@ class ExportProgressDialog(QDialog):
 class SettingsWindow(QMainWindow):
     """
     设置主窗口
-    功能: 文件夹浏览、文件列表、最近打开文件、速度配置、启动显示窗口
-    
-    最近文件功能:
-      - 在文件列表顶部显示最近4个打开过的文件
-      - 单击即可快速重新打开
-      - 数据持久化到 config/settings.json 的 recent_files 字段
-      - 每次打开新文件时自动更新最近列表(去重+截断)
+    功能: 文件夹浏览、文件列表、速度配置、启动显示窗口
     """
-
-    # 最近文件最大保存数量 / Max number of recent files to keep
-    MAX_RECENT_FILES = 4
 
     def __init__(self):
         super().__init__()
@@ -6470,7 +6298,6 @@ class SettingsWindow(QMainWindow):
         self.current_directory:str=""
         self.is_loading:bool=False
         self._loaded_files:List[Tuple]=[]
-        self._recent_files:List[str]=[]   # 最近打开的文件路径列表(绝对路径)
 
         self.init_ui()
         self._apply_theme()  # 应用深色主题
@@ -6529,30 +6356,7 @@ class SettingsWindow(QMainWindow):
         theme_layout.addStretch()
         main_layout.addLayout(theme_layout)
 
-        # === 最近打开文件列表 (独立控件，支持折叠/展开) ===
-        # Recent files list (separate widget, collapsible)
-        self._recent_expanded:bool=False  # 默认折叠 / Default collapsed
-        # 可调参数: 改为True则默认展开 / Change to True to expand by default
-
-        # 标题行: 标签 + 展开/折叠按钮 (水平布局) / Title row: label + toggle button
-        recent_header_layout=QHBoxLayout()
-        recent_header_layout.setContentsMargins(0,0,0,4)  # 减少底部间距 / Reduce bottom margin
-        # 可调参数: 边距 / Margins - adjust for more/less spacing
-        self.recent_label=QLabel(I18n.t("settings_window.recent_list_label"))  # "最近文件" 标签
-        self.recent_toggle_btn=QPushButton(I18n.t("settings_window.recent_expand"))
-        self.recent_toggle_btn.setFixedHeight(24)  # 紧凑按钮高度 / Compact button height
-        self.recent_toggle_btn.clicked.connect(self._toggle_recent_list)
-        recent_header_layout.addWidget(self.recent_label)
-        recent_header_layout.addStretch()
-        recent_header_layout.addWidget(self.recent_toggle_btn)
-
-        self.recent_list=QListWidget()
-        self.recent_list.setObjectName("recent_list_widget")  # CSS选择器ID / CSS selector ID
-        self.recent_list.itemClicked.connect(self._on_recent_file_clicked)  # 单击打开最近文件
-        self.recent_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.recent_list.customContextMenuRequested.connect(self._show_recent_context_menu)
-
-        # 文件列表 (当前目录的文件)
+        # 文件列表
         file_list_label=QLabel(I18n.t("settings_window.file_list_label"))
         search_layout=QHBoxLayout()
         search_layout.addWidget(QLabel(I18n.t("settings_window.search_label")))
@@ -6565,25 +6369,16 @@ class SettingsWindow(QMainWindow):
         search_layout.addWidget(self.clear_search_btn)
 
         self.file_list=QListWidget()
-        self.file_list.setObjectName("file_list_widget")    # CSS选择器ID / CSS selector ID
         self.file_list.itemDoubleClicked.connect(self.on_file_double_clicked)
-        # 注意: file_list不再绑定itemClicked(单击事件仅用于recent_list的最近文件)
-        # Note: file_list no longer binds itemClicked (click-to-open is for recent_list only)
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self.show_context_menu)
 
         self.original_items:List[Tuple]=[]
         self.is_searching:bool=False
 
-        # === 布局: 最近文件标题行+列表 → 间距 → 文件夹文件列表 ===
-        # Layout: recent header + list → spacing → folder file list
-        main_layout.addLayout(recent_header_layout)       # 标题行(标签+展开/折叠按钮)
-        main_layout.addWidget(self.recent_list)            # 最近文件列表(独立控件)
-        main_layout.addSpacing(8)                         # 两列表之间间距: 8px (可调范围 5-10px)
-        # 可调参数: 列表间距 / Spacing between lists - adjust for more/less gap
-        main_layout.addWidget(file_list_label)            # "文件列表"标签
-        main_layout.addLayout(search_layout)               # 搜索栏
-        main_layout.addWidget(self.file_list)              # 当前目录文件列表
+        main_layout.addWidget(file_list_label)
+        main_layout.addLayout(search_layout)
+        main_layout.addWidget(self.file_list)
 
     def _apply_theme(self)->None:
         """应用当前主题样式到SettingsWindow - 从ThemeManager读取当前主题配色"""
@@ -6601,18 +6396,11 @@ class SettingsWindow(QMainWindow):
             QSlider::groove:horizontal{{border:none;height:6px;background:{t['bg_surface']};border-radius:3px;}}
             QSlider::handle:horizontal{{background:{t['primary']};width:16px;margin:-6px 0;border-radius:8px;
                 border:2px solid{t['bg_primary']};}}
-            /* 最近文件列表样式 (独立控件，带强调色) / Recent list with accent color */
-            QListWidget#recent_list_widget{{background-color:{t['bg_surface']};color:{t['accent']};
-                border:1px solid{t['accent']};border-radius:6px;outline:none;}}
-            QListWidget#recent_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};color:{t['accent']};}}
-            QListWidget#recent_list_widget::item:selected{{background-color:{t['accent']};color:{t['bg_primary']};font-weight:bold;}}
-            QListWidget#recent_list_widget::item:hover{{background-color:{t['accent']};opacity:0.15;border-radius:4px;}}
-            /* 文件夹文件列表样式 (原有样式) / Folder file list (original style) */
-            QListWidget#file_list_widget{{background-color:{t['bg_surface']};color:{t['text_primary']};
+            QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
                 border:1px solid{t['border']};border-radius:6px;outline:none;}}
-            QListWidget#file_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};}}
-            QListWidget#file_list_widget::item:selected{{background-color:{t['primary']};color:white;}}
-            QListWidget#file_list_widget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
+            QListWidget::item{{padding:6px;border-bottom:1px solid{t['border']};}}
+            QListWidget::item:selected{{background-color:{t['primary']};color:white;}}
+            QListWidget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
             QScrollBar:vertical{{background:{t['bg_secondary']};width:10px;border-radius:5px;}}
             QScrollBar::handle:vertical{{background:{t['border']};border-radius:5px;min-height:30px;}}
             QScrollBar::handle:vertical:hover{{background:{t['text_muted']};}}
@@ -6623,8 +6411,6 @@ class SettingsWindow(QMainWindow):
         """加载配置并恢复状态 - 包含目录有效性检查"""
         try:
             self.load_config()
-            # 刷新最近文件列表 / Refresh recent files list
-            self._refresh_recent_list()
             # 恢复上次打开的文件夹(带完整性检查)
             if hasattr(self,'last_folder') and self.last_folder:
                 if os.path.isdir(self.last_folder) and os.access(self.last_folder, os.R_OK):
@@ -6640,31 +6426,24 @@ class SettingsWindow(QMainWindow):
             print(f"恢复配置出错: {e}")
 
     def load_config(self)->None:
-        """加载配置文件（含最近文件列表）"""
+        """加载配置文件"""
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE,'r',encoding='utf-8') as f:
                     cfg=json.load(f)
                     self.last_folder=cfg.get('last_folder','')
-                    # 加载最近文件列表 / Load recent files list
-                    self._recent_files=cfg.get('recent_files',[])
-                    # 过滤掉不存在的文件 / Filter out non-existent files
-                    self._recent_files=[f for f in self._recent_files if os.path.isfile(f)]
             else:
                 self.last_folder=''
-                self._recent_files=[]
         except Exception as e:
             print(f"加载配置失败: {e}")
             self.last_folder=''
-            self._recent_files=[]
 
     def save_config(self)->None:
-        """保存配置文件（含主题设置和最近文件）"""
+        """保存配置文件（包含主题设置）"""
         try:
             cfg={'last_folder':self.current_directory,
                  'language':I18n.current_language(),
-                 'theme':ThemeManager.current_name(),  # v2.0新增: 保存主题
-                 'recent_files':self._recent_files}     # 新增: 保存最近文件列表
+                 'theme':ThemeManager.current_name()}  # v2.0新增: 保存主题
             os.makedirs(os.path.dirname(CONFIG_FILE),exist_ok=True)
             with open(CONFIG_FILE,'w',encoding='utf-8') as f:
                 json.dump(cfg,f,ensure_ascii=False,indent=2)
@@ -6735,48 +6514,6 @@ class SettingsWindow(QMainWindow):
         # 保存设置
         self.save_config()
 
-    def _add_recent_file(self, file_path: str) -> None:
-        """
-        将文件添加到最近打开列表
-        
-        原理:
-          1. 将新文件插入到列表头部(最新的在最前面)
-          2. 去重: 如果文件已在列表中，先移除旧位置再插入头部
-          3. 截断: 只保留最近的 MAX_RECENT_FILES(4) 条记录
-          4. 持久化: 立即保存到 config/settings.json
-        
-        参数:
-            file_path: 文件的绝对路径
-        
-        注意:
-          - 仅处理单个文件路径(字符串)，不处理图片列表
-          - 路径会统一转为绝对路径后存储
-        """
-        if not file_path or not isinstance(file_path, str):
-            return
-        
-        # 统一转为绝对路径 / Convert to absolute path
-        abs_path = os.path.abspath(file_path)
-        
-        # 检查是否为支持的文件格式 / Check if supported format
-        ext = os.path.splitext(abs_path)[1].lower()
-        if ext not in SUPPORTED_ALL_EXTENSIONS:
-            return
-        
-        # 去重: 先移除已存在的相同路径 / Deduplicate: remove existing
-        if abs_path in self._recent_files:
-            self._recent_files.remove(abs_path)
-        
-        # 插入到列表头部 / Insert at head (most recent first)
-        self._recent_files.insert(0, abs_path)
-        
-        # 截断到最大数量 / Truncate to max count
-        self._recent_files = self._recent_files[:self.MAX_RECENT_FILES]
-        
-        # 持久化保存 + 刷新UI / Persist and refresh UI
-        self.save_config()
-        self._refresh_recent_list()
-
     def select_folder(self)->None:
         """选择文件夹"""
         folder=QFileDialog.getExistingDirectory(self,I18n.t("settings_window.folder_dialog_title"),"",QFileDialog.ShowDirsOnly)
@@ -6798,16 +6535,11 @@ class SettingsWindow(QMainWindow):
         pool.start(worker)
 
     def _on_files_loaded(self, result: List[Tuple])->None:
-        """
-        文件列表加载完成 - result为文件列表[(name,path,is_dir),...]
-        
-        说明: 最近文件已由独立的 recent_list 控件显示，此处仅处理当前目录的文件
-        """
+        """文件列表加载完成 - result为文件列表[(name,path,is_dir),...]"""
         self.is_loading=False;self.file_list.clear()
         self.original_items=[];self.is_searching=False;self.search_edit.clear()
         self._loaded_files=result  # 接收并存储加载结果
 
-        # === 原有的目录/文件列表逻辑 (保持不变) ===
         if self.current_directory and self.current_directory!=os.path.dirname(self.current_directory):
             up=QListWidgetItem(I18n.t("settings_window.parent_dir"))
             up.setData(Qt.UserRole,os.path.dirname(self.current_directory));up.setData(Qt.UserRole+1,True)
@@ -6833,166 +6565,6 @@ class SettingsWindow(QMainWindow):
             QMessageBox.warning(self,I18n.t("settings_window.permission_denied_title"),I18n.t("settings_window.permission_denied_msg", msg=msg))
         else:
             QMessageBox.critical(self,I18n.t("messages.load_error"),I18n.t("messages.load_error_msg", msg=msg))
-
-    def _on_recent_file_clicked(self, item: QListWidgetItem) -> None:
-        """
-        最近文件列表项单击处理 - 单击即可打开文件
-        
-        原理:
-          - 从 item 的 Qt.UserRole 获取文件绝对路径
-          - 根据扩展名判断类型(PDF/图片/GTP)并调用 show_display()
-        
-        参数:
-            item: 被单击的最近文件 QListWidgetItem 对象
-        """
-        if not item or self.is_loading:
-            return
-        
-        fpath = item.data(Qt.UserRole)
-        if fpath and os.path.isfile(fpath):
-            ext = os.path.splitext(fpath)[1].lower()
-            if ext in SUPPORTED_PDF_EXTENSIONS:
-                self.show_display(fpath, 'pdf')
-            elif ext in SUPPORTED_IMAGE_EXTENSIONS:
-                self.show_display([fpath], 'images')
-            elif ext in SUPPORTED_GTP_EXTENSIONS:
-                self.show_display(fpath, 'gtp')
-
-    def _show_recent_context_menu(self, pos: QPoint) -> None:
-        """
-        最近文件列表的右键菜单
-        
-        功能: 提供打开文件、在资源管理器中定位等操作
-        """
-        item=self.recent_list.itemAt(pos)
-        if not item:return
-        fpath=item.data(Qt.UserRole)
-        if not fpath or not os.path.isfile(fpath):return
-        
-        menu=QMenu(self)
-        menu.addAction(I18n.t("settings_window.context_view_file"), 
-                      lambda:self._open_recent_file_by_path(fpath))
-        menu.addSeparator()
-        menu.addAction(I18n.t("settings_window.context_open_location"),
-                      lambda:self.open_file_location(fpath))
-        # 添加"从列表移除"选项 / Add "Remove from list" option
-        menu.addAction(I18n.t("settings_window.recent_remove"), 
-                      lambda:self._remove_recent_file(fpath))
-        menu.exec_(self.recent_list.mapToGlobal(pos))
-
-    def _open_recent_file_by_path(self, fpath: str) -> None:
-        """根据路径打开最近文件(供右键菜单调用)"""
-        if not fpath or not os.path.isfile(fpath):
-            return
-        ext = os.path.splitext(fpath)[1].lower()
-        if ext in SUPPORTED_PDF_EXTENSIONS:
-            self.show_display(fpath, 'pdf')
-        elif ext in SUPPORTED_IMAGE_EXTENSIONS:
-            self.show_display([fpath], 'images')
-        elif ext in SUPPORTED_GTP_EXTENSIONS:
-            self.show_display(fpath, 'gtp')
-
-    def _remove_recent_file(self, fpath: str) -> None:
-        """
-        从最近文件列表中移除指定文件
-        
-        参数:
-            fpath: 要移除的文件绝对路径
-        """
-        if fpath in self._recent_files:
-            self._recent_files.remove(fpath)
-            self.save_config()  # 持久化
-            self._refresh_recent_list()  # 刷新UI
-
-    def _refresh_recent_list(self) -> None:
-        """
-        刷新最近文件列表控件 (独立recent_list)
-        
-        原理:
-          1. 清空 recent_list 控件
-          2. 如果有最近文件记录，添加分隔标题行
-          3. 遍历 _recent_files 列表，逐个添加到控件
-          4. 使用强调色(橙色)突出显示文件名
-          5. 跳过不存在的文件(已被load_config过滤，但二次校验)
-        
-        调用时机:
-          - load_config() 加载配置后
-          - _add_recent_file() 添加新文件后
-          - _remove_recent_file() 移除文件后
-          - _load_config_and_restore() 启动恢复时
-        """
-        self.recent_list.clear()
-        
-        if not self._recent_files:
-            # 无最近文件时显示提示 / Show hint when empty
-            empty_item=QListWidgetItem(I18n.t("settings_window.recent_empty"))
-            empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsEnabled)
-            empty_item.setForeground(QColor(ThemeManager.get('text_muted')))
-            self.recent_list.addItem(empty_item)
-            # 根据内容计算紧贴高度 / Calculate tight-fitting height from content
-            row_h=self.recent_list.sizeHintForRow(0) if self.recent_list.count()>0 else 28
-            self.recent_list.setFixedHeight(row_h + 12)  # +12px 边框内边距 / +12px border+padding
-            return
-        
-        # 添加最近文件: 折叠时只显示1个(最新)，展开时显示全部
-        # Add recent files: collapsed=show only 1 (latest), expanded=all
-        files_to_show = self._recent_files if self._recent_expanded else self._recent_files[:1]
-        
-        for recent_path in files_to_show:
-            if not os.path.isfile(recent_path):
-                continue  # 跳过不存在的文件 / Skip non-existent files
-            
-            filename=os.path.basename(recent_path)
-            item=QListWidgetItem(f"📄 {filename}")
-            
-            # 存储数据: UserRole=绝对路径 / Store absolute path
-            item.setData(Qt.UserRole, recent_path)
-            item.setToolTip(I18n.t("settings_window.recent_file_tooltip") + f"\n{recent_path}")
-            
-            # 颜色由CSS控制: 默认accent色，选中时bg_primary色+加粗
-            # Color controlled by CSS: default=accent, selected=bg_primary+bold
-            
-            self.recent_list.addItem(item)
-
-        # 根据展开/折叠状态设置高度 / Set height based on expand/collapse state
-        self._apply_recent_list_height()
-
-    def _apply_recent_list_height(self) -> None:
-        """
-        根据当前展开/折叠状态设置最近列表高度
-        
-        原理:
-          - 使用 sizeHintForRow(0) 获取单行精确高度
-          - 高度 = 行高 × 实际项数 + 边距
-        """
-        if self.recent_list.count() <= 0:
-            self.recent_list.setFixedHeight(32)
-            return
-        
-        row_h = self.recent_list.sizeHintForRow(0)
-        # 直接按实际项数计算，折叠时只有1项自然就是1行
-        # Height = row_h * actual count (collapsed=1 item → 1 row, no scroll)
-        self.recent_list.setFixedHeight(row_h * self.recent_list.count() + 12)
-
-    def _toggle_recent_list(self) -> None:
-        """
-        切换最近文件列表的展开/折叠状态
-        
-        原理:
-          1. 翻转 _recent_expanded 布尔值
-          2. 更新按钮文字(展开↔折叠)
-          3. 重新构建列表内容(折叠只显示1项，展开显示全部)
-        """
-        self._recent_expanded = not self._recent_expanded
-        
-        # 更新按钮文字 / Update button text
-        if self._recent_expanded:
-            self.recent_toggle_btn.setText(I18n.t("settings_window.recent_collapse"))
-        else:
-            self.recent_toggle_btn.setText(I18n.t("settings_window.recent_expand"))
-        
-        # 重建列表内容(折叠/展开显示不同数量的项) / Rebuild list content
-        self._refresh_recent_list()
 
     def on_file_double_clicked(self,item:QListWidgetItem)->None:
         """双击文件项 - 图片格式自动加载同目录所有图片(按序拼接)"""
@@ -7105,23 +6677,9 @@ class SettingsWindow(QMainWindow):
             self.show_display(images,'images')
 
     def show_display(self,fpath,ftype:str)->None:
-        """
-        显示谱面窗口
-        
-        修改说明: 
-          - 打开文件时自动将文件路径添加到最近文件列表
-          - 仅对单个文件路径记录(字符串)，不记录图片列表
-        
-        参数:
-            fpath: 文件路径(单个文件字符串 或 图片列表)
-            ftype: 文件类型 ('pdf'|'images'|'gtp')
-        """
+        """显示谱面窗口"""
         # 默认播放速度 500ms（中等速度）
         speed=500
-
-        # 记录到最近文件列表 / Add to recent files list (仅单文件路径)
-        if isinstance(fpath, str) and fpath:
-            self._add_recent_file(fpath)
 
         if not self.display_window or not self.display_window.isVisible():
             self.display_window=DisplayWindow(fpath,ftype,speed)
