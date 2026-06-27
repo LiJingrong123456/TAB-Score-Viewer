@@ -413,7 +413,7 @@ Both TAB Score Viewer and the [ApolloTab](https://github.com/Zhuwenqian/ApolloTa
 
 ### AI Assistance Disclosure
 
-The code in this project is **AI-assisted (GLM-5V-Turbo)**. The author is responsible for architecture design, feature planning, code review, and integration. AI tools significantly improved development efficiency, but all core design decisions were made by a human.
+The code in this project is **AI-assisted**. The author is responsible for architecture design, feature planning, code review, and integration. AI tools significantly improved development efficiency, but all core design decisions were made by a human.
 
 ---
 
@@ -852,4 +852,4 @@ TAB Score Viewer 与 [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) 引擎
 
 ### AI 辅助声明
 
-本项目代码由 **AI（GLM-5V-Turbo）辅助生成**，作者负责架构设计、功能规划、代码审查与整合。AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。
+本项目代码由 **AI辅助生成**，作者负责架构设计、功能规划、代码审查与整合。AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。
