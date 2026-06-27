@@ -63,7 +63,7 @@ Dependencies / 依赖库:
                        # 图片处理(PNG/JPG/WEBP解码) (开源项目: Python Imaging Library)
   - guitarpro >= 0.11 # Guitar Pro file parsing (Open Source: pyguitarpro) - GTP dependency
                        # Guitar Pro文件解析 (开源项目: pyguitarpro) - GTP渲染功能依赖
-  - ApolloTab == 0.3.7  # GTP tablature rendering (Open Source: ApolloTab)
+  - ApolloTab >= 0.3.7  # GTP tablature rendering (Open Source: ApolloTab)
                        # GTP六线谱渲染 (开源项目: ApolloTab)
 
 Tech Stack / 技术栈: Python 3.8+ / PyQt5 / PyMuPDF / Pillow / guitarpro(gtp_engine)
