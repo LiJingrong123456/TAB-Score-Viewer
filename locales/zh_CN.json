@@ -55,7 +55,12 @@
     "time_label": "时间: {time}",
     "shortcut_help": "空格: 播放/暂停\n↑↓: 调整位置\n←→: 微调速度\nCtrl+K: 鼠标位置添加标注\n右键谱面: 添加标注\nESC: 关闭",
     "shortcut_group": "快捷键",
-    "volume_group": "音轨音量 (GTP)"
+    "volume_group": "音轨音量 (GTP)",
+    "metronome_group": "节拍器",
+    "metronome_enable": "启用节拍器",
+    "metronome_volume": "音量:",
+    "metronome_bpm": "BPM:",
+    "metronome_beat": "拍号:"
   },
   "bottom_bar": {
     "page_total": "/ {total}"

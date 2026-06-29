@@ -55,7 +55,12 @@
     "time_label": "Time: {time}",
     "shortcut_help": "Space: Play/Pause\nUp/Down: Adjust Position\nLeft/Right: Fine-tune Speed\nCtrl+K: Add annotation at cursor\nRight-click score: Add annotation\nESC: Close",
     "shortcut_group": "Shortcuts",
-    "volume_group": "Track Volume (GTP)"
+    "volume_group": "Track Volume (GTP)",
+    "metronome_group": "Metronome",
+    "metronome_enable": "Enable Metronome",
+    "metronome_volume": "Volume:",
+    "metronome_bpm": "BPM:",
+    "metronome_beat": "Beat:"
   },
   "bottom_bar": {
     "page_total": "/ {total}"

@@ -3296,6 +3296,13 @@ class DisplayWindow(QMainWindow):
         # 当用户暂停播放时，保存当前音频时间，恢复播放时从此位置继续
         self._paused_time_ms:float=0.0
 
+        # === [v1.1.3] 节拍器状态 ===
+        self._metronome_enabled:bool=False      # 是否启用节拍器
+        self._metronome_volume:float=0.7        # 节拍器音量 (0.0~1.0)
+        self._metronome_bpm:int=120             # 图片/PDF 模式下手动 BPM
+        self._metronome_numerator:int=4         # 图片/PDF 模式下拍号分子
+        self._metronome_denominator:int=4       # 图片/PDF 模式下拍号分母(固定4)
+
         # === 全屏模式状态(v2.1.0新增) ===
         # is_fullscreen: 当前是否处于全屏模式
         # _saved_geometry: 进入全屏前保存的窗口几何信息(位置+大小)，用于退出时精确恢复
@@ -3592,6 +3599,51 @@ class DisplayWindow(QMainWindow):
         pl.addLayout(ab_row)
         layout.addWidget(pg)
 
+        # === [v1.1.3] 节拍器控制 ===
+        # 所有模式都显示节拍器分组；GTP模式自动读取歌曲BPM/拍号，
+        # 图片/PDF模式显示手动BPM/拍号输入。
+        self.metronome_group_box=QGroupBox(I18n.t("control_panel.metronome_group"))
+        mgl=QVBoxLayout(self.metronome_group_box)
+        mgl.setSpacing(6)
+
+        # 启用开关
+        self.metronome_enable_check=QCheckBox(I18n.t("control_panel.metronome_enable"))
+        self.metronome_enable_check.setChecked(self._metronome_enabled)
+        self.metronome_enable_check.stateChanged.connect(self._on_metronome_enabled_changed)
+        mgl.addWidget(self.metronome_enable_check)
+
+        # 音量滑块
+        mv_row=QHBoxLayout()
+        mv_row.addWidget(QLabel(I18n.t("control_panel.metronome_volume")))
+        self.metronome_volume_slider=QSlider(Qt.Horizontal)
+        self.metronome_volume_slider.setRange(0,100)
+        self.metronome_volume_slider.setValue(int(self._metronome_volume*100))
+        self.metronome_volume_slider.valueChanged.connect(self._on_metronome_volume_changed)
+        mv_row.addWidget(self.metronome_volume_slider)
+        mgl.addLayout(mv_row)
+
+        # BPM输入 (图片/PDF模式使用)
+        mbpm_row=QHBoxLayout()
+        mbpm_row.addWidget(QLabel(I18n.t("control_panel.metronome_bpm")))
+        self.metronome_bpm_spin=QSpinBox()
+        self.metronome_bpm_spin.setRange(20,300)
+        self.metronome_bpm_spin.setValue(self._metronome_bpm)
+        self.metronome_bpm_spin.valueChanged.connect(self._on_metronome_bpm_changed)
+        mbpm_row.addWidget(self.metronome_bpm_spin)
+        mgl.addLayout(mbpm_row)
+
+        # 拍号输入 (图片/PDF模式使用，分母固定为4)
+        mbeat_row=QHBoxLayout()
+        mbeat_row.addWidget(QLabel(I18n.t("control_panel.metronome_beat")))
+        self.metronome_beat_spin=QSpinBox()
+        self.metronome_beat_spin.setRange(1,16)
+        self.metronome_beat_spin.setValue(self._metronome_numerator)
+        self.metronome_beat_spin.valueChanged.connect(self._on_metronome_beat_changed)
+        mbeat_row.addWidget(self.metronome_beat_spin)
+        mgl.addLayout(mbeat_row)
+
+        layout.addWidget(self.metronome_group_box)
+
         # === 速度控制(非GTP文件显示，GTP文件由BPM驱动自动隐藏) ===
         self.speed_group_box=QGroupBox(I18n.t("control_panel.speed_group"));sl=QVBoxLayout(self.speed_group_box)
         sr=QHBoxLayout();sr.addWidget(QLabel(I18n.t("control_panel.speed_label")))
@@ -3755,7 +3807,15 @@ class DisplayWindow(QMainWindow):
                 self.speed_group_box.setVisible(False)
             if hasattr(self, 'curve_status_label'):
                 self.curve_status_label.setVisible(False)
+            # [v1.1.3] GTP模式: 隐藏节拍器BPM/拍号手动输入(自动跟随歌曲)
+            if hasattr(self, 'metronome_bpm_spin'):
+                self.metronome_bpm_spin.setVisible(False)
+            if hasattr(self, 'metronome_beat_spin'):
+                self.metronome_beat_spin.setVisible(False)
         else:
+            # [v1.1.3] 图片/PDF 模式也需要初始化音频引擎，以便使用节拍器
+            self._init_audio_engine()
+
             if self.gtp_track_combo:
                 self.gtp_track_combo.setVisible(False)
             if self.audio_btn:
@@ -3769,10 +3829,15 @@ class DisplayWindow(QMainWindow):
                 self.speed_group_box.setVisible(True)
             if hasattr(self, 'curve_status_label'):
                 self.curve_status_label.setVisible(True)
-            
+
             # 非GTP文件: 隐藏音量控制面板
             if hasattr(self, 'volume_group_box'):
                 self.volume_group_box.setVisible(False)
+            # [v1.1.3] 图片/PDF模式: 显示节拍器BPM/拍号手动输入
+            if hasattr(self, 'metronome_bpm_spin'):
+                self.metronome_bpm_spin.setVisible(True)
+            if hasattr(self, 'metronome_beat_spin'):
+                self.metronome_beat_spin.setVisible(True)
 
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)
@@ -4064,10 +4129,19 @@ class DisplayWindow(QMainWindow):
         self._last_tick_time = time.perf_counter()  # 重置时间戳，从当前时刻开始计时
         # Phase 3: 同时启动音频引擎
         if self.gtp_player and self.gtp_player.is_audio_ready:
-            # 恢复播放: 如果有暂停时保存的时间，从该位置继续
-            if self._paused_time_ms > 0:
-                self.gtp_player.seek(self._paused_time_ms)
-            self.gtp_player.play()
+            if self.file_type == 'gtp':
+                # 恢复播放: 如果有暂停时保存的时间，从该位置继续
+                if self._paused_time_ms > 0:
+                    self.gtp_player.seek(self._paused_time_ms)
+                self.gtp_player.play()
+            else:
+                # [v1.1.3] 图片/PDF 模式下仅播放节拍器(如果启用)
+                if self._metronome_enabled:
+                    self.gtp_player.play_metronome_only(
+                        self._metronome_bpm,
+                        self._metronome_numerator,
+                        self._metronome_denominator
+                    )
         self.play_btn.setText(I18n.t("control_panel.pause_btn"))
         self.play_btn.set_color('warning')  # 暂停状态: 橙色警告色
         self.stop_btn.setEnabled(True)
@@ -4122,20 +4196,22 @@ class DisplayWindow(QMainWindow):
     def _init_audio_engine(self)->None:
         """
         Phase 3/4: 初始化音频播放引擎(GTP文件加载后调用)
-        
+
         原理: 使用 GTPPlayer.init_audio() 统一初始化所有音频相关功能，
               包括解析GTP文件、创建MIDI转换器、初始化FluidSynth合成器、
               加载SoundFont音色、转换MIDI事件等。
-              
-        注意: 此方法在 _on_content_loaded 中调用，仅对 GTP 文件生效。
-              默认模式为"全轨并轨"，用户可通过按钮菜单切换。
-              如果 fluidsynth 未安装会优雅降级（音频按钮显示为禁用状态）。
+
+        注意:
+              - [v1.1.3] 此方法在 _on_content_loaded 中对 GTP 和图片/PDF 模式均调用，
+                因为图片/PDF 模式下也可能使用节拍器功能。
+              - 默认模式为"全轨并轨"，用户可通过按钮菜单切换。
+              - 如果 fluidsynth 未安装会优雅降级（音频按钮显示为禁用状态）。
         """
+        # [v1.1.3] 图片/PDF 模式下 gtp_player 可能为 None，需要创建一个空实例用于节拍器
         if not self.gtp_player:
-            print("[Audio] 错误: GTP播放器未初始化")
-            self.audio_btn.setEnabled(False)
-            return
-        
+            from ApolloTab import GTPPlayer
+            self.gtp_player = GTPPlayer()
+
         # === 确保SoundFont音色库可被找到(开发模式+打包模式兼容) ===
         # 原理: ApolloTab的SynthEngine使用相对路径搜索sf2文件,
         #       PyInstaller不同打包模式数据文件位置不同:
@@ -4189,7 +4265,10 @@ class DisplayWindow(QMainWindow):
         # 更新时间线数据
         self._playhead_timeline = self.gtp_player.playhead_timeline
         self._total_audio_duration_ms = self.gtp_player.total_duration_ms
-    
+
+        # [v1.1.3] 同步节拍器配置到 ApolloTab
+        self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume)
+
     def _set_audio_mode(self, mode: str)->None:
         """
         Phase 3/4: 切换音频播放模式(3种模式)
@@ -4770,6 +4849,80 @@ class DisplayWindow(QMainWindow):
         self.display_widget.set_active_page(current_page - 1)  # 转为0-based索引
 
     # ========== 事件处理 ==========
+
+    def _on_metronome_enabled_changed(self, state: int) -> None:
+        """
+        [v1.1.3] 节拍器启用开关回调
+
+        原理:
+          - 更新内部开关状态
+          - 若音频引擎已初始化，调用 GTPPlayer.set_metronome() 同步到 ApolloTab
+          - 图片/PDF 模式下若正在播放，启用时启动节拍器，禁用时停止
+        """
+        self._metronome_enabled = (state == Qt.Checked)
+
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume)
+
+        # 图片/PDF 模式下正在播放时，立即应用开关变化
+        if self.file_type != 'gtp' and self.timer.isActive():
+            if self.gtp_player and self.gtp_player.is_audio_ready:
+                if self._metronome_enabled:
+                    self.gtp_player.play_metronome_only(
+                        self._metronome_bpm,
+                        self._metronome_numerator,
+                        self._metronome_denominator
+                    )
+                else:
+                    self.gtp_player.stop()
+
+    def _on_metronome_volume_changed(self, value: int) -> None:
+        """
+        [v1.1.3] 节拍器音量滑块回调
+
+        原理:
+          - 将 0~100 映射到 0.0~1.0
+          - 同步到 GTPPlayer.set_metronome()，使音量立即生效
+        """
+        self._metronome_volume = value / 100.0
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume)
+
+    def _on_metronome_bpm_changed(self, value: int) -> None:
+        """
+        [v1.1.3] 图片/PDF 模式下 BPM 改变回调
+
+        原理:
+          - 仅影响图片/PDF 模式下的纯节拍器播放
+          - 若正在播放，停止后重新生成事件并播放
+        """
+        self._metronome_bpm = value
+        if self.file_type != 'gtp' and self.timer.isActive():
+            if self.gtp_player and self.gtp_player.is_audio_ready and self._metronome_enabled:
+                self.gtp_player.stop()
+                self.gtp_player.play_metronome_only(
+                    self._metronome_bpm,
+                    self._metronome_numerator,
+                    self._metronome_denominator
+                )
+
+    def _on_metronome_beat_changed(self, value: int) -> None:
+        """
+        [v1.1.3] 图片/PDF 模式下拍号改变回调
+
+        原理:
+          - 仅影响图片/PDF 模式下的纯节拍器播放
+          - 若正在播放，停止后重新生成事件并播放
+        """
+        self._metronome_numerator = value
+        if self.file_type != 'gtp' and self.timer.isActive():
+            if self.gtp_player and self.gtp_player.is_audio_ready and self._metronome_enabled:
+                self.gtp_player.stop()
+                self.gtp_player.play_metronome_only(
+                    self._metronome_bpm,
+                    self._metronome_numerator,
+                    self._metronome_denominator
+                )
 
     def _on_speed_changed(self,val:int)->None:
         """

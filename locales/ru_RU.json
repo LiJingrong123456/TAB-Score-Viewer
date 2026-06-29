@@ -55,7 +55,12 @@
     "time_label": "Время: {time}",
     "shortcut_help": "Пробел: Играть/Пауза\n↑/↓: Изменить позицию\n←/→: Точная настройка скорости\nCtrl+K: Добавить аннотацию в позиции курсора\nПКМ по партитуре: Добавить аннотацию\nESC: Закрыть",
     "shortcut_group": "Горячие клавиши",
-    "volume_group": "Громкость дорожек (GTP)"
+    "volume_group": "Громкость дорожек (GTP)",
+    "metronome_group": "Метроном",
+    "metronome_enable": "Включить метроном",
+    "metronome_volume": "Громкость:",
+    "metronome_bpm": "BPM:",
+    "metronome_beat": "Размер:"
   },
   "bottom_bar": {
     "page_total": "из {total}"
