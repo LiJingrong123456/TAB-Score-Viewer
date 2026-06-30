@@ -59,6 +59,7 @@
     "metronome_group": "Метроном",
     "metronome_enable": "Включить метроном",
     "metronome_volume": "Громкость:",
+    "metronome_gain": "Усиление:",
     "metronome_bpm": "BPM:",
     "metronome_beat": "Размер:"
   },

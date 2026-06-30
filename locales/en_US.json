@@ -59,8 +59,9 @@
     "metronome_group": "Metronome",
     "metronome_enable": "Enable Metronome",
     "metronome_volume": "Volume:",
+    "metronome_gain": "Gain:",
     "metronome_bpm": "BPM:",
-    "metronome_beat": "Beat:"
+    "metronome_beat": "Time Sig.:"
   },
   "bottom_bar": {
     "page_total": "/ {total}"

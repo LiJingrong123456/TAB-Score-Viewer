@@ -59,6 +59,7 @@
     "metronome_group": "节拍器",
     "metronome_enable": "启用节拍器",
     "metronome_volume": "音量:",
+    "metronome_gain": "增益:",
     "metronome_bpm": "BPM:",
     "metronome_beat": "拍号:"
   },

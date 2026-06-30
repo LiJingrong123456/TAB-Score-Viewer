@@ -51,8 +51,8 @@ Core Features / 核心功能:
      全屏模式 - F11切换/工具栏按钮/ESC智能行为(全屏时退出全屏而非关闭)
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-06-20 (v2.1.0 - Fullscreen Mode + GTP scroll bug fix)
-最后修改: 2026-06-20 (v2.1.0 - 全屏模式 + GTP滚动偏移修复)
+Last Modified: 2026-06-30 (v2.1.1 - Metronome gain + time signature denominator)
+最后修改: 2026-06-30 (v2.1.1 - 节拍器全局增益 + 拍号分母输入)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -3299,9 +3299,10 @@ class DisplayWindow(QMainWindow):
         # === [v1.1.3] 节拍器状态 ===
         self._metronome_enabled:bool=False      # 是否启用节拍器
         self._metronome_volume:float=0.7        # 节拍器音量 (0.0~1.0)
+        self._metronome_gain:float=1.5          # 节拍器全局增益 (1.0~5.0)，解决被乐器声掩盖
         self._metronome_bpm:int=120             # 图片/PDF 模式下手动 BPM
         self._metronome_numerator:int=4         # 图片/PDF 模式下拍号分子
-        self._metronome_denominator:int=4       # 图片/PDF 模式下拍号分母(固定4)
+        self._metronome_denominator:int=4       # 图片/PDF 模式下拍号分母
 
         # === 全屏模式状态(v2.1.0新增) ===
         # is_fullscreen: 当前是否处于全屏模式
@@ -3622,6 +3623,17 @@ class DisplayWindow(QMainWindow):
         mv_row.addWidget(self.metronome_volume_slider)
         mgl.addLayout(mv_row)
 
+        # 全局增益滑块 (解决节拍器被其他乐器掩盖)
+        mgain_row=QHBoxLayout()
+        mgain_row.addWidget(QLabel(I18n.t("control_panel.metronome_gain")))
+        self.metronome_gain_slider=QSlider(Qt.Horizontal)
+        # 范围 1.0~5.0，步进 0.1，用整数 10~50 表示，默认 1.5x
+        self.metronome_gain_slider.setRange(10,50)
+        self.metronome_gain_slider.setValue(int(self._metronome_gain*10))
+        self.metronome_gain_slider.valueChanged.connect(self._on_metronome_gain_changed)
+        mgain_row.addWidget(self.metronome_gain_slider)
+        mgl.addLayout(mgain_row)
+
         # BPM输入 (图片/PDF模式使用)
         mbpm_row=QHBoxLayout()
         mbpm_row.addWidget(QLabel(I18n.t("control_panel.metronome_bpm")))
@@ -3632,7 +3644,7 @@ class DisplayWindow(QMainWindow):
         mbpm_row.addWidget(self.metronome_bpm_spin)
         mgl.addLayout(mbpm_row)
 
-        # 拍号输入 (图片/PDF模式使用，分母固定为4)
+        # 拍号输入 (图片/PDF模式使用，显示为 "分子 / 分母" 分数形式)
         mbeat_row=QHBoxLayout()
         mbeat_row.addWidget(QLabel(I18n.t("control_panel.metronome_beat")))
         self.metronome_beat_spin=QSpinBox()
@@ -3640,6 +3652,13 @@ class DisplayWindow(QMainWindow):
         self.metronome_beat_spin.setValue(self._metronome_numerator)
         self.metronome_beat_spin.valueChanged.connect(self._on_metronome_beat_changed)
         mbeat_row.addWidget(self.metronome_beat_spin)
+        mbeat_row.addWidget(QLabel("/"))
+        self.metronome_beat_denominator_spin=QSpinBox()
+        # 分母常见为 2/4/8/16，范围限制为 1~32 的 2 的幂更合理，但用 1~32 保持灵活
+        self.metronome_beat_denominator_spin.setRange(1,32)
+        self.metronome_beat_denominator_spin.setValue(self._metronome_denominator)
+        self.metronome_beat_denominator_spin.valueChanged.connect(self._on_metronome_beat_denominator_changed)
+        mbeat_row.addWidget(self.metronome_beat_denominator_spin)
         mgl.addLayout(mbeat_row)
 
         layout.addWidget(self.metronome_group_box)
@@ -3808,10 +3827,13 @@ class DisplayWindow(QMainWindow):
             if hasattr(self, 'curve_status_label'):
                 self.curve_status_label.setVisible(False)
             # [v1.1.3] GTP模式: 隐藏节拍器BPM/拍号手动输入(自动跟随歌曲)
+            # 增益滑块始终可见，因为GTP模式下也需要全局增益
             if hasattr(self, 'metronome_bpm_spin'):
                 self.metronome_bpm_spin.setVisible(False)
             if hasattr(self, 'metronome_beat_spin'):
                 self.metronome_beat_spin.setVisible(False)
+            if hasattr(self, 'metronome_beat_denominator_spin'):
+                self.metronome_beat_denominator_spin.setVisible(False)
         else:
             # [v1.1.3] 图片/PDF 模式也需要初始化音频引擎，以便使用节拍器
             self._init_audio_engine()
@@ -3838,6 +3860,8 @@ class DisplayWindow(QMainWindow):
                 self.metronome_bpm_spin.setVisible(True)
             if hasattr(self, 'metronome_beat_spin'):
                 self.metronome_beat_spin.setVisible(True)
+            if hasattr(self, 'metronome_beat_denominator_spin'):
+                self.metronome_beat_denominator_spin.setVisible(True)
 
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)
@@ -4267,7 +4291,7 @@ class DisplayWindow(QMainWindow):
         self._total_audio_duration_ms = self.gtp_player.total_duration_ms
 
         # [v1.1.3] 同步节拍器配置到 ApolloTab
-        self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume)
+        self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume, self._metronome_gain)
 
     def _set_audio_mode(self, mode: str)->None:
         """
@@ -4862,7 +4886,7 @@ class DisplayWindow(QMainWindow):
         self._metronome_enabled = (state == Qt.Checked)
 
         if self.gtp_player and self.gtp_player.is_audio_ready:
-            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume)
+            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume, self._metronome_gain)
 
         # 图片/PDF 模式下正在播放时，立即应用开关变化
         if self.file_type != 'gtp' and self.timer.isActive():
@@ -4886,7 +4910,30 @@ class DisplayWindow(QMainWindow):
         """
         self._metronome_volume = value / 100.0
         if self.gtp_player and self.gtp_player.is_audio_ready:
-            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume)
+            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume, self._metronome_gain)
+
+    def _on_metronome_gain_changed(self, value: int) -> None:
+        """
+        [v1.1.4] 节拍器全局增益滑块回调
+
+        原理:
+          - 将滑块整数 10~50 映射到增益 1.0~5.0
+          - 同步到 GTPPlayer.set_metronome()，使增益立即生效
+          - 图片/PDF 模式下若正在播放，重新生成节拍器事件以应用新增益
+        """
+        self._metronome_gain = value / 10.0
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            self.gtp_player.set_metronome(self._metronome_enabled, self._metronome_volume, self._metronome_gain)
+
+        # 图片/PDF 模式下正在播放时，立即重新生成事件应用增益
+        if self.file_type != 'gtp' and self.timer.isActive():
+            if self.gtp_player and self.gtp_player.is_audio_ready and self._metronome_enabled:
+                self.gtp_player.stop()
+                self.gtp_player.play_metronome_only(
+                    self._metronome_bpm,
+                    self._metronome_numerator,
+                    self._metronome_denominator
+                )
 
     def _on_metronome_bpm_changed(self, value: int) -> None:
         """
@@ -4908,13 +4955,32 @@ class DisplayWindow(QMainWindow):
 
     def _on_metronome_beat_changed(self, value: int) -> None:
         """
-        [v1.1.3] 图片/PDF 模式下拍号改变回调
+        [v1.1.3] 图片/PDF 模式下拍号分子改变回调
 
         原理:
           - 仅影响图片/PDF 模式下的纯节拍器播放
           - 若正在播放，停止后重新生成事件并播放
         """
         self._metronome_numerator = value
+        if self.file_type != 'gtp' and self.timer.isActive():
+            if self.gtp_player and self.gtp_player.is_audio_ready and self._metronome_enabled:
+                self.gtp_player.stop()
+                self.gtp_player.play_metronome_only(
+                    self._metronome_bpm,
+                    self._metronome_numerator,
+                    self._metronome_denominator
+                )
+
+    def _on_metronome_beat_denominator_changed(self, value: int) -> None:
+        """
+        [v1.1.4] 图片/PDF 模式下拍号分母改变回调
+
+        原理:
+          - 分母决定以什么音符为一拍（如 4=四分音符，8=八分音符）
+          - 仅影响图片/PDF 模式下的纯节拍器播放
+          - 若正在播放，停止后重新生成事件并播放
+        """
+        self._metronome_denominator = value
         if self.file_type != 'gtp' and self.timer.isActive():
             if self.gtp_player and self.gtp_player.is_audio_ready and self._metronome_enabled:
                 self.gtp_player.stop()
