@@ -440,7 +440,7 @@ Used via ApolloTab engine for MIDI audio synthesis.
 
 ### ApolloTab
 
-- **License**: [MPL 2.0](https://github.com/Zhuwenqian/ApolloTab/blob/main/LICENSE)
+- **License**: [LGPL 2.1](https://github.com/Zhuwenqian/ApolloTab/blob/main/LICENSE)
 - **Repository**: <https://github.com/Zhuwenqian/ApolloTab>
 - **Purpose**: Core GTP file parsing, tablature rendering, audio playback engine
 
