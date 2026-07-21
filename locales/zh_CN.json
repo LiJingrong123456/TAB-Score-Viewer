@@ -277,9 +277,17 @@
     "app_version": "TAB Score Viewer 版本",
     "apollo_version": "ApolloTab 版本",
     "license": "许可证",
+    "license_text": "本项目采用 MPL 2.0 许可证",
     "author": "作者",
+    "author_name": "Zhu Wenqian — 一个14岁的中国男孩",
+    "author_project": "TAB Score Viewer 与 ApolloTab 引擎均为同一作者开发。",
     "contact": "联系方式",
+    "contact_email": "Email: zhuwenqianchina@outlook.com / 3784385007@qq.com",
+    "contact_qq": "QQ: 3784385007",
+    "contact_bilibili": "Bilibili: 访问主页 https://space.bilibili.com/1299073087",
     "ai_statement": "AI 辅助声明",
+    "ai_text_line1": "本项目代码由 AI辅助生成，作者负责架构设计、功能规划、代码审查与整合。",
+    "ai_text_line2": "AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。",
     "close_btn": "关闭"
   }
 }

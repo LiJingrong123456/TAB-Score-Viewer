@@ -7270,7 +7270,7 @@ class AboutDialog(QDialog):
         license_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(license_label)
 
-        license_text = QLabel("本项目采用 MPL 2.0 许可证")
+        license_text = QLabel(I18n.t("about_dialog.license_text"))
         license_text.setWordWrap(True)
         license_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
         layout.addWidget(license_text)
@@ -7281,7 +7281,7 @@ class AboutDialog(QDialog):
         author_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(author_label)
 
-        author_text = QLabel("Zhu Wenqian — 一个14岁的中国男孩\n\nTAB Score Viewer 与 ApolloTab 引擎均为同一作者开发。")
+        author_text = QLabel(f"{I18n.t('about_dialog.author_name')}\n\n{I18n.t('about_dialog.author_project')}")
         author_text.setWordWrap(True)
         author_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
         layout.addWidget(author_text)
@@ -7293,9 +7293,9 @@ class AboutDialog(QDialog):
         layout.addWidget(contact_label)
 
         contact_text = QLabel(
-            "Email: zhuwenqianchina@outlook.com / 3784385007@qq.com\n"
-            "QQ: 3784385007\n"
-            "Bilibili: 访问主页 https://space.bilibili.com/1299073087"
+            f"{I18n.t('about_dialog.contact_email')}\n"
+            f"{I18n.t('about_dialog.contact_qq')}\n"
+            f"{I18n.t('about_dialog.contact_bilibili')}"
         )
         contact_text.setWordWrap(True)
         contact_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
@@ -7307,7 +7307,7 @@ class AboutDialog(QDialog):
         ai_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(ai_label)
 
-        ai_text = QLabel("本项目代码由 AI辅助生成，作者负责架构设计、功能规划、代码审查与整合。\nAI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。")
+        ai_text = QLabel(f"{I18n.t('about_dialog.ai_text_line1')}\n{I18n.t('about_dialog.ai_text_line2')}")
         ai_text.setWordWrap(True)
         ai_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
         layout.addWidget(ai_text)
