@@ -270,5 +270,16 @@
     "reset_confirm_title": "恢复默认设置",
     "reset_confirm_msg": "确定要恢复所有设置为默认值吗？\n此操作不会立即保存，需点击「确定」后生效。",
     "restart_hint": "设置已保存。GTP 渲染参数将在重新打开文件后生效。"
+  },
+  "about_dialog": {
+    "window_title": "关于",
+    "about_btn": "关于",
+    "app_version": "TAB Score Viewer 版本",
+    "apollo_version": "ApolloTab 版本",
+    "license": "许可证",
+    "author": "作者",
+    "contact": "联系方式",
+    "ai_statement": "AI 辅助声明",
+    "close_btn": "关闭"
   }
 }

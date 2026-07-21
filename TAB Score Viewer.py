@@ -7212,6 +7212,152 @@ class ExportProgressDialog(QDialog):
 
 
 # ============================================================
+# 关于对话框 (AboutDialog) - v2.2.1 新增
+# ============================================================
+
+class AboutDialog(QDialog):
+    """
+    关于对话框
+
+    功能:
+      - 显示软件版本号(从 VERSION 文件读取)
+      - 显示 ApolloTab 库版本号
+      - 显示作者信息和联系方式
+      - 显示许可证和AI辅助声明
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(I18n.t("about_dialog.window_title"))
+        self.setWindowIcon(get_app_icon())
+        self.resize(500, 550)
+
+        self._setup_ui()
+        self._apply_theme()
+
+    def _setup_ui(self) -> None:
+        """初始化关于对话框 UI"""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # 软件标题
+        title_label = QLabel("TAB Score Viewer")
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold;")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # 版本信息
+        version_layout = QVBoxLayout()
+        version_layout.setSpacing(6)
+
+        # 软件版本
+        app_version = self._get_app_version()
+        app_version_label = QLabel(f"{I18n.t('about_dialog.app_version')}: {app_version}")
+        app_version_label.setStyleSheet("font-size: 14px;")
+        version_layout.addWidget(app_version_label)
+
+        # ApolloTab 版本
+        apollo_version = self._get_apollo_version()
+        apollo_version_label = QLabel(f"{I18n.t('about_dialog.apollo_version')}: {apollo_version}")
+        apollo_version_label.setStyleSheet("font-size: 14px;")
+        version_layout.addWidget(apollo_version_label)
+
+        layout.addLayout(version_layout)
+        layout.addSpacing(10)
+
+        # 许可证
+        license_label = QLabel(I18n.t("about_dialog.license"))
+        license_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(license_label)
+
+        license_text = QLabel("本项目采用 MPL 2.0 许可证")
+        license_text.setWordWrap(True)
+        license_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
+        layout.addWidget(license_text)
+        layout.addSpacing(10)
+
+        # 作者
+        author_label = QLabel(I18n.t("about_dialog.author"))
+        author_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(author_label)
+
+        author_text = QLabel("Zhu Wenqian — 一个14岁的中国男孩\n\nTAB Score Viewer 与 ApolloTab 引擎均为同一作者开发。")
+        author_text.setWordWrap(True)
+        author_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
+        layout.addWidget(author_text)
+        layout.addSpacing(10)
+
+        # 联系方式
+        contact_label = QLabel(I18n.t("about_dialog.contact"))
+        contact_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(contact_label)
+
+        contact_text = QLabel(
+            "Email: zhuwenqianchina@outlook.com / 3784385007@qq.com\n"
+            "QQ: 3784385007\n"
+            "Bilibili: 访问主页 https://space.bilibili.com/1299073087"
+        )
+        contact_text.setWordWrap(True)
+        contact_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
+        layout.addWidget(contact_text)
+        layout.addSpacing(10)
+
+        # AI 辅助声明
+        ai_label = QLabel(I18n.t("about_dialog.ai_statement"))
+        ai_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(ai_label)
+
+        ai_text = QLabel("本项目代码由 AI辅助生成，作者负责架构设计、功能规划、代码审查与整合。\nAI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。")
+        ai_text.setWordWrap(True)
+        ai_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
+        layout.addWidget(ai_text)
+
+        layout.addStretch()
+
+        # 关闭按钮
+        close_btn = QPushButton(I18n.t("about_dialog.close_btn"))
+        close_btn.clicked.connect(self.close)
+        close_btn.setFixedWidth(120)
+        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+    def _get_app_version(self) -> str:
+        """读取软件版本号"""
+        try:
+            version_path = os.path.join(os.path.dirname(__file__), "VERSION")
+            if os.path.exists(version_path):
+                with open(version_path, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+        except Exception:
+            pass
+        return "Unknown"
+
+    def _get_apollo_version(self) -> str:
+        """获取 ApolloTab 库版本号"""
+        try:
+            import ApolloTab
+            return getattr(ApolloTab, '__version__', 'Unknown')
+        except ImportError:
+            return "Not Installed"
+        except Exception:
+            return "Unknown"
+
+    def _apply_theme(self) -> None:
+        """应用当前主题样式到关于对话框"""
+        theme_name = ThemeManager.current_name()
+        t = ThemeManager.current()
+        qss = _get_cached_qss('AboutDialog', theme_name, lambda: f"""
+            QDialog{{background-color:{t['bg_primary']};color:{t['text_primary']};
+                font-family:{get_font_family_css('ui')};}}
+            QLabel{{color:{t['text_primary']};}}
+            QPushButton{{background-color:{t['primary']};color:white;border:none;
+                border-radius:6px;padding:8px 20px;font-weight:500;}}
+            QPushButton:hover{{background-color:{t['primary_hover']};}}
+            QPushButton:pressed{{background-color:{t['primary']};}}
+        """)
+        self.setStyleSheet(qss)
+
+
+# ============================================================
 # 设置面板 (SettingsDialog) - v2.0.9 新增
 # ============================================================
 
@@ -7636,7 +7782,7 @@ class SelectionWindow(QMainWindow):
         central=QWidget();self.setCentralWidget(central)
         main_layout=QVBoxLayout(central)
 
-        # 文件夹选择 + 设置按钮
+        # 文件夹选择 + 设置按钮 + 关于按钮
         folder_layout=QHBoxLayout()
         self.folder_label=QLabel(I18n.t("settings_window.folder_not_selected"))
         self.folder_button=QPushButton(I18n.t("settings_window.folder_btn"))
@@ -7645,10 +7791,15 @@ class SelectionWindow(QMainWindow):
         self.settings_btn=QPushButton("⚙ " + I18n.t("settings_dialog.window_title"))
         self.settings_btn.setToolTip(I18n.t("settings_dialog.window_title"))
         self.settings_btn.clicked.connect(self._open_settings_dialog)
+        # 关于按钮: 点击打开关于对话框, 显示版本和作者信息
+        self.about_btn=QPushButton("ℹ " + I18n.t("about_dialog.about_btn"))
+        self.about_btn.setToolTip(I18n.t("about_dialog.about_btn"))
+        self.about_btn.clicked.connect(self._open_about_dialog)
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_button)
         folder_layout.addStretch()
         folder_layout.addWidget(self.settings_btn)
+        folder_layout.addWidget(self.about_btn)
         main_layout.addLayout(folder_layout)
 
         # === 最近打开文件列表 (独立控件，支持折叠/展开) ===
@@ -7799,6 +7950,11 @@ class SelectionWindow(QMainWindow):
     def _open_settings_dialog(self)->None:
         """打开设置对话框, 集中配置语言/主题/字体/GTP渲染参数"""
         dialog = SettingsDialog(self)
+        dialog.exec_()
+
+    def _open_about_dialog(self)->None:
+        """打开关于对话框, 显示版本和作者信息"""
+        dialog = AboutDialog(self)
         dialog.exec_()
 
     def select_folder(self)->None:

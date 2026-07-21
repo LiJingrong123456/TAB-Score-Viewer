@@ -270,5 +270,16 @@
     "reset_confirm_title": "Restore Default Settings",
     "reset_confirm_msg": "Are you sure you want to restore all settings to defaults?\nThis will not be saved until you click OK.",
     "restart_hint": "Settings saved. GTP rendering parameters will take effect after reopening the file."
+  },
+  "about_dialog": {
+    "window_title": "About",
+    "about_btn": "About",
+    "app_version": "TAB Score Viewer Version",
+    "apollo_version": "ApolloTab Version",
+    "license": "License",
+    "author": "Author",
+    "contact": "Contact",
+    "ai_statement": "AI Assistance Statement",
+    "close_btn": "Close"
   }
 }

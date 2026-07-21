@@ -270,5 +270,16 @@
     "reset_confirm_title": "Сброс настроек",
     "reset_confirm_msg": "Вы уверены, что хотите сбросить все настройки?\nИзменения вступят в силу после нажатия «ОК».",
     "restart_hint": "Настройки сохранены. Параметры рендеринга GTP вступят в силу после переоткрытия файла."
+  },
+  "about_dialog": {
+    "window_title": "О программе",
+    "about_btn": "О программе",
+    "app_version": "Версия TAB Score Viewer",
+    "apollo_version": "Версия ApolloTab",
+    "license": "Лицензия",
+    "author": "Автор",
+    "contact": "Контакты",
+    "ai_statement": "Заявление об ИИ-помощи",
+    "close_btn": "Закрыть"
   }
 }
