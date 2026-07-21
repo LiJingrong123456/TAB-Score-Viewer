@@ -4792,53 +4792,8 @@ class DisplayWindow(QMainWindow):
                 self.display_widget.height()
             )
         return 0.0
-    
-    # ========== 标注功能 ==========
-    
-    def _switch_track_annotations(self, old_track: int, new_track: int) -> None:
-        """切换音轨时保存/加载对应音轨的标注数据"""
-        # 保存旧音轨的标注
-        if old_track >= 0:
-            self._save_track_annotations(old_track)
-        
-        # 更新当前音轨索引
-        self.gtp_player.current_track = new_track
-        
-        # 加载新音轨的标注
-        self._load_track_annotations(new_track)
-    
-    def _save_track_annotations(self, track_index: int) -> None:
-        """保存指定音轨的标注数据到文件"""
-        if not self.annotations:
-            return
-        
-        # 构建文件路径
-        base_name = os.path.splitext(os.path.basename(self.file_path))[0]
-        ann_file = os.path.join("annotations", f"{base_name}_track{track_index}.json")
-        
-        # 保存到文件
-        try:
-            os.makedirs("annotations", exist_ok=True)
-            with open(ann_file, 'w', encoding='utf-8') as f:
-                json.dump(self.annotations, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[标注] 保存失败: {e}")
-    
-    def _load_track_annotations(self, track_index: int) -> None:
-        """加载指定音轨的标注数据"""
-        base_name = os.path.splitext(os.path.basename(self.file_path))[0]
-        ann_file = os.path.join("annotations", f"{base_name}_track{track_index}.json")
-        
-        if os.path.exists(ann_file):
-            try:
-                with open(ann_file, 'r', encoding='utf-8') as f:
-                    self.annotations = json.load(f)
-            except Exception as e:
-                print(f"[标注] 加载失败: {e}")
-                self.annotations = []
-        else:
-            self.annotations = []
-    
+
+
     def _tick(self)->None:
         """
         播放定时器回调 - 每帧执行(已优化: 时间驱动滚动+图片缓存+节流UI)

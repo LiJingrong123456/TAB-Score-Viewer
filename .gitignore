@@ -15,5 +15,5 @@ dist/
 # SoundFont文件(超过GitHub 100MB限制，需本地保留)
 soundfont/
 *.sf2
-
+.DS_Store
 alphaTab-develop/
