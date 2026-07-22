@@ -5295,6 +5295,10 @@ class DisplayWindow(QMainWindow):
                 elif event.key() == Qt.Key_K:      # Ctrl+K: 在鼠标位置创建标注
                     self._create_annotation_at_cursor()
                     return
+                elif event.key() == Qt.Key_M:      # Ctrl+M: 切换节拍器开关
+                    if hasattr(self, 'metronome_enable_check'):
+                        self.metronome_enable_check.toggle()
+                    return
 
             if event.key()==Qt.Key_Space:          # 空格: 播放/暂停
                 self.toggle_playback()

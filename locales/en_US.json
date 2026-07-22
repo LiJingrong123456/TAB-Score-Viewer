@@ -53,7 +53,7 @@
     "status_info": "Status",
     "position_label": "Position: {pct}%",
     "time_label": "Time: {time}",
-    "shortcut_help": "Space: Play/Pause\nUp/Down: Adjust Position\nLeft/Right: Fine-tune Speed\nCtrl+K: Add annotation at cursor\nRight-click score: Add annotation\nESC: Close",
+    "shortcut_help": "Space: Play/Pause\nUp/Down: Adjust Position\nLeft/Right: Fine-tune Speed\nCtrl+K: Add annotation at cursor\nCtrl+M: Toggle Metronome\nRight-click score: Add annotation\nESC: Close",
     "shortcut_group": "Shortcuts",
     "volume_group": "Track Volume (GTP)",
     "metronome_group": "Metronome",

@@ -53,7 +53,7 @@
     "status_info": "状态信息",
     "position_label": "位置: {pct}%",
     "time_label": "时间: {time}",
-    "shortcut_help": "空格: 播放/暂停\n↑↓: 调整位置\n←→: 微调速度\nCtrl+K: 鼠标位置添加标注\n右键谱面: 添加标注\nESC: 关闭",
+    "shortcut_help": "空格: 播放/暂停\n↑↓: 调整位置\n←→: 微调速度\nCtrl+K: 鼠标位置添加标注\nCtrl+M: 切换节拍器\n右键谱面: 添加标注\nESC: 关闭",
     "shortcut_group": "快捷键",
     "volume_group": "音轨音量 (GTP)",
     "metronome_group": "节拍器",
