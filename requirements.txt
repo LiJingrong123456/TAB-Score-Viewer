@@ -1,7 +1,7 @@
 # 依赖库列表
 # 安装命令: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# GUI框架
+# GUI框架,arm架构的Linux如卡死请注释下面这行，并用apt（或你的发行版的包管理器）安装python-pyqt5，再软连接到虚拟环境
 PyQt5>=5.15
 
 # PDF解析与渲染
