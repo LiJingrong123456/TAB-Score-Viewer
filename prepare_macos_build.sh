@@ -19,6 +19,28 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== 项目目录: $PROJECT_DIR"
 
 # ============================================================
+# 检测系统架构和 Homebrew 路径
+# ============================================================
+ARCH=$(uname -m)
+if [ "$ARCH" = "arm64" ]; then
+    # Apple Silicon (ARM)
+    HOMEBREW_PREFIX="/opt/homebrew"
+else
+    # Intel Mac
+    HOMEBREW_PREFIX="/usr/local"
+fi
+
+# 优先使用 brew --prefix 获取实际路径
+if command -v brew &> /dev/null; then
+    HOMEBREW_PREFIX=$(brew --prefix)
+fi
+
+LIB_DIR="$HOMEBREW_PREFIX/lib"
+echo "=== 检测到系统架构: $ARCH"
+echo "=== Homebrew路径: $HOMEBREW_PREFIX"
+echo "=== 库文件路径: $LIB_DIR"
+
+# ============================================================
 # Step 1: 生成 icon.icns
 # ============================================================
 echo ""
@@ -78,22 +100,22 @@ collect_dylib() {
     fi
 }
 
-collect_dylib "/usr/local/lib/libfluidsynth.3.dylib"  "libfluidsynth.3.dylib"
-collect_dylib "/usr/local/lib/libfluidsynth.dylib"     "libfluidsynth.dylib"
-collect_dylib "/usr/local/lib/libglib-2.0.0.dylib"     "libglib-2.0.0.dylib"
-collect_dylib "/usr/local/lib/libgthread-2.0.0.dylib"  "libgthread-2.0.0.dylib"
-collect_dylib "/usr/local/lib/libintl.8.dylib"         "libintl.8.dylib"
-collect_dylib "/usr/local/lib/libsndfile.1.dylib"      "libsndfile.1.dylib"
-collect_dylib "/usr/local/lib/libportaudio.2.dylib"    "libportaudio.2.dylib"
-collect_dylib "/usr/local/lib/libreadline.8.dylib"     "libreadline.8.dylib"
-collect_dylib "/usr/local/lib/libpcre2-8.0.dylib"      "libpcre2-8.0.dylib"
-collect_dylib "/usr/local/lib/libogg.0.dylib"          "libogg.0.dylib"
-collect_dylib "/usr/local/lib/libvorbis.0.dylib"       "libvorbis.0.dylib"
-collect_dylib "/usr/local/lib/libvorbisenc.2.dylib"    "libvorbisenc.2.dylib"
-collect_dylib "/usr/local/lib/libFLAC.14.dylib"        "libFLAC.14.dylib"
-collect_dylib "/usr/local/lib/libopus.0.dylib"         "libopus.0.dylib"
-collect_dylib "/usr/local/lib/libmpg123.0.dylib"       "libmpg123.0.dylib"
-collect_dylib "/usr/local/lib/libmp3lame.0.dylib"      "libmp3lame.0.dylib"
+collect_dylib "$LIB_DIR/libfluidsynth.3.dylib"  "libfluidsynth.3.dylib"
+collect_dylib "$LIB_DIR/libfluidsynth.dylib"     "libfluidsynth.dylib"
+collect_dylib "$LIB_DIR/libglib-2.0.0.dylib"     "libglib-2.0.0.dylib"
+collect_dylib "$LIB_DIR/libgthread-2.0.0.dylib"  "libgthread-2.0.0.dylib"
+collect_dylib "$LIB_DIR/libintl.8.dylib"         "libintl.8.dylib"
+collect_dylib "$LIB_DIR/libsndfile.1.dylib"      "libsndfile.1.dylib"
+collect_dylib "$LIB_DIR/libportaudio.2.dylib"    "libportaudio.2.dylib"
+collect_dylib "$LIB_DIR/libreadline.8.dylib"     "libreadline.8.dylib"
+collect_dylib "$LIB_DIR/libpcre2-8.0.dylib"      "libpcre2-8.0.dylib"
+collect_dylib "$LIB_DIR/libogg.0.dylib"          "libogg.0.dylib"
+collect_dylib "$LIB_DIR/libvorbis.0.dylib"       "libvorbis.0.dylib"
+collect_dylib "$LIB_DIR/libvorbisenc.2.dylib"    "libvorbisenc.2.dylib"
+collect_dylib "$LIB_DIR/libFLAC.14.dylib"        "libFLAC.14.dylib"
+collect_dylib "$LIB_DIR/libopus.0.dylib"         "libopus.0.dylib"
+collect_dylib "$LIB_DIR/libmpg123.0.dylib"       "libmpg123.0.dylib"
+collect_dylib "$LIB_DIR/libmp3lame.0.dylib"      "libmp3lame.0.dylib"
 
 echo "  动态库收集完毕，共 $(ls -1 "$DYLIB_DIR"/*.dylib 2>/dev/null | wc -l | tr -d ' ') 个文件"
 
@@ -132,8 +154,8 @@ rewrite_dylib_id_and_deps() {
     deps=$(otool -L "$dylib_path" 2>/dev/null | tail -n +2 | awk '{print $1}')
 
     for dep in $deps; do
-        # 只处理 /usr/local/ 下的依赖 (Homebrew 安装的)
-        if [[ "$dep" == /usr/local/* ]]; then
+        # 只处理 Homebrew 安装的依赖
+        if [[ "$dep" == "$HOMEBREW_PREFIX"/* ]]; then
             local dep_name=$(basename "$dep")
             # 检查这个依赖是否在我们收集的 _dylibs 中
             local found=0
