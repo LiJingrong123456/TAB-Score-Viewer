@@ -2,21 +2,28 @@
 """
 TAB Score Viewer - Update Checker Module
 
-更新检查模块：
+更新检查模块:
   - 查询 GitHub Releases 最新版本
   - 与本地 VERSION 比对
-  - 异步执行（QThreadPool）以避免阻塞 UI
-  - 网络异常容错：超时、连接错误、非 2xx 响应均归类为网络错误
+  - 异步执行(QThreadPool)以避免阻塞 UI
+  - 网络异常容错: 超时、连接错误、非 2xx 响应均归类为网络错误
+
+SSL 证书处理 (macOS 常见问题):
+  1. 优先使用 certifi 包提供的 CA bundle (如果已安装)
+  2. 其次使用系统默认 CA
+  3. 验证失败时自动 fallback 到 unverified context (一次性,带警告)
+  4. 最终仍失败: 在 error_message 中附带英文修复指引
 
 API 端点:
   - GitHub REST: https://api.github.com/repos/{owner}/{repo}/releases/latest
   - 文档: https://docs.github.com/en/rest/releases/releases#get-the-latest-release
 
 依赖:
-  - 仅使用 Python 标准库（urllib, json），无需额外安装
+  - 仅使用 Python 标准库(urllib, json, ssl, socket), certifi 为可选
 """
 
 import os
+import ssl
 import json
 import socket
 from dataclasses import dataclass
@@ -49,7 +56,7 @@ GITHUB_RELEASES_PAGE: str = (
 REQUEST_TIMEOUT: float = 5.0
 
 # GitHub API User-Agent（必须设置，否则可能返回 403）
-USER_AGENT: str = "TAB-Score-Viewer-UpdateChecker"
+USER_AGENT: str = "TAB-ScoreViewer-UpdateChecker"
 
 
 # ============================================================
@@ -156,19 +163,74 @@ def get_local_version() -> str:
 
 
 # ============================================================
+# SSL 上下文构造（certifi 优先 + 系统 fallback）
+# ============================================================
+
+def _try_get_certifi_cafile() -> Optional[str]:
+    """
+    尝试获取 certifi 包提供的 CA bundle 路径。
+    找不到则返回 None（certifi 未安装或导入失败）。
+    """
+    try:
+        import certifi  # type: ignore
+        return certifi.where()
+    except Exception:
+        return None
+
+
+# 用于在结果中给用户的 SSL 错误修复提示（统一英文）
+_SSL_HINT = (
+    "\n\nSSL certificate verification failed. This is a known issue, especially on macOS.\n"
+    "Try one of the following:\n"
+    "  1. Run the 'Install Certificates.command' shipped with Python (macOS).\n"
+    "  2. Install 'certifi' (pip install certifi) and restart the app.\n"
+    "  3. Set environment variable SSL_CERT_FILE to a valid CA bundle path."
+)
+
+
+def _is_ssl_verify_error(err: BaseException) -> bool:
+    """判断异常是否由 SSL 证书验证失败引起"""
+    msg = str(err) or ""
+    return (
+        "CERTIFICATE_VERIFY_FAILED" in msg
+        or "certificate verify failed" in msg.lower()
+    )
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """
+    构造 SSL 上下文,优先级:
+      1. certifi 包提供的 CA bundle
+      2. 系统默认 CA
+      3. 不验证证书 (最后兜底, 通常不会走到这里, 只在用户主动设置时)
+    """
+    # 1) 尝试 certifi
+    cafile = _try_get_certifi_cafile()
+    if cafile and os.path.exists(cafile):
+        try:
+            ctx = ssl.create_default_context(cafile=cafile)
+            return ctx
+        except Exception:
+            pass
+    # 2) 系统默认
+    try:
+        ctx = ssl.create_default_context()
+        return ctx
+    except Exception:
+        pass
+    # 3) 最后兜底 - 不验证（仅作为防御性 fallback, 正常不会触发）
+    return ssl._create_unverified_context()
+
+
+# ============================================================
 # 同步检查接口（供非 UI 场景使用）
 # ============================================================
 
-def check_for_update() -> UpdateResult:
+def _do_request(ssl_ctx: Optional[ssl.SSLContext]) -> bytes:
     """
-    同步执行一次更新检查。
-    适用于：在子线程中调用，再把结果通过信号投递给 UI。
-
-    返回 UpdateResult，调用方根据 status 决定下一步 UI 行为。
+    实际发起 HTTPS 请求,返回响应 body 字节串。
+    抛出各种异常由调用方捕获。
     """
-    current = get_local_version()
-
-    # 构造请求
     req = urlrequest.Request(
         GITHUB_API_LATEST,
         headers={
@@ -176,19 +238,72 @@ def check_for_update() -> UpdateResult:
             "Accept": "application/vnd.github+json",
         },
     )
+    if ssl_ctx is None:
+        # 显式不验证证书的 fallback
+        return urlrequest.urlopen(req, timeout=REQUEST_TIMEOUT, context=ssl._create_unverified_context()).read()
+    return urlrequest.urlopen(req, timeout=REQUEST_TIMEOUT, context=ssl_ctx).read()
 
+
+def check_for_update() -> UpdateResult:
+    """
+    同步执行一次更新检查。
+    适用于: 在子线程中调用, 再把结果通过信号投递给 UI。
+
+    返回 UpdateResult, 调用方根据 status 决定下一步 UI 行为。
+
+    SSL 错误处理流程:
+      1. 先用 certifi (如有) / 系统 CA 验证
+      2. 失败若是 SSL 证书错误, 自动 fallback 到 unverified context 重试一次
+      3. 重试成功: 控制台打印警告, error_message 仍填 None (不算错误)
+      4. 重试仍失败: 错误信息附带英文 SSL 修复提示
+    """
+    current = get_local_version()
+
+    # 第一次尝试: 用 certifi / 系统 CA 验证
+    primary_ctx = _build_ssl_context()
     try:
-        with urlrequest.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            if resp.status != 200:
+        raw = _do_request(primary_ctx)
+    except (HTTPError, URLError, socket.timeout, TimeoutError, json.JSONDecodeError) as e:
+        # 若是 SSL 验证错误, 尝试 unverified fallback
+        if _is_ssl_verify_error(e):
+            try:
+                raw = _do_request(None)  # None -> unverified
+                print(
+                    "[UpdateCheck] WARNING: SSL certificate verification failed, "
+                    "retrying with unverified context. Consider installing certifi "
+                    "or running 'Install Certificates.command'."
+                )
+                # 成功获取数据, 继续后续解析
+                return _parse_response(raw, current, ssl_fallback_used=True)
+            except Exception as fallback_err:
+                # fallback 也失败, 报错给用户, 附上 SSL 修复提示
                 return UpdateResult(
                     status=UpdateStatus.NETWORK_ERROR,
                     current_version=current,
-                    error_message=f"HTTP {resp.status}",
+                    error_message=f"{type(e).__name__}: {e}{_SSL_HINT}",
                 )
-            raw = resp.read().decode("utf-8", errors="replace")
-            data = json.loads(raw)
-    except HTTPError as e:
-        # 403 多为 API rate limit；404 仓库无 release
+        return _classify_exception(e, current)
+    except Exception as e:
+        # 其他未知异常
+        if _is_ssl_verify_error(e):
+            return UpdateResult(
+                status=UpdateStatus.NETWORK_ERROR,
+                current_version=current,
+                error_message=f"{type(e).__name__}: {e}{_SSL_HINT}",
+            )
+        return UpdateResult(
+            status=UpdateStatus.NETWORK_ERROR,
+            current_version=current,
+            error_message=f"{type(e).__name__}: {e}",
+        )
+
+    # 走到这里说明第一次请求成功
+    return _parse_response(raw, current, ssl_fallback_used=False)
+
+
+def _classify_exception(e: BaseException, current: str) -> UpdateResult:
+    """将已知异常分类为合适的 UpdateResult"""
+    if isinstance(e, HTTPError):
         if e.code == 404:
             return UpdateResult(
                 status=UpdateStatus.NO_RELEASE,
@@ -199,27 +314,44 @@ def check_for_update() -> UpdateResult:
             current_version=current,
             error_message=f"HTTP {e.code} {e.reason}",
         )
-    except (URLError, socket.timeout, TimeoutError) as e:
+    if isinstance(e, (URLError, socket.timeout, TimeoutError)):
         return UpdateResult(
             status=UpdateStatus.NETWORK_ERROR,
             current_version=current,
-            error_message=f"网络错误: {e}",
+            error_message=f"{type(e).__name__}: {e}",
         )
+    if isinstance(e, json.JSONDecodeError):
+        return UpdateResult(
+            status=UpdateStatus.NETWORK_ERROR,
+            current_version=current,
+            error_message=f"Response parse failed: {e}",
+        )
+    # 兜底
+    return UpdateResult(
+        status=UpdateStatus.NETWORK_ERROR,
+        current_version=current,
+        error_message=f"{type(e).__name__}: {e}",
+    )
+
+
+def _parse_response(raw: bytes, current: str, ssl_fallback_used: bool) -> UpdateResult:
+    """
+    解析 GitHub API 响应 body, 返回 UpdateResult。
+    ssl_fallback_used 仅用于日志, 不影响 result 内容。
+    """
+    if ssl_fallback_used:
+        print("[UpdateCheck] (SSL fallback succeeded, response parsed below)")
+
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as e:
         return UpdateResult(
             status=UpdateStatus.NETWORK_ERROR,
             current_version=current,
-            error_message=f"响应解析失败: {e}",
-        )
-    except Exception as e:
-        # 兜底：任何其他异常都按网络错误处理
-        return UpdateResult(
-            status=UpdateStatus.NETWORK_ERROR,
-            current_version=current,
-            error_message=f"未知错误: {e}",
+            error_message=f"Response parse failed: {e}",
         )
 
-    # 解析 tag_name（如 "v2.3.0"）
+    # 解析 tag_name (如 "v2.3.0")
     tag = data.get("tag_name") or ""
     html_url = data.get("html_url") or GITHUB_RELEASES_PAGE
     if not tag:
@@ -247,7 +379,7 @@ def check_for_update() -> UpdateResult:
             latest_version=latest_display,
         )
     else:
-        # 版本号无法解析，按 UP_TO_DATE 处理（保守不打扰用户）
+        # 版本号无法解析, 按 UP_TO_DATE 处理(保守不打扰用户)
         return UpdateResult(
             status=UpdateStatus.UP_TO_DATE,
             current_version=current,
@@ -256,13 +388,13 @@ def check_for_update() -> UpdateResult:
 
 
 # ============================================================
-# 异步执行包装（QRunnable + 信号）
+# 异步执行包装(QRunnable + 信号)
 # ============================================================
 
 class UpdateCheckSignals(QObject):
     """更新检查工作线程的信号"""
     finished = pyqtSignal(object)  # 携带 UpdateResult
-    error = pyqtSignal(str)        # 兜底错误信号（正常情况不会触发）
+    error = pyqtSignal(str)        # 兜底错误信号(正常情况不会触发)
 
 
 class UpdateCheckWorker(QRunnable):
@@ -284,5 +416,5 @@ class UpdateCheckWorker(QRunnable):
             result = check_for_update()
             self.signals.finished.emit(result)
         except Exception as e:
-            # check_for_update 内部已捕获所有异常，此处仅作兜底
+            # check_for_update 内部已捕获所有异常, 此处仅作兜底
             self.signals.error.emit(str(e))
