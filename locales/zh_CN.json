@@ -264,6 +264,8 @@
     "ui_font_label": "UI 字体:",
     "gtp_font_label": "GTP 渲染字体:",
     "render_params_group": "渲染参数（重新打开 GTP 文件后生效）",
+    "check_update_on_startup_label": "启动时检查更新",
+    "check_update_on_startup_tooltip": "软件启动时自动检查一次 GitHub Releases\n发现新版本会弹窗提示, 无更新则静默\n本会话内仅检查一次, 除非在关于窗口手动点击",
     "ok_btn": "确定",
     "cancel_btn": "取消",
     "reset_btn": "恢复默认",
@@ -288,6 +290,18 @@
     "ai_statement": "AI 辅助声明",
     "ai_text_line1": "本项目代码由 AI辅助生成，作者负责架构设计、功能规划、代码审查与整合。",
     "ai_text_line2": "AI 工具大幅提升了开发效率，但所有核心设计决策均由人工完成。",
-    "close_btn": "关闭"
+    "close_btn": "关闭",
+    "check_update_btn": "检查更新",
+    "check_update_tooltip": "检查 GitHub 上是否有新版本发布",
+    "check_update_checking": "检查中...",
+    "update_up_to_date_title": "已是最新版本",
+    "update_up_to_date_msg": "您使用的软件为最新版本 (v{version})",
+    "update_no_release_title": "暂无发布",
+    "update_no_release_msg": "GitHub 仓库目前还没有任何 release。",
+    "update_new_title": "发现新版本",
+    "update_new_msg": "检测到新版本!\n\n当前版本: v{current}\n最新版本: v{latest}\n\n点击下方按钮前往 Release 页面查看详情。",
+    "update_network_error_title": "检查更新失败",
+    "update_network_error_msg": "无法连接到 GitHub, 请检查网络后重试。\n\n错误信息: {error}",
+    "update_open_release_btn": "打开 Release 页面"
   }
 }

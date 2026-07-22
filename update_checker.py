@@ -1,0 +1,288 @@
+# -*- coding: utf-8 -*-
+"""
+TAB Score Viewer - Update Checker Module
+
+更新检查模块：
+  - 查询 GitHub Releases 最新版本
+  - 与本地 VERSION 比对
+  - 异步执行（QThreadPool）以避免阻塞 UI
+  - 网络异常容错：超时、连接错误、非 2xx 响应均归类为网络错误
+
+API 端点:
+  - GitHub REST: https://api.github.com/repos/{owner}/{repo}/releases/latest
+  - 文档: https://docs.github.com/en/rest/releases/releases#get-the-latest-release
+
+依赖:
+  - 仅使用 Python 标准库（urllib, json），无需额外安装
+"""
+
+import os
+import json
+import socket
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+from urllib import request as urlrequest
+from urllib.error import URLError, HTTPError
+
+from PyQt5.QtCore import QObject, QRunnable, pyqtSignal
+
+from constants import _APP_BASE_DIR
+
+
+# ============================================================
+# 常量
+# ============================================================
+
+GITHUB_OWNER: str = "Zhuwenqian"
+GITHUB_REPO: str = "TAB-Score-Viewer"
+# GitHub API 端点（返回 latest release 的 JSON）
+GITHUB_API_LATEST: str = (
+    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+)
+# 浏览器打开用的 release 页面 URL
+GITHUB_RELEASES_PAGE: str = (
+    f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+)
+
+# 网络请求超时（秒）- 启动检查时如果网络差也不能阻塞用户太久
+REQUEST_TIMEOUT: float = 5.0
+
+# GitHub API User-Agent（必须设置，否则可能返回 403）
+USER_AGENT: str = "TAB-Score-Viewer-UpdateChecker"
+
+
+# ============================================================
+# 数据结构
+# ============================================================
+
+class UpdateStatus(Enum):
+    """更新检查结果状态"""
+    NEW_VERSION = "new_version"      # 发现新版本
+    UP_TO_DATE = "up_to_date"        # 已是最新
+    NETWORK_ERROR = "network_error"  # 网络异常（含超时、HTTP 错误、JSON 解析失败）
+    NO_RELEASE = "no_release"        # 仓库还没有 release
+
+
+@dataclass
+class UpdateResult:
+    """更新检查结果数据类"""
+    status: UpdateStatus
+    current_version: str                       # 本地 VERSION（如 "2.2.0"）
+    latest_version: Optional[str] = None       # 远端最新 tag（如 "v2.3.0"，去前缀 v）
+    release_url: Optional[str] = None          # release 页面 URL（用于点击打开）
+    error_message: Optional[str] = None        # 错误详情（仅 NETWORK_ERROR 时填充）
+
+    @property
+    def is_new_version(self) -> bool:
+        return self.status == UpdateStatus.NEW_VERSION
+
+    @property
+    def is_network_error(self) -> bool:
+        return self.status == UpdateStatus.NETWORK_ERROR
+
+
+# ============================================================
+# 版本比较工具
+# ============================================================
+
+def _normalize_version(raw: str) -> Optional[tuple]:
+    """
+    把版本字符串解析为可比较的元组。
+
+    支持:
+      - "2.2.0"     -> (2, 2, 0)
+      - "v2.2.0"    -> (2, 2, 0)
+      - "v2.2.0-rc1" -> (2, 2, 0)  (忽略预发布标签，按正式版比较)
+      - "2.2"       -> (2, 2)
+
+    解析失败返回 None。
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    # 去掉前缀 v/V
+    if s and s[0] in ("v", "V"):
+        s = s[1:]
+    # 去掉预发布后缀（如 -rc1, -beta1, +metadata）
+    for sep in ("-", "+"):
+        if sep in s:
+            s = s.split(sep, 1)[0]
+    parts = s.split(".")
+    try:
+        return tuple(int(p) for p in parts if p != "")
+    except (ValueError, TypeError):
+        return None
+
+
+def is_newer(remote: str, local: str) -> Optional[bool]:
+    """
+    比较 remote 与 local 版本号。
+    返回:
+      True  - remote 更新
+      False - local 相同或更新
+      None  - 无法解析
+    """
+    r = _normalize_version(remote)
+    l = _normalize_version(local)
+    if r is None or l is None:
+        return None
+    # 用相同长度比较，避免 (2,2) vs (2,2,0) 误判
+    n = max(len(r), len(l))
+    r_padded = r + (0,) * (n - len(r))
+    l_padded = l + (0,) * (n - len(l))
+    return r_padded > l_padded
+
+
+# ============================================================
+# 本地版本号读取
+# ============================================================
+
+def get_local_version() -> str:
+    """
+    从 VERSION 文件读取本地版本号。
+    失败时返回 "0.0.0"（确保首次发布时一定被识别为"有新版本"）。
+    """
+    try:
+        version_path = os.path.join(_APP_BASE_DIR, "VERSION")
+        if os.path.exists(version_path):
+            with open(version_path, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+                if v:
+                    return v
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+# ============================================================
+# 同步检查接口（供非 UI 场景使用）
+# ============================================================
+
+def check_for_update() -> UpdateResult:
+    """
+    同步执行一次更新检查。
+    适用于：在子线程中调用，再把结果通过信号投递给 UI。
+
+    返回 UpdateResult，调用方根据 status 决定下一步 UI 行为。
+    """
+    current = get_local_version()
+
+    # 构造请求
+    req = urlrequest.Request(
+        GITHUB_API_LATEST,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/vnd.github+json",
+        },
+    )
+
+    try:
+        with urlrequest.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            if resp.status != 200:
+                return UpdateResult(
+                    status=UpdateStatus.NETWORK_ERROR,
+                    current_version=current,
+                    error_message=f"HTTP {resp.status}",
+                )
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw)
+    except HTTPError as e:
+        # 403 多为 API rate limit；404 仓库无 release
+        if e.code == 404:
+            return UpdateResult(
+                status=UpdateStatus.NO_RELEASE,
+                current_version=current,
+            )
+        return UpdateResult(
+            status=UpdateStatus.NETWORK_ERROR,
+            current_version=current,
+            error_message=f"HTTP {e.code} {e.reason}",
+        )
+    except (URLError, socket.timeout, TimeoutError) as e:
+        return UpdateResult(
+            status=UpdateStatus.NETWORK_ERROR,
+            current_version=current,
+            error_message=f"网络错误: {e}",
+        )
+    except json.JSONDecodeError as e:
+        return UpdateResult(
+            status=UpdateStatus.NETWORK_ERROR,
+            current_version=current,
+            error_message=f"响应解析失败: {e}",
+        )
+    except Exception as e:
+        # 兜底：任何其他异常都按网络错误处理
+        return UpdateResult(
+            status=UpdateStatus.NETWORK_ERROR,
+            current_version=current,
+            error_message=f"未知错误: {e}",
+        )
+
+    # 解析 tag_name（如 "v2.3.0"）
+    tag = data.get("tag_name") or ""
+    html_url = data.get("html_url") or GITHUB_RELEASES_PAGE
+    if not tag:
+        return UpdateResult(
+            status=UpdateStatus.NO_RELEASE,
+            current_version=current,
+            release_url=html_url,
+        )
+
+    # 去掉 tag 前缀的 'v' 用于显示
+    latest_display = tag.lstrip("vV")
+
+    newer = is_newer(tag, current)
+    if newer is True:
+        return UpdateResult(
+            status=UpdateStatus.NEW_VERSION,
+            current_version=current,
+            latest_version=latest_display,
+            release_url=html_url,
+        )
+    elif newer is False:
+        return UpdateResult(
+            status=UpdateStatus.UP_TO_DATE,
+            current_version=current,
+            latest_version=latest_display,
+        )
+    else:
+        # 版本号无法解析，按 UP_TO_DATE 处理（保守不打扰用户）
+        return UpdateResult(
+            status=UpdateStatus.UP_TO_DATE,
+            current_version=current,
+            latest_version=latest_display,
+        )
+
+
+# ============================================================
+# 异步执行包装（QRunnable + 信号）
+# ============================================================
+
+class UpdateCheckSignals(QObject):
+    """更新检查工作线程的信号"""
+    finished = pyqtSignal(object)  # 携带 UpdateResult
+    error = pyqtSignal(str)        # 兜底错误信号（正常情况不会触发）
+
+
+class UpdateCheckWorker(QRunnable):
+    """
+    异步执行 check_for_update() 的工作线程。
+
+    用法:
+        worker = UpdateCheckWorker()
+        worker.signals.finished.connect(on_finished)
+        QThreadPool.globalInstance().start(worker)
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.signals = UpdateCheckSignals()
+
+    def run(self) -> None:
+        try:
+            result = check_for_update()
+            self.signals.finished.emit(result)
+        except Exception as e:
+            # check_for_update 内部已捕获所有异常，此处仅作兜底
+            self.signals.error.emit(str(e))

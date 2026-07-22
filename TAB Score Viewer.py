@@ -115,12 +115,13 @@ from PyQt5.QtGui import (
     QImage, QCursor, QPainterPath, QLinearGradient, QRadialGradient,
     QMouseEvent, QKeyEvent, QWheelEvent, QResizeEvent, QShowEvent,
     QContextMenuEvent,
-    QKeySequence, QPalette, QBrush, QTransform, QPolygonF, QFontDatabase
+    QKeySequence, QPalette, QBrush, QTransform, QPolygonF, QFontDatabase,
+    QDesktopServices,
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QRect, QSize, QPoint, QRunnable, QThreadPool,
     pyqtSignal, QObject, QEasingCurve, QPropertyAnimation,
-    QRectF, QPointF, pyqtProperty, QBuffer, QEvent
+    QRectF, QPointF, pyqtProperty, QBuffer, QEvent, QUrl
 )
 
 # 第三方库
@@ -158,6 +159,9 @@ from fonts import (
 from theme import (
     ThemeManager,
     load_all_custom_themes,
+    get_app_icon,
+    load_icon,
+    _get_cached_qss,
 )
 from i18n import I18n
 from models import (
@@ -166,100 +170,22 @@ from models import (
     SpeedCurveConfig,
     LoopConfig,
 )
+from annotation_dialogs import (
+    AnnotationCreateDialog,
+    AnnotationEditDialog,
+    AnnotationManagerDialog,
+)
+from about_dialog import AboutDialog
+from settings_dialog import SettingsDialog
+from config import apply_config_settings, get_check_update_on_startup
+from update_checker import (
+    UpdateCheckWorker,
+    UpdateResult,
+    UpdateStatus,
+)
 
 # 兼容: 主文件内的 _UI_FONT_FAMILY 引用改为从 fonts 模块获取
 _UI_FONT_FAMILY = get_ui_font_family()
-
-
-# ============================================================
-# 图标加载工具函数
-# ============================================================
-
-def _find_icon_file(*dirs: str) -> str:
-    """在给定目录中搜索图标文件 (支持 .icns .ico .png)"""
-    for d in dirs:
-        if not os.path.isdir(d):
-            continue
-        for name in ("icon.icns", "icon.ico", "icon.png"):
-            path = os.path.join(d, name)
-            if os.path.exists(path):
-                return path
-    return ""
-
-
-def get_app_icon() -> QIcon:
-    """
-    获取应用图标(QIcon对象)
-    原理: 兼容开发和PyInstaller打包两种运行模式
-      - 开发模式: 从脚本同目录读取图标
-      - 打包模式(sys.frozen): 优先从exe所在目录读取，若不存在则从_internal/子目录读取
-    支持格式: .icns (macOS), .ico (Windows), .png (通用)
-    返回: QIcon对象，文件不存在时返回空 QIcon
-    """
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-        path = _find_icon_file(base, os.path.join(base, "_internal"))
-    else:
-        path = _find_icon_file(_APP_BASE_DIR)
-    if path:
-        return QIcon(path)
-    return QIcon()  # 文件不存在时返回空图标
-
-
-# ============================================================
-# SVG 图标加载器 (SVG Icon Loader)
-# ============================================================
-
-def load_icon(icon_name: str, size: tuple = None) -> QIcon:
-    """
-    加载 SVG 图标为 QIcon 对象 / Load SVG icon as QIcon object
-    原理: 从 icons/ 目录读取 SVG 文件，使用 Qt 渲染为像素图标
-         兼容开发模式和 PyInstaller 打包模式(onedir: _internal/)
-    参数:
-      icon_name: 图标文件名(不含扩展名), 如 "annotate", "export", "play"
-      size:     可选图标尺寸 (宽, 高) 元组, 默认 None(使用SVG原始尺寸)
-    返回:
-      QIcon 对象, 文件不存在时返回空 QIcon
-    """
-    # 确定应用根目录(兼容开发和打包模式)
-    if getattr(sys, 'frozen', False):
-        # PyInstaller onedir 模式: 数据文件在 _internal/ 子目录
-        base = os.path.join(os.path.dirname(sys.executable), '_internal')
-    else:
-        base = _APP_BASE_DIR
-    svg_path = os.path.join(base, 'icons', f'{icon_name}.svg')
-    if os.path.exists(svg_path):
-        icon = QIcon(svg_path)
-        return icon
-    return QIcon()  # 文件不存在时返回空图标
-
-
-# ============================================================
-# QSS样式表缓存（性能优化：P0-1）
-# ============================================================
-# 原理: _apply_theme()中通过f-string生成1000+字符的QSS字符串，
-#       Qt每次setStyleSheet()都会重新解析整个样式表并遍历所有子控件重新应用样式。
-#       缓存QSS字符串可避免重复的字符串格式化和Qt样式表解析开销。
-#       缓存key为(theme_name, window_class)，切换主题时theme_name变化自动刷新。
-
-# 全局QSS缓存: {theme_name: {window_class: qss_string}}
-_QSS_CACHE: Dict[str, Dict[str, str]] = {}
-
-def _get_cached_qss(window_class: str, theme_name: str, builder_fn) -> str:
-    """
-    获取缓存的QSS样式表字符串（首次调用时生成并缓存，后续直接返回）
-    
-    参数:
-        window_class: 窗口类名，如 'DisplayWindow', 'SelectionWindow', 'SettingsDialog'
-        theme_name:   主题名称，如 'dark', 'light'
-        builder_fn:   无参构建函数，返回QSS字符串
-    """
-    if theme_name not in _QSS_CACHE:
-        _QSS_CACHE[theme_name] = {}
-    cache = _QSS_CACHE[theme_name]
-    if window_class not in cache:
-        cache[window_class] = builder_fn()
-    return cache[window_class]
 
 
 # ============================================================
@@ -1341,327 +1267,6 @@ class _SpeedCurveCanvas(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self._dragging=False
-
-
-class AnnotationCreateDialog(QDialog):
-    """
-    新建标注对话框 - 专门用于创建新标注(无删除功能)
-    
-    与AnnotationEditDialog的区别:
-      - 标题: "新建标注" vs "编辑标注"
-      - 无删除按钮(新标注不存在删除概念)
-      - 只有 [确定] [取消] 两个按钮
-    
-    调用方式:
-      dialog = AnnotationCreateDialog(parent, x, y)
-      if dialog.exec_() == QDialog.Accepted:
-          ann = dialog.get_annotation()  # 获取新建的标注
-    """
-
-    def __init__(self, parent=None, x: float = 0.1, y: float = 0.1):
-        super().__init__(parent)
-        self.annotation = Annotation(
-            id=f"ann_{uuid.uuid4().hex[:8]}", x=x, y=y,
-            text=I18n.t("annotation_create.default_text")
-        )
-        self._temp_color = self.annotation.color
-        self.init_ui()
-
-    def init_ui(self)->None:
-        """初始化标注编辑对话框UI - 从ThemeManager读取当前主题"""
-        self.setWindowTitle(I18n.t("annotation_create.window_title")); self.setFixedSize(420,360)
-        t = ThemeManager.current()
-        self.setStyleSheet(f"""
-            QDialog {{ background-color: {t['bg_primary']}; }}
-            QLabel {{ color: {t['text_primary']}; font-family: {get_font_family_css('ui')}; }}
-            QTextEdit {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
-                        border: 1px solid {t['border']}; border-radius: 6px; padding: 6px; }}
-            QSpinBox {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
-                        border: 1px solid {t['border']}; border-radius: 4px; padding: 4px; }}
-            QCheckBox {{ color: {t['text_primary']}; }}
-            QPushButton {{ background-color: {t['primary']}; color: white; border: none;
-                           border-radius: 6px; padding: 8px 20px; font-family: {get_font_family_css('ui')}; }}
-            QPushButton:hover {{ background-color: {t['primary_hover']}; }}
-        """)
-        layout=QVBoxLayout(self)
-        
-        # 位置信息(只读显示)
-        pg=QGroupBox(I18n.t("annotation_create.position_group")); pl=QHBoxLayout(pg)
-        pl.addWidget(QLabel(I18n.t("annotation_create.coord_display", x=self.annotation.x, y=self.annotation.y))); layout.addWidget(pg)
-        
-        # 标注内容
-        tg=QGroupBox(I18n.t("annotation_create.content_group")); tl=QVBoxLayout(tg)
-        self.text_edit=QTextEdit(); self.text_edit.setPlainText(self.annotation.text)
-        self.text_edit.setPlaceholderText(I18n.t("annotation_create.placeholder")); tl.addWidget(self.text_edit); layout.addWidget(tg)
-        
-        # 字体设置
-        fg=QGroupBox(I18n.t("annotation_create.font_group")); fl=QHBoxLayout(fg)
-        fl.addWidget(QLabel(I18n.t("annotation_create.size_label"))); self.font_size_spin=QSpinBox()
-        self.font_size_spin.setRange(8,72); self.font_size_spin.setValue(self.annotation.font_size); fl.addWidget(self.font_size_spin)
-        self.bold_check=QCheckBox(I18n.t("annotation_create.bold_check")); self.bold_check.setChecked(self.annotation.is_bold); fl.addWidget(self.bold_check)
-        fl.addStretch(); layout.addWidget(fg)
-        
-        # 颜色选择
-        cg=QGroupBox(I18n.t("annotation_create.color_group")); cl=QHBoxLayout(cg)
-        self.color_btn=QPushButton(I18n.t("annotation_create.color_btn")); self.color_btn.clicked.connect(self._pick_color)
-        self.color_btn.setStyleSheet(f"background-color:{self.annotation.color};color:white;")
-        cl.addWidget(self.color_btn); cl.addStretch(); layout.addWidget(cg)
-
-        # 按钮区域: 确定 / 取消 (无删除按钮，因为是新建)
-        btn_layout=QHBoxLayout()
-        ok_btn=QPushButton(I18n.t("annotation_create.create_btn"))
-        ok_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(ok_btn)
-
-        cancel_btn=QPushButton(I18n.t("annotation_create.cancel_btn"))
-        cancel_btn.clicked.connect(self.reject)
-        cancel_btn.setStyleSheet(f"background-color:{ThemeManager.get('bg_surface', '#252536')};color:{ThemeManager.get('text_secondary', '#94A3B8')};")
-        btn_layout.addWidget(cancel_btn)
-        layout.addLayout(btn_layout)
-
-    def _pick_color(self)->None:
-        c=QColorDialog.getColor(QColor(self._temp_color),self,I18n.t("annotation_create.color_dialog_title"))
-        if c.isValid(): self._temp_color=c.name(); self.color_btn.setStyleSheet(f"background-color:{self._temp_color};color:white;")
-
-    def get_annotation(self)->Annotation:
-        """获取用户输入的标注数据"""
-        self.annotation.text=self.text_edit.toPlainText()
-        self.annotation.font_size=self.font_size_spin.value()
-        self.annotation.is_bold=self.bold_check.isChecked()
-        self.annotation.color=self._temp_color
-        return self.annotation
-
-
-class AnnotationEditDialog(QDialog):
-    """
-    编辑标注对话框 - 专门用于编辑已有标注(含删除功能)
-    
-    与AnnotationCreateDialog的区别:
-      - 标题: "编辑标注" vs "新建标注"
-      - 有删除按钮(🗑 删除此标注)
-      - 按钮布局: [确定保存] [🗑 删除此标注] [取消]
-      - 返回 should_delete 标记告知调用方是否执行删除
-    
-    调用方式:
-      dialog = AnnotationEditDialog(parent, annotation)
-      if dialog.exec_() == QDialog.Accepted:
-          if dialog.should_delete:  # 用户点击了删除
-              # 执行删除逻辑
-          else:
-              ann = dialog.get_annotation()  # 获取修改后的标注
-    """
-
-    def __init__(self, parent=None, annotation: Annotation = None):
-        super().__init__(parent)
-        self.annotation = annotation or Annotation(
-            id=f"ann_{uuid.uuid4().hex[:8]}", x=0.1, y=0.1,
-            text=I18n.t("annotation_edit.default_text")
-        )
-        self._temp_color=self.annotation.color
-        self.should_delete = False  # 标记用户是否点击了删除按钮
-        self.init_ui()
-
-    def init_ui(self)->None:
-        """初始化标注编辑对话框UI(编辑模式) - 从ThemeManager读取当前主题"""
-        self.setWindowTitle(I18n.t("annotation_edit.window_title")); self.setFixedSize(420,400)
-        t = ThemeManager.current()
-        self.setStyleSheet(f"""
-            QDialog {{ background-color: {t['bg_primary']}; }}
-            QLabel {{ color: {t['text_primary']}; font-family: {get_font_family_css('ui')}; }}
-            QTextEdit {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
-                        border: 1px solid {t['border']}; border-radius: 6px; padding: 6px; }}
-            QSpinBox {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
-                        border: 1px solid {t['border']}; border-radius: 4px; padding: 4px; }}
-            QCheckBox {{ color: {t['text_primary']}; }}
-            QPushButton {{ background-color: {t['primary']}; color: white; border: none;
-                           border-radius: 6px; padding: 8px 20px; font-family: {get_font_family_css('ui')}; }}
-            QPushButton:hover {{ background-color: {t['primary_hover']}; }}
-            QPushButton#deleteBtn {{ background-color: {ThemeManager.get('danger', '#EF4444')}; }}
-            QPushButton#deleteBtn:hover {{ background-color: #DC2626; }}
-        """)
-        layout=QVBoxLayout(self)
-        pg=QGroupBox(I18n.t("annotation_edit.position_group")); pl=QHBoxLayout(pg)
-        pl.addWidget(QLabel(I18n.t("annotation_edit.coord_display", x=self.annotation.x, y=self.annotation.y))); layout.addWidget(pg)
-        tg=QGroupBox(I18n.t("annotation_edit.content_group")); tl=QVBoxLayout(tg)
-        self.text_edit=QTextEdit(); self.text_edit.setPlainText(self.annotation.text)
-        self.text_edit.setPlaceholderText(I18n.t("annotation_edit.placeholder")); tl.addWidget(self.text_edit); layout.addWidget(tg)
-        fg=QGroupBox(I18n.t("annotation_edit.font_group")); fl=QHBoxLayout(fg)
-        fl.addWidget(QLabel(I18n.t("annotation_edit.size_label"))); self.font_size_spin=QSpinBox()
-        self.font_size_spin.setRange(8,72); self.font_size_spin.setValue(self.annotation.font_size); fl.addWidget(self.font_size_spin)
-        self.bold_check=QCheckBox(I18n.t("annotation_edit.bold_check")); self.bold_check.setChecked(self.annotation.is_bold); fl.addWidget(self.bold_check)
-        fl.addStretch(); layout.addWidget(fg)
-        cg=QGroupBox(I18n.t("annotation_edit.color_group")); cl=QHBoxLayout(cg)
-        self.color_btn=QPushButton(I18n.t("annotation_edit.color_btn")); self.color_btn.clicked.connect(self._pick_color)
-        self.color_btn.setStyleSheet(f"background-color:{self.annotation.color};color:white;")
-        cl.addWidget(self.color_btn); cl.addStretch(); layout.addWidget(cg)
-
-        # 按钮区域: 确定 / 删除 / 取消 (编辑模式特有删除按钮)
-        btn_layout=QHBoxLayout()
-        ok_btn=QPushButton(I18n.t("annotation_edit.save_btn"))
-        ok_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(ok_btn)
-
-        del_btn=QPushButton(I18n.t("annotation_edit.delete_btn"))
-        del_btn.setObjectName("deleteBtn")
-        del_btn.clicked.connect(self._on_delete_clicked)
-        btn_layout.addWidget(del_btn)
-
-        cancel_btn=QPushButton(I18n.t("annotation_edit.cancel_btn"))
-        cancel_btn.clicked.connect(self.reject)
-        cancel_btn.setStyleSheet(f"background-color:{ThemeManager.get('bg_surface', '#252536')};color:{ThemeManager.get('text_secondary', '#94A3B8')};")
-        btn_layout.addWidget(cancel_btn)
-        layout.addLayout(btn_layout)
-
-    def _pick_color(self)->None:
-        c=QColorDialog.getColor(QColor(self._temp_color),self,I18n.t("annotation_edit.color_dialog_title"))
-        if c.isValid(): self._temp_color=c.name(); self.color_btn.setStyleSheet(f"background-color:{self._temp_color};color:white;")
-
-    def _on_delete_clicked(self)->None:
-        """点击删除按钮: 设置标记并以Accepted状态关闭(由调用方执行实际删除)"""
-        reply = QMessageBox.question(
-            self, I18n.t("messages.delete_confirm_title"),
-            I18n.t("messages.delete_confirm_msg"),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            self.should_delete = True
-            self.accept()
-
-    def get_annotation(self)->Annotation:
-        self.annotation.text=self.text_edit.toPlainText()
-        self.annotation.font_size=self.font_size_spin.value()
-        self.annotation.is_bold=self.bold_check.isChecked()
-        self.annotation.color=self._temp_color
-        return self.annotation
-
-
-class AnnotationManagerDialog(QDialog):
-    """
-    标注管理器 - 列表管理所有标注
-    
-    功能: 新增/编辑/删除标注，支持 Ctrl+Z 撤销 / Ctrl+Y 重做
-    注意: 撤销/重做已统一委托给父窗口DisplayWindow的全局栈，
-          管理器内的操作与画布双击操作共享同一套撤销历史。
-    
-    调用方: DisplayWindow._open_annotation_manager()
-    """
-    annotationsChanged=pyqtSignal(list)
-
-    def __init__(self,parent=None,annotations:List[Annotation]=None):
-        super().__init__(parent); self.annotations=annotations or []
-        # 引用父窗口的撤销/重做方法(全局统一栈)
-        self._parent_window = parent
-        self.init_ui()
-
-    def init_ui(self)->None:
-        """初始化标注管理器UI(列表模式) - 从ThemeManager读取当前主题"""
-        self.setWindowTitle(I18n.t("annotation_manager.window_title")); self.setMinimumSize(550,400)
-        t = ThemeManager.current()
-        self.setStyleSheet(f"""
-            QDialog{{background-color:{t['bg_primary']};}}
-            QLabel{{color:{t['text_primary']};font-family:{get_font_family_css('ui')};}}
-            QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
-                        border:1px solid{t['border']};border-radius:6px;}}
-            QListWidget::item:selected{{background-color:{t['primary']};}}
-            QListWidget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
-            QPushButton{{background-color:{t['primary']};color:white;border:none;border-radius:6px;padding:7px14px;}}
-            QPushButton:hover{{background-color:{t['primary_hover']};}}
-            QPushButton#delBtn{{background-color:{ThemeManager.get('danger', '#EF4444')};}}
-            QPushButton#delBtn:hover{{background-color:#DC2626;}}
-        """)
-        layout=QVBoxLayout(self)
-        title=QLabel(I18n.t("annotation_manager.list_title", count=len(self.annotations)))
-        title.setStyleSheet(f"font-size:15px;font-weight:bold;color:{ThemeManager.get('primary_light', '#60A5FA')};")
-        layout.addWidget(title)
-        self.list_widget=QListWidget(); self._populate_list()
-        self.list_widget.itemDoubleClicked.connect(self._edit_item); layout.addWidget(self.list_widget)
-        bl=QHBoxLayout()
-        for txt,slot,st in[(I18n.t("annotation_manager.add_btn"),self._add_new,""),(I18n.t("annotation_manager.edit_btn"),lambda:self._edit_item(self.list_widget.currentItem()), ""),
-                             (I18n.t("annotation_manager.delete_btn"),self._delete_item,"#delBtn"),(I18n.t("annotation_manager.clear_btn"),self._clear_all,"#delBtn")]:
-            b=QPushButton(txt)
-            if st:b.setObjectName(st)
-            b.clicked.connect(slot);bl.addWidget(b)
-        layout.addLayout(bl)
-        bbox=QDialogButtonBox(QDialogButtonBox.Close);bbox.rejected.connect(self.reject);layout.addWidget(bbox)
-
-    def _populate_list(self)->None:
-        self.list_widget.clear()
-        for a in self.annotations:
-            pv=a.text[:28]+"..."if len(a.text)>28 else a.text
-            item=QListWidgetItem(f"[{a.id}]({a.x:.0%},{a.y:.0%}){pv}")
-            item.setData(Qt.UserRole,a.id);self.list_widget.addItem(item)
-
-    # ========== 撤销/重做(委托给父窗口全局栈) ==========
-    def _save_snapshot(self)->None:
-        """修改前保存快照 → 委托给父窗口的全局撤销栈"""
-        if self._parent_window and hasattr(self._parent_window, '_anno_save_snapshot'):
-            self._parent_window._anno_save_snapshot()
-
-    def _undo(self)->None:
-        """Ctrl+Z 撤销 → 委托给父窗口"""
-        if self._parent_window and hasattr(self._parent_window, '_anno_undo'):
-            self._parent_window._anno_undo()
-            # 同步本地列表
-            self.annotations = self._parent_window.annotations
-            self._populate_list()
-
-    def _redo(self)->None:
-        """Ctrl+Y 重做 → 委托给父窗口"""
-        if self._parent_window and hasattr(self._parent_window, '_anno_redo'):
-            self._parent_window._anno_redo()
-            # 同步本地列表
-            self.annotations = self._parent_window.annotations
-            self._populate_list()
-
-    def keyPressEvent(self,event:QKeyEvent)->None:
-        """键盘事件: Ctrl+Z撤销 / Ctrl+Y重做"""
-        try:
-            if event.modifiers()&Qt.ControlModifier:
-                if event.key()==Qt.Key_Z:   self._undo()
-                elif event.key()==Qt.Key_Y:  self._redo()
-                else: super().keyPressEvent(event)
-            else:
-                super().keyPressEvent(event)
-        except Exception:
-            super().keyPressEvent(event)
-
-    # ========== 标注操作(已集成撤销) ==========
-    def _add_new(self)->None:
-        self._save_snapshot()  # 修改前保存快照(委托给父窗口全局栈)
-        dlg=AnnotationEditDialog(self)
-        if dlg.exec_()==QDialog.Accepted:
-            self.annotations.append(dlg.get_annotation());self._populate_list()
-            self.annotationsChanged.emit(self.annotations)
-        else:
-            # 取消则撤销刚才保存的快照，恢复状态
-            self._undo()
-
-    def _edit_item(self,item)->None:
-        if not item:return
-        aid=item.data(Qt.UserRole);ann=next((a for a in self.annotations if a.id==aid),None)
-        if ann:
-            self._save_snapshot()  # 修改前保存快照(委托给父窗口全局栈)
-            dlg=AnnotationEditDialog(self,annotation=ann)
-            if dlg.exec_()==QDialog.Accepted:
-                upd=dlg.get_annotation();idx=next(i for i,a in enumerate(self.annotations) if a.id==aid)
-                self.annotations[idx]=upd;self._populate_list();self.annotationsChanged.emit(self.annotations)
-            else:
-                # 取消则撤销刚才保存的快照，恢复状态
-                self._undo()
-
-    def _delete_item(self)->None:
-        item=self.list_widget.currentItem()
-        if item:
-            self._save_snapshot()
-            aid=item.data(Qt.UserRole)
-            self.annotations=[a for a in self.annotations if a.id!=aid];self._populate_list()
-            self.annotationsChanged.emit(self.annotations)
-
-    def _clear_all(self)->None:
-        if QMessageBox.question(self,I18n.t("messages.clear_all_confirm_title"),I18n.t("messages.clear_all_confirm_msg"),QMessageBox.Yes|QMessageBox.No)==QMessageBox.Yes:
-            self._save_snapshot()
-            self.annotations.clear();self._populate_list();self.annotationsChanged.emit(self.annotations)
 
 
 # ============================================================
@@ -6264,503 +5869,7 @@ class ExportProgressDialog(QDialog):
 
 
 # ============================================================
-# 关于对话框 (AboutDialog) - v2.2.1 新增
-# ============================================================
-
-class AboutDialog(QDialog):
-    """
-    关于对话框
-
-    功能:
-      - 显示软件版本号(从 VERSION 文件读取)
-      - 显示 ApolloTab 库版本号
-      - 显示作者信息和联系方式
-      - 显示许可证和AI辅助声明
-    """
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(I18n.t("about_dialog.window_title"))
-        self.setWindowIcon(get_app_icon())
-        self.resize(500, 550)
-
-        self._setup_ui()
-        self._apply_theme()
-
-    def _setup_ui(self) -> None:
-        """初始化关于对话框 UI"""
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        # 软件标题
-        title_label = QLabel("TAB Score Viewer")
-        title_label.setStyleSheet("font-size: 24px; font-weight: bold;")
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
-
-        # 版本信息
-        version_layout = QVBoxLayout()
-        version_layout.setSpacing(6)
-
-        # 软件版本
-        app_version = self._get_app_version()
-        app_version_label = QLabel(f"{I18n.t('about_dialog.app_version')}: {app_version}")
-        app_version_label.setStyleSheet("font-size: 14px;")
-        version_layout.addWidget(app_version_label)
-
-        # ApolloTab 版本
-        apollo_version = self._get_apollo_version()
-        apollo_version_label = QLabel(f"{I18n.t('about_dialog.apollo_version')}: {apollo_version}")
-        apollo_version_label.setStyleSheet("font-size: 14px;")
-        version_layout.addWidget(apollo_version_label)
-
-        layout.addLayout(version_layout)
-        layout.addSpacing(10)
-
-        # 许可证
-        license_label = QLabel(I18n.t("about_dialog.license"))
-        license_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(license_label)
-
-        license_text = QLabel(I18n.t("about_dialog.license_text"))
-        license_text.setWordWrap(True)
-        license_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
-        layout.addWidget(license_text)
-        layout.addSpacing(10)
-
-        # 作者
-        author_label = QLabel(I18n.t("about_dialog.author"))
-        author_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(author_label)
-
-        author_text = QLabel(f"{I18n.t('about_dialog.author_name')}\n\n{I18n.t('about_dialog.author_project')}")
-        author_text.setWordWrap(True)
-        author_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
-        layout.addWidget(author_text)
-        layout.addSpacing(10)
-
-        # 联系方式
-        contact_label = QLabel(I18n.t("about_dialog.contact"))
-        contact_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(contact_label)
-
-        contact_text = QLabel(
-            f"{I18n.t('about_dialog.contact_email')}\n"
-            f"{I18n.t('about_dialog.contact_qq')}\n"
-            f"{I18n.t('about_dialog.contact_bilibili')}"
-        )
-        contact_text.setWordWrap(True)
-        contact_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
-        layout.addWidget(contact_text)
-        layout.addSpacing(10)
-
-        # AI 辅助声明
-        ai_label = QLabel(I18n.t("about_dialog.ai_statement"))
-        ai_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(ai_label)
-
-        ai_text = QLabel(f"{I18n.t('about_dialog.ai_text_line1')}\n{I18n.t('about_dialog.ai_text_line2')}")
-        ai_text.setWordWrap(True)
-        ai_text.setStyleSheet("font-size: 13px; margin-left: 10px;")
-        layout.addWidget(ai_text)
-
-        layout.addStretch()
-
-        # 关闭按钮
-        close_btn = QPushButton(I18n.t("about_dialog.close_btn"))
-        close_btn.clicked.connect(self.close)
-        close_btn.setFixedWidth(120)
-        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
-
-    def _get_app_version(self) -> str:
-        """读取软件版本号"""
-        try:
-            version_path = os.path.join(os.path.dirname(__file__), "VERSION")
-            if os.path.exists(version_path):
-                with open(version_path, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
-        except Exception:
-            pass
-        return "Unknown"
-
-    def _get_apollo_version(self) -> str:
-        """获取 ApolloTab 库版本号"""
-        try:
-            import ApolloTab
-            return getattr(ApolloTab, '__version__', 'Unknown')
-        except ImportError:
-            return "Not Installed"
-        except Exception:
-            return "Unknown"
-
-    def _apply_theme(self) -> None:
-        """应用当前主题样式到关于对话框"""
-        theme_name = ThemeManager.current_name()
-        t = ThemeManager.current()
-        qss = _get_cached_qss('AboutDialog', theme_name, lambda: f"""
-            QDialog{{background-color:{t['bg_primary']};color:{t['text_primary']};
-                font-family:{get_font_family_css('ui')};}}
-            QLabel{{color:{t['text_primary']};}}
-            QPushButton{{background-color:{t['primary']};color:white;border:none;
-                border-radius:6px;padding:8px 20px;font-weight:500;}}
-            QPushButton:hover{{background-color:{t['primary_hover']};}}
-            QPushButton:pressed{{background-color:{t['primary']};}}
-        """)
-        self.setStyleSheet(qss)
-
-
-# ============================================================
 # 设置面板 (SettingsDialog) - v2.0.9 新增
-# ============================================================
-
-# 渲染参数默认值快照（用于"恢复默认"功能）
-# 在模块加载时捕获 RenderConfig 类属性的初始值, 避免被运行时修改影响
-_DEFAULT_RENDER_VALUES: Dict[str, Any] = {
-    attr: getattr(RenderConfig, attr)
-    for attr, _, _, _, _, _ in _RENDER_PARAMS
-}
-
-
-def apply_config_settings(cfg: dict) -> None:
-    """
-    从配置字典应用语言、主题、字体和 GTP 渲染参数
-
-    参数:
-        cfg: 从 config/settings.json 读取到的字典
-
-    说明:
-        兼容旧配置: 缺少新字段时使用 RenderConfig 默认值, 不报错
-    """
-    global _UI_FONT_FAMILY
-
-    # 语言
-    lang = cfg.get("language", "zh_CN")
-    if lang != I18n.current_language():
-        I18n.set_language(lang)
-
-    # 主题
-    theme = cfg.get("theme", "dark")
-    if theme != ThemeManager.current_name():
-        ThemeManager.set_theme(theme)
-
-    # UI 字体
-    ui_font = cfg.get("ui_font")
-    _UI_FONT_FAMILY = ui_font if ui_font else None
-
-    # GTP 渲染字体
-    gtp_font = cfg.get("gtp_font")
-    if gtp_font:
-        RenderConfig.NOTE_FONT_FAMILY = gtp_font
-
-    # GTP 渲染数值参数
-    render_cfg = cfg.get("render_config", {})
-    for attr, _, typ, *_ in _RENDER_PARAMS:
-        if attr not in render_cfg:
-            continue
-        try:
-            val = render_cfg[attr]
-            if typ is int:
-                val = int(val)
-            elif typ is float:
-                val = float(val)
-            setattr(RenderConfig, attr, val)
-        except Exception:
-            pass
-
-
-class SettingsDialog(QDialog):
-    """
-    设置对话框
-
-    功能:
-      - 集中管理应用常规设置(语言/主题/UI字体)
-      - 集中管理 GTP 六线谱渲染参数(字体/线宽/间距等)
-      - 支持实时预览主题与 UI 字体, 取消时恢复
-      - 支持一键恢复所有设置为出厂默认值
-      - 所有设置保存到 config/settings.json
-    """
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._parent_window = parent
-        self.setWindowTitle(I18n.t("settings_dialog.window_title"))
-        self.setWindowIcon(get_app_icon())
-        self.resize(560, 520)
-
-        # 记录原始值, 用于取消时恢复主题和 UI 字体预览
-        self._original_theme = ThemeManager.current_name()
-        self._original_ui_font = _UI_FONT_FAMILY
-
-        # 渲染参数控件映射 {属性名: QSpinBox/QDoubleSpinBox}
-        self._render_spinboxes: Dict[str, QSpinBox] = {}
-
-        self._setup_ui()
-        self._apply_theme()
-        self._load_current_values()
-
-    def _setup_ui(self) -> None:
-        """初始化设置对话框 UI"""
-        main_layout = QVBoxLayout(self)
-
-        # 标签页容器
-        self.tabs = QTabWidget()
-
-        # 常规设置页
-        self.general_tab = QWidget()
-        general_layout = QFormLayout(self.general_tab)
-        general_layout.setLabelAlignment(Qt.AlignRight)
-
-        # 语言选择
-        self.lang_combo = QComboBox()
-        for code, name in I18n.available_languages():
-            self.lang_combo.addItem(name, code)
-        general_layout.addRow(I18n.t("settings_dialog.language_label"), self.lang_combo)
-
-        # 主题选择
-        self.theme_combo = QComboBox()
-        for name, display_name in ThemeManager.available_themes():
-            self.theme_combo.addItem(display_name, name)
-        general_layout.addRow(I18n.t("settings_dialog.theme_label"), self.theme_combo)
-
-        # UI 字体选择
-        self.ui_font_combo = QFontComboBox()
-        # 仅显示可缩放字体, 保证跨平台一致性
-        self.ui_font_combo.setFontFilters(QFontComboBox.ScalableFonts)
-        general_layout.addRow(I18n.t("settings_dialog.ui_font_label"), self.ui_font_combo)
-
-        self.tabs.addTab(self.general_tab, I18n.t("settings_dialog.tab_general"))
-
-        # GTP 渲染设置页
-        self.gtp_tab = QWidget()
-        gtp_layout = QFormLayout(self.gtp_tab)
-        gtp_layout.setLabelAlignment(Qt.AlignRight)
-
-        # GTP 渲染字体
-        self.gtp_font_combo = QFontComboBox()
-        self.gtp_font_combo.setFontFilters(QFontComboBox.ScalableFonts)
-        gtp_layout.addRow(I18n.t("settings_dialog.gtp_font_label"), self.gtp_font_combo)
-
-        # 渲染参数分组标签
-        render_group = QLabel(I18n.t("settings_dialog.render_params_group"))
-        render_group.setStyleSheet("font-weight:bold;margin-top:8px;")
-        gtp_layout.addRow(render_group)
-
-        # 渲染参数输入控件
-        for attr, label, typ, min_val, max_val, step in _RENDER_PARAMS:
-            if typ is int:
-                spin = QSpinBox()
-                spin.setRange(min_val, max_val)
-                spin.setSingleStep(step)
-            else:
-                spin = QDoubleSpinBox()
-                spin.setRange(min_val, max_val)
-                spin.setSingleStep(step)
-                spin.setDecimals(1 if step >= 0.1 else 2)
-            spin.setMinimumWidth(90)
-            # 中文 tooltip: 说明参数作用与调整效果
-            spin.setToolTip(f"RenderConfig.{attr}: 当前参数控制 {label}。数值越大通常间距/字号越大, 越小越紧凑。")
-            gtp_layout.addRow(label, spin)
-            self._render_spinboxes[attr] = spin
-
-        self.tabs.addTab(self.gtp_tab, I18n.t("settings_dialog.tab_gtp"))
-        main_layout.addWidget(self.tabs)
-
-        # 按钮: 确定 / 取消 / 恢复默认
-        self.button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.reset_btn = self.button_box.addButton(
-            I18n.t("settings_dialog.reset_btn"), QDialogButtonBox.ResetRole
-        )
-        self.button_box.accepted.connect(self._on_accept)
-        self.button_box.rejected.connect(self._on_reject)
-        self.button_box.clicked.connect(self._on_button_clicked)
-        main_layout.addWidget(self.button_box)
-
-        # 实时预览连接 (主题和 UI 字体)
-        self.theme_combo.currentIndexChanged.connect(self._preview_theme)
-        self.ui_font_combo.currentFontChanged.connect(self._preview_ui_font)
-
-    def _apply_theme(self) -> None:
-        """
-        应用当前主题样式到设置对话框
-        
-        性能优化(P0-1): 使用 _get_cached_qss() 缓存QSS字符串。
-        """
-        theme_name = ThemeManager.current_name()
-        t = ThemeManager.current()
-        qss = _get_cached_qss('SettingsDialog', theme_name, lambda: f"""
-            QDialog{{background-color:{t['bg_primary']};color:{t['text_primary']};
-                font-family:{get_font_family_css('ui')};}}
-            QLabel{{color:{t['text_primary']};font-size:13px;}}
-            QPushButton{{background-color:{t['primary']};color:white;border:none;
-                border-radius:6px;padding:6px 14px;font-family:{get_font_family_css('ui')};}}
-            QPushButton:hover{{background-color:{t['primary_hover']};}}
-            QLineEdit,QComboBox,QFontComboBox,QSpinBox,QDoubleSpinBox{{
-                background-color:{t['bg_surface']};color:{t['text_primary']};
-                border:1px solid {t['border']};border-radius:4px;padding:4px 8px;}}
-            QTabWidget::pane{{border:1px solid {t['border']};background-color:{t['bg_surface']};}}
-            QTabBar::tab{{background-color:{t['bg_secondary']};color:{t['text_primary']};
-                padding:6px 14px;margin:2px;border-radius:4px;}}
-            QTabBar::tab:selected{{background-color:{t['primary']};color:white;}}
-            QGroupBox{{color:{t['text_primary']};border:1px solid {t['border']};margin-top:8px;}}
-        """)
-        self.setStyleSheet(qss)
-
-    def _load_current_values(self) -> None:
-        """从当前配置和 RenderConfig 加载默认值到控件"""
-        # 语言
-        idx = self.lang_combo.findData(I18n.current_language())
-        if idx >= 0:
-            self.lang_combo.setCurrentIndex(idx)
-
-        # 主题
-        idx = self.theme_combo.findData(ThemeManager.current_name())
-        if idx >= 0:
-            self.theme_combo.setCurrentIndex(idx)
-
-        # UI 字体
-        ui_font = _UI_FONT_FAMILY or get_font_family('ui')
-        idx = self.ui_font_combo.findText(ui_font)
-        if idx >= 0:
-            self.ui_font_combo.setCurrentIndex(idx)
-        else:
-            self.ui_font_combo.setCurrentText(ui_font)
-
-        # GTP 渲染字体
-        gtp_font = getattr(RenderConfig, "NOTE_FONT_FAMILY", "Arial")
-        idx = self.gtp_font_combo.findText(gtp_font)
-        if idx >= 0:
-            self.gtp_font_combo.setCurrentIndex(idx)
-        else:
-            self.gtp_font_combo.setCurrentText(gtp_font)
-
-        # 渲染参数
-        for attr, spin in self._render_spinboxes.items():
-            spin.setValue(getattr(RenderConfig, attr))
-
-    def _preview_theme(self) -> None:
-        """主题下拉框变化时实时预览"""
-        theme_name = self.theme_combo.currentData()
-        if not theme_name or theme_name == ThemeManager.current_name():
-            return
-        ThemeManager.set_theme(theme_name)
-        self._apply_theme()
-        if isinstance(self._parent_window, SelectionWindow):
-            self._parent_window._apply_theme()
-            if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
-                self._parent_window.display_window._refresh_theme()
-
-    def _preview_ui_font(self) -> None:
-        """UI 字体下拉框变化时实时预览"""
-        family = self.ui_font_combo.currentFont().family()
-        set_ui_font(family)
-        self._apply_theme()
-        if isinstance(self._parent_window, SelectionWindow):
-            self._parent_window._apply_theme()
-            if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
-                self._parent_window.display_window._refresh_theme()
-
-    def _on_accept(self) -> None:
-        """点击确定: 应用语言、保存所有配置并关闭"""
-        # 语言切换
-        new_lang = self.lang_combo.currentData()
-        if new_lang and new_lang != I18n.current_language():
-            I18n.set_language(new_lang)
-            QMessageBox.information(
-                self,
-                I18n.t("settings_window.language_switch_title"),
-                I18n.t("settings_window.language_switch_msg")
-            )
-
-        # 主题和 UI 字体已在预览时应用, 这里只需要保存
-        set_ui_font(self.ui_font_combo.currentFont().family())
-        if self.theme_combo.currentData() != ThemeManager.current_name():
-            ThemeManager.set_theme(self.theme_combo.currentData())
-
-        # GTP 渲染字体
-        RenderConfig.NOTE_FONT_FAMILY = self.gtp_font_combo.currentFont().family()
-
-        # GTP 渲染参数
-        for attr, spin in self._render_spinboxes.items():
-            setattr(RenderConfig, attr, spin.value())
-
-        # 保存到 settings.json
-        if isinstance(self._parent_window, SelectionWindow):
-            self._parent_window.save_config()
-
-        self.accept()
-
-    def _on_reject(self) -> None:
-        """点击取消: 恢复主题和 UI 字体预览, 放弃其他修改"""
-        # 恢复主题
-        if ThemeManager.current_name() != self._original_theme:
-            ThemeManager.set_theme(self._original_theme)
-            if isinstance(self._parent_window, SelectionWindow):
-                self._parent_window._apply_theme()
-                if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
-                    self._parent_window.display_window._refresh_theme()
-
-        # 恢复 UI 字体
-        set_ui_font(self._original_ui_font)
-        if isinstance(self._parent_window, SelectionWindow):
-            self._parent_window._apply_theme()
-            if self._parent_window.display_window and hasattr(self._parent_window.display_window, '_refresh_theme'):
-                self._parent_window.display_window._refresh_theme()
-
-        self.reject()
-
-    def _on_button_clicked(self, button: QAbstractButton) -> None:
-        """
-        按钮点击统一处理（除确定/取消外的其他按钮）
-
-        参数:
-            button: 被点击的按钮对象
-        """
-        role = self.button_box.buttonRole(button)
-        if role == QDialogButtonBox.ResetRole:
-            self._reset_defaults()
-
-    def _reset_defaults(self) -> None:
-        """恢复所有设置为模块加载时捕获的默认值"""
-        reply = QMessageBox.question(
-            self,
-            I18n.t("settings_dialog.reset_confirm_title"),
-            I18n.t("settings_dialog.reset_confirm_msg"),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        # 语言
-        idx = self.lang_combo.findData(_DEFAULT_LANGUAGE)
-        if idx >= 0:
-            self.lang_combo.setCurrentIndex(idx)
-
-        # 主题
-        idx = self.theme_combo.findData(_DEFAULT_THEME)
-        if idx >= 0:
-            self.theme_combo.setCurrentIndex(idx)
-
-        # UI 字体 → 平台默认
-        default_ui_font = get_font_family('ui')
-        idx = self.ui_font_combo.findText(default_ui_font)
-        if idx >= 0:
-            self.ui_font_combo.setCurrentIndex(idx)
-        else:
-            self.ui_font_combo.setCurrentText(default_ui_font)
-
-        # GTP 渲染字体
-        idx = self.gtp_font_combo.findText(_DEFAULT_GTP_FONT)
-        if idx >= 0:
-            self.gtp_font_combo.setCurrentIndex(idx)
-        else:
-            self.gtp_font_combo.setCurrentText(_DEFAULT_GTP_FONT)
-
-        # 渲染数值参数
-        for attr, spin in self._render_spinboxes.items():
-            spin.setValue(_DEFAULT_RENDER_VALUES.get(attr, 0))
-
-
 # ============================================================
 # 设置窗口 - 文件浏览与配置
 # ============================================================
@@ -6787,6 +5896,11 @@ class SelectionWindow(QMainWindow):
         self._recent_files:List[str]=[]   # 最近打开的文件路径列表(最多4条)
         self.MAX_RECENT_FILES:int=4       # 最大记录数 (可调范围: 1-10)
         self._recent_expanded:bool=False  # 最近文件列表折叠状态 (默认折叠)
+
+        # 启动时更新检查相关 - 每个会话仅执行一次
+        self._startup_check_done:bool=False
+        self._startup_check_worker:Optional[UpdateCheckWorker]=None
+        self._startup_check_pool=QThreadPool.globalInstance()  # 持有引用,避免被 GC
 
         self.init_ui()
         self._apply_theme()  # 应用深色主题
@@ -6932,6 +6046,11 @@ class SelectionWindow(QMainWindow):
         except Exception as e:
             print(f"恢复配置出错: {e}")
 
+        # 启动时静默检查更新（仅在设置开启时执行,本次会话内仅一次）
+        if not self._startup_check_done and get_check_update_on_startup():
+            self._startup_check_done = True
+            self._start_update_check_silent()
+
     def load_config(self)->None:
         """加载配置文件 - 恢复目录、语言、主题、字体、GTP渲染参数和最近文件"""
         try:
@@ -6960,6 +6079,7 @@ class SelectionWindow(QMainWindow):
                 'ui_font': _UI_FONT_FAMILY,
                 'gtp_font': getattr(RenderConfig, 'NOTE_FONT_FAMILY', 'Arial'),
                 'recent_files': self._recent_files,  # 保存最近文件列表
+                'check_update_on_startup': get_check_update_on_startup(),  # 启动时检查更新
                 'render_config': {
                     attr: getattr(RenderConfig, attr)
                     for attr, _, _, _, _, _ in _RENDER_PARAMS
@@ -6980,6 +6100,87 @@ class SelectionWindow(QMainWindow):
         """打开关于对话框, 显示版本和作者信息"""
         dialog = AboutDialog(self)
         dialog.exec_()
+
+    # ------------------------------------------------------------
+    # 启动时静默更新检查
+    # ------------------------------------------------------------
+
+    def _start_update_check_silent(self) -> None:
+        """
+        启动时的静默更新检查:
+          - 仅发起一次网络请求
+          - 网络错误 / 无新版本: 仅控制台 print, 不弹窗
+          - 有新版本: 弹窗显示版本号和可点击的 release 链接
+        """
+        if self._startup_check_worker is not None:
+            return  # 防御性: 已有任务在跑
+
+        worker = UpdateCheckWorker()
+        worker.signals.finished.connect(self._on_startup_check_finished)
+        # 兜底信号 - 正常不会触发
+        worker.signals.error.connect(self._on_startup_check_error)
+        self._startup_check_worker = worker
+        self._startup_check_pool.start(worker)
+
+    def _on_startup_check_finished(self, result: UpdateResult) -> None:
+        """启动检查完成回调"""
+        self._startup_check_worker = None
+        try:
+            if result.status == UpdateStatus.NEW_VERSION:
+                print(
+                    f"[UpdateCheck] 发现新版本: {result.current_version} -> {result.latest_version} ({result.release_url})"
+                )
+                self._show_startup_new_version_dialog(result)
+            elif result.status == UpdateStatus.UP_TO_DATE:
+                print(f"[UpdateCheck] 已是最新版本: {result.current_version}")
+            elif result.status == UpdateStatus.NO_RELEASE:
+                print("[UpdateCheck] 仓库暂无 release")
+            else:  # NETWORK_ERROR - 静默
+                print(f"[UpdateCheck] 网络错误(已静默): {result.error_message}")
+        except Exception as e:
+            # 静默失败不影响用户使用
+            print(f"[UpdateCheck] 处理结果时出错: {e}")
+
+    def _on_startup_check_error(self, msg: str) -> None:
+        """兜底错误回调 - 静默"""
+        self._startup_check_worker = None
+        print(f"[UpdateCheck] 启动检查异常(已静默): {msg}")
+
+    def _show_startup_new_version_dialog(self, result: UpdateResult) -> None:
+        """启动检查发现新版本时弹窗(单对话框:版本号+可点击打开 release 链接)"""
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Information)
+            box.setWindowTitle(I18n.t("about_dialog.update_new_title"))
+            box.setText(
+                I18n.t(
+                    "about_dialog.update_new_msg",
+                    current=result.current_version,
+                    latest=result.latest_version or "?",
+                )
+            )
+            box.setTextFormat(Qt.PlainText)
+
+            # 「打开 Release 页面」按钮 - 跨平台用 QDesktopServices
+            open_btn = box.addButton(
+                I18n.t("about_dialog.update_open_release_btn"),
+                QMessageBox.AcceptRole,
+            )
+            close_btn = box.addButton(QMessageBox.Close)
+            box.setDefaultButton(close_btn)
+
+            def _open_release() -> None:
+                url = result.release_url or "https://github.com/Zhuwenqian/TAB-Score-Viewer/releases"
+                QDesktopServices.openUrl(QUrl(url))
+                box.accept()
+
+            open_btn.clicked.disconnect()
+            open_btn.clicked.connect(_open_release)
+
+            box.exec_()
+        except Exception as e:
+            # 弹窗失败也不能影响主窗口
+            print(f"[UpdateCheck] 显示新版本对话框失败: {e}")
 
     def select_folder(self)->None:
         """选择文件夹"""

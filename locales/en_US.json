@@ -264,6 +264,8 @@
     "ui_font_label": "UI Font:",
     "gtp_font_label": "GTP Font:",
     "render_params_group": "Rendering Parameters (effective after reopening GTP file)",
+    "check_update_on_startup_label": "Check for updates on startup",
+    "check_update_on_startup_tooltip": "Automatically check GitHub Releases once when the app starts.\nA dialog appears if a new version is found; otherwise silent.\nOnly checked once per session, unless triggered manually from the About window.",
     "ok_btn": "OK",
     "cancel_btn": "Cancel",
     "reset_btn": "Restore Defaults",
@@ -288,6 +290,18 @@
     "ai_statement": "AI Assistance Statement",
     "ai_text_line1": "The code of this project is generated with AI assistance.",
     "ai_text_line2": "The author is responsible for architecture design, feature planning, code review, and integration. AI tools significantly improved development efficiency, but all core design decisions were made manually.",
-    "close_btn": "Close"
+    "close_btn": "Close",
+    "check_update_btn": "Check for Updates",
+    "check_update_tooltip": "Check GitHub for new releases",
+    "check_update_checking": "Checking...",
+    "update_up_to_date_title": "Up to Date",
+    "update_up_to_date_msg": "You are using the latest version (v{version})",
+    "update_no_release_title": "No Releases",
+    "update_no_release_msg": "The GitHub repository does not have any releases yet.",
+    "update_new_title": "New Version Available",
+    "update_new_msg": "A new version is available!\n\nCurrent version: v{current}\nLatest version: v{latest}\n\nClick the button below to open the Release page.",
+    "update_network_error_title": "Update Check Failed",
+    "update_network_error_msg": "Unable to connect to GitHub. Please check your network and try again.\n\nError: {error}",
+    "update_open_release_btn": "Open Release Page"
   }
 }

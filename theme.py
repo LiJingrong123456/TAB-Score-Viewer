@@ -2,20 +2,22 @@
 """
 TAB Score Viewer - Theme Manager Module
 
-主题管理器（单例模式）+ 自定义主题加载
+主题管理器（单例模式）+ 自定义主题加载 + 图标/QSS缓存
 
 依赖:
-  - constants: THEME_DARK, THEME_LIGHT, THEME_COLORS, CUSTOM_THEMES_DIR
+  - constants: THEME_DARK, THEME_LIGHT, THEME_COLORS, CUSTOM_THEMES_DIR, ICON_PATH, _APP_BASE_DIR
   - ApolloTab ThemeConfig: 同步注册到GTP渲染主题
 """
 
 import os
+import sys
 import copy
 import json
 import importlib.util
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtGui import QIcon
 
 from ApolloTab.utils.constants import ThemeConfig
 
@@ -24,7 +26,92 @@ from constants import (
     THEME_LIGHT,
     THEME_COLORS,
     CUSTOM_THEMES_DIR,
+    _APP_BASE_DIR,
 )
+
+
+# ============================================================
+# 应用图标加载
+# ============================================================
+
+def _find_icon_file(*dirs: str) -> str:
+    """在给定目录中搜索图标文件 (支持 .icns .ico .png)"""
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        for name in ("icon.icns", "icon.ico", "icon.png"):
+            path = os.path.join(d, name)
+            if os.path.exists(path):
+                return path
+    return ""
+
+
+def get_app_icon() -> QIcon:
+    """
+    获取应用图标(QIcon对象)
+    原理: 兼容开发和PyInstaller打包两种运行模式
+      - 开发模式: 从脚本同目录读取图标
+      - 打包模式(sys.frozen): 优先从exe所在目录读取，若不存在则从_internal/子目录读取
+    支持格式: .icns (macOS), .ico (Windows), .png (通用)
+    返回: QIcon对象，文件不存在时返回空 QIcon
+    """
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+        path = _find_icon_file(base, os.path.join(base, "_internal"))
+    else:
+        path = _find_icon_file(_APP_BASE_DIR)
+    if path:
+        return QIcon(path)
+    return QIcon()  # 文件不存在时返回空图标
+
+
+def load_icon(icon_name: str, size: tuple = None) -> QIcon:
+    """
+    加载 SVG 图标为 QIcon 对象 / Load SVG icon as QIcon object
+    原理: 从 icons/ 目录读取 SVG 文件，使用 Qt 渲染为像素图标
+         兼容开发模式和 PyInstaller 打包模式(onedir: _internal/)
+    参数:
+      icon_name: 图标文件名(不含扩展名), 如 "annotate", "export", "play"
+      size:     可选图标尺寸 (宽, 高) 元组, 默认 None(使用SVG原始尺寸)
+    返回:
+      QIcon 对象, 文件不存在时返回空 QIcon
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller onedir 模式: 数据文件在 _internal/ 子目录
+        base = os.path.join(os.path.dirname(sys.executable), '_internal')
+    else:
+        base = _APP_BASE_DIR
+    svg_path = os.path.join(base, 'icons', f'{icon_name}.svg')
+    if os.path.exists(svg_path):
+        return QIcon(svg_path)
+    return QIcon()
+
+
+# ============================================================
+# QSS样式表缓存（性能优化：P0-1）
+# ============================================================
+# 原理: 大量 setStyleSheet() 重复调用 f-string 拼接 QSS，每次 Qt 都会重新解析
+#       缓存 key 为 (theme_name, window_class)，切换主题时自动刷新
+
+# 全局QSS缓存: {theme_name: {window_class: qss_string}}
+_QSS_CACHE: Dict[str, Dict[str, str]] = {}
+
+
+def _get_cached_qss(window_class: str, theme_name: str, builder_fn) -> str:
+    """
+    获取缓存的QSS样式表字符串（首次调用时生成并缓存，后续直接返回）
+
+    参数:
+        window_class: 窗口类名，如 'DisplayWindow', 'SelectionWindow', 'SettingsDialog'
+        theme_name:   主题名称，如 'dark', 'light'
+        builder_fn:   无参构建函数，返回QSS字符串
+    """
+    if theme_name not in _QSS_CACHE:
+        _QSS_CACHE[theme_name] = {}
+    cache = _QSS_CACHE[theme_name]
+    if window_class not in cache:
+        cache[window_class] = builder_fn()
+    return cache[window_class]
 
 
 # ============================================================
