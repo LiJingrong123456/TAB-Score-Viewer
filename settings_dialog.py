@@ -29,7 +29,7 @@ from ApolloTab.utils.constants import RenderConfig
 
 from theme import ThemeManager, get_app_icon, _get_cached_qss
 from i18n import I18n
-from fonts import set_ui_font, get_font_family, get_font_family_css
+from fonts import set_ui_font, get_ui_font_family, get_font_family, get_font_family_css
 from constants import (
     _RENDER_PARAMS,
     _DEFAULT_LANGUAGE,
