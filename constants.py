@@ -12,8 +12,8 @@ from typing import Dict, Tuple, List, Any
 # 路径常量
 # ============================================================
 
-# 应用基目录（脚本所在目录）
-_APP_BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 应用基目录（本文件所在目录 = 项目根目录）
+_APP_BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
 
 # 配置文件路径
 CONFIG_FILE: str = os.path.join(_APP_BASE_DIR, "config", "settings.json")
