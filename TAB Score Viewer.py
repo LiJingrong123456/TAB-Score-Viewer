@@ -128,20 +128,31 @@ import fitz  # PyMuPDF - PDF解析 (开源库)
 from PIL import Image as PILImage  # Pillow - 图片处理(含WEBP) (开源库)
 from ApolloTab.utils.constants import RenderConfig, ThemeConfig  # ApolloTab 渲染配置类与主题配置 (开源库: ApolloTab 1.1.5)
 
+# 本地包
+from tab_score_viewer.constants import (
+    CONFIG_FILE,
+    ANNOTATION_DIR,
+    CUSTOM_THEMES_DIR,
+    ANNOTATION_EXT,
+    SUPPORTED_IMAGE_EXTENSIONS,
+    SUPPORTED_PDF_EXTENSIONS,
+    SUPPORTED_GTP_EXTENSIONS,
+    SUPPORTED_ALL_EXTENSIONS,
+    THEME_DARK,
+    THEME_LIGHT,
+    THEME_COLORS,
+    _RENDER_PARAMS,
+    _DEFAULT_GTP_FONT,
+    _DEFAULT_LANGUAGE,
+    _DEFAULT_THEME,
+    _APP_BASE_DIR,
+    ICON_PATH,
+)
+
 
 # ============================================================
-# 配置常量
+# 图标加载工具函数
 # ============================================================
-
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "settings.json")
-ANNOTATION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "annotations")
-# 用户自定义主题目录: 程序启动时自动扫描其中的 .json/.py 主题文件
-# 路径说明: 使用相对路径，兼容 Windows/Linux/Docker 部署
-CUSTOM_THEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "themes")
-# 应用图标路径(开发模式: 脚本目录; 打包模式: exe所在目录)
-_APP_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ICON_PATH = os.path.join(_APP_BASE_DIR, "icon.ico")
-
 
 def _find_icon_file(*dirs: str) -> str:
     """在给定目录中搜索图标文件 (支持 .icns .ico .png)"""
@@ -200,62 +211,6 @@ def load_icon(icon_name: str, size: tuple = None) -> QIcon:
         icon = QIcon(svg_path)
         return icon
     return QIcon()  # 文件不存在时返回空图标
-
-
-# 标注文件扩展名: 与源文件同目录，命名为 {源文件名}.anno.json
-# 例如: 晚安北京.gp4 → 晚安北京.gp4.anno.json
-ANNOTATION_EXT = ".anno.json"
-
-# 支持的文件扩展名
-SUPPORTED_IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
-SUPPORTED_PDF_EXTENSIONS = ('.pdf',)
-SUPPORTED_GTP_EXTENSIONS = ('.gp3', '.gp4', '.gp5', '.gpx', '.gtp', '.gp')
-SUPPORTED_ALL_EXTENSIONS = SUPPORTED_IMAGE_EXTENSIONS + SUPPORTED_PDF_EXTENSIONS + SUPPORTED_GTP_EXTENSIONS
-
-# UI颜色主题 - 深色音乐风格(默认)
-THEME_DARK = {
-    'bg_primary': '#121212',
-    'bg_secondary': '#1E1E2E',
-    'bg_surface': '#252536',
-    'bg_card': '#2D2D44',
-    'border': '#3A3A4A',
-    'text_primary': '#E2E8F0',
-    'text_secondary': '#94A3B8',
-    'text_muted': '#64748B',
-    'primary': '#3B82F6',
-    'primary_hover': '#2563EB',
-    'primary_light': '#60A5FA',
-    'accent': '#F97316',
-    'accent_hover': '#EA580C',
-    'accent_light': '#FB923C',  # accent浅色(选中高亮)
-    'success': '#10B981',
-    'warning': '#F59E0B',
-    'danger': '#EF4444',
-}
-
-# UI颜色主题 - 浅色清新风格
-THEME_LIGHT = {
-    'bg_primary': '#F8FAFC',       # 主背景: 极浅灰白
-    'bg_secondary': '#F1F5F9',     # 次背景: 浅灰
-    'bg_surface': '#FFFFFF',       # 表面: 纯白
-    'bg_card': '#FFFFFF',          # 卡片: 纯白
-    'border': '#E2E8F0',           # 边框: 浅灰蓝
-    'text_primary': '#1E293B',     # 主文字: 深蓝灰
-    'text_secondary': '#64748B',   # 次文字: 灰蓝
-    'text_muted': '#94A3B8',       # 弱文字: 中灰
-    'primary': '#2563EB',          # 主色: 深蓝
-    'primary_hover': '#1D4ED8',    # 主色悬停: 更深蓝
-    'primary_light': '#60A5FA',    # 主色浅: 天蓝
-    'accent': '#EA580C',           # 强调色: 深橙
-    'accent_hover': '#C2410C',     # 强调悬停: 更深橙
-    'accent_light': '#FDBA74',     # 强调浅: 浅橙
-    'success': '#059669',          # 成功: 深绿
-    'warning': '#D97706',          # 警告: 深黄
-    'danger': '#DC2626',           # 危险: 深红
-}
-
-# 向后兼容: 默认引用深色主题
-THEME_COLORS = THEME_DARK
 
 
 # ============================================================
@@ -7316,40 +7271,12 @@ class AboutDialog(QDialog):
 # 设置面板 (SettingsDialog) - v2.0.9 新增
 # ============================================================
 
-# GTP 渲染参数定义 (对应 ApolloTab.utils.constants.RenderConfig 第 359-390 行)
-# 每个元组: (类属性名, 中文标签, 类型, 最小值, 最大值, 步长)
-# 说明: 修改这些参数后需要重新打开 GTP 文件才能看到效果
-_RENDER_PARAMS = [
-    ("TAB_LINE_SPACING", "弦线间距 (px)", int, 1, 100, 1),
-    ("TAB_LINE_WIDTH_PER_STRING", "每弦水平宽度 (px)", int, 5, 200, 1),
-    ("TAB_LINE_THICKNESS", "弦线粗细 (px)", int, 1, 20, 1),
-    ("NOTE_FONT_SIZE", "品格数字字号 (px)", int, 4, 64, 1),
-    ("NOTE_MIN_SPACING", "相邻拍最小间距 (px)", int, 10, 300, 1),
-    ("NOTE_EXTRA_WIDTH_PER_CHAR", "多位数字额外宽度 (px/字符)", int, 0, 50, 1),
-    ("STEM_HEIGHT", "符干高度 (px)", int, 5, 120, 1),
-    ("STEM_THICKNESS", "符干粗细 (px)", int, 1, 20, 1),
-    ("BEAM_HEIGHT", "符尾横杠高度 (px)", int, 1, 60, 1),
-    ("BEAM_SLOPE_MAX", "符尾最大斜率", float, 0.0, 2.0, 0.05),
-    ("BARLINE_THICKNESS", "小节线粗细 (px)", float, 0.1, 10.0, 0.1),
-    ("BARLINE_HEIGHT_EXTEND", "小节线延伸量 (px)", int, 0, 80, 1),
-    ("MEASURE_PADDING_LEFT", "小节左侧内边距 (px)", int, 0, 100, 1),
-    ("MEASURE_PADDING_RIGHT", "小节右侧内边距 (px)", int, 0, 100, 1),
-    ("INFO_SECTION_HEIGHT", "顶部信息区高度 (px)", int, 10, 200, 1),
-    ("INFO_FONT_SIZE", "信息文字大小 (px)", int, 4, 64, 1),
-    ("TRACK_NAME_FONT_SIZE", "音轨名称字号 (px)", int, 4, 80, 1),
-    ("LINE_SPACING", "行间距 (px)", int, 5, 300, 1),
-    ("SYSTEM_SPACING", "系统间距 (px)", int, 0, 300, 1),
-]
-
 # 渲染参数默认值快照（用于"恢复默认"功能）
 # 在模块加载时捕获 RenderConfig 类属性的初始值, 避免被运行时修改影响
 _DEFAULT_RENDER_VALUES: Dict[str, Any] = {
     attr: getattr(RenderConfig, attr)
     for attr, _, _, _, _, _ in _RENDER_PARAMS
 }
-_DEFAULT_GTP_FONT: str = RenderConfig.NOTE_FONT_FAMILY  # "Arial"
-_DEFAULT_LANGUAGE: str = "zh_CN"
-_DEFAULT_THEME: str = "dark"
 
 
 def apply_config_settings(cfg: dict) -> None:
