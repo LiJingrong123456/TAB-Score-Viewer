@@ -3169,6 +3169,11 @@ class DisplayWindow(QMainWindow):
         开始播放
         使用固定30fps定时器确保播放条和滚动平滑连贯
         原理: 固定帧率(33ms) + 每帧滚动像素量随速度变化，避免低帧率导致的卡顿感
+
+        [v1.1.3 / 暂停解耦] GTP 模式下:
+          - 若处于暂停状态(is_paused=True): 调用 resume()，
+            歌曲 MIDI 流恢复，节拍器继续保持独立播放（暂停期间没停）
+          - 若非暂停: 全新开始或从停止恢复，按原逻辑 seek + play
         """
         # 使用固定30fps定时器(33ms)，不再用base_speed作为间隔
         self.timer.start(33)
@@ -3176,10 +3181,15 @@ class DisplayWindow(QMainWindow):
         # Phase 3: 同时启动音频引擎
         if self.gtp_player and self.gtp_player.is_audio_ready:
             if self.file_type == 'gtp':
-                # 恢复播放: 如果有暂停时保存的时间，从该位置继续
-                if self._paused_time_ms > 0:
-                    self.gtp_player.seek(self._paused_time_ms)
-                self.gtp_player.play()
+                if self.gtp_player.is_paused:
+                    # [v1.1.3] 从暂停恢复：只唤醒主 MIDI 流，
+                    # 节拍器保持独立播放（暂停期间未停止）
+                    self.gtp_player.resume()
+                else:
+                    # 全新开始或从停止恢复: 如果有保存的时间，先 seek
+                    if self._paused_time_ms > 0:
+                        self.gtp_player.seek(self._paused_time_ms)
+                    self.gtp_player.play()
             else:
                 # [v1.1.3] 图片/PDF 模式下仅播放节拍器(如果启用)
                 if self._metronome_enabled:
@@ -3217,24 +3227,38 @@ class DisplayWindow(QMainWindow):
     def stop_playback(self, reset_position: bool = False)->None:
         """
         停止播放
-        
+
         参数:
             reset_position: 是否重置播放位置到开始
                 - True: 停止模式(点击停止按钮)，重置到开始
                 - False: 暂停模式(点击播放按钮)，保存当前位置以便恢复
+
+        [v1.1.3 / 暂停解耦] 暂停逻辑重构:
+          - GTP 暂停模式: 调用 gtp_player.pause() 而非 stop()
+            → 只暂停主 MIDI 流，节拍器保持独立播放（不被 kill）
+          - GTP 停止模式: 仍调用 gtp_player.stop()，完全重置（包括节拍器）
+          - 图片/PDF 暂停模式: 没有歌曲, 节拍器是唯一音频，按原 stop() 行为停止
         """
         self.timer.stop()
         self._click_jump_target = -1.0  # 清除点击跳转目标
         # Phase 3: 同时停止GTP播放器
         if self.gtp_player and self.gtp_player.is_audio_ready:
             if reset_position:
-                # 停止模式: 重置到开始位置
+                # 停止模式: 重置到开始位置，停止所有音频（含节拍器）
                 self._paused_time_ms = 0.0
                 self.gtp_player.stop()
             else:
                 # 暂停模式: 保存当前位置以便恢复
                 self._paused_time_ms = self.gtp_player.current_time_ms
-                self.gtp_player.stop()
+                if self.file_type == 'gtp':
+                    # [v1.1.3] GTP 模式: 只暂停歌曲 MIDI 流
+                    # 节拍器线程保持独立播放，便于用户暂停歌曲后
+                    # 继续跟着 click 练习
+                    self.gtp_player.pause()
+                else:
+                    # [v1.1.3] 图片/PDF 模式: 没有歌曲，
+                    # 暂停=停止所有音频
+                    self.gtp_player.stop()
         self.play_btn.setText(I18n.t("control_panel.play_btn"))
         self.play_btn.set_color('success')  # 播放状态: 绿色成功色
         self.stop_btn.setEnabled(False)
