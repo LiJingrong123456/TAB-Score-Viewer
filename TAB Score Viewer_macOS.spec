@@ -128,7 +128,12 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[os.path.join(SPEC_DIR, 'runtime_hook_macos.py')],
+    runtime_hooks=[
+        os.path.join(SPEC_DIR, 'runtime_hook_macos.py'),
+        # macOS TCC 预热钩子: 在主脚本加载前给用户上次打开的路径开绿灯
+        # 修复 [Errno 1] Operation not permitted (系统重启后首次访问)
+        os.path.join(SPEC_DIR, 'runtime_hook_macos_prewarm.py'),
+    ],
     excludes=_excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

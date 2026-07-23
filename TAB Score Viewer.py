@@ -205,6 +205,10 @@ class WorkerSignals(QObject):
     finished = pyqtSignal(object)  # object: 可携带任意数据(如文件列表)
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
+    # macOS TCC 权限受限信号 - 携带被拒的文件路径，提示主线程弹出重新选择对话框
+    # 触发场景: 系统重启后首次访问 ~/Downloads 等目录下的文件，macOS 可能返回 errno 1 (EPERM)
+    # 此时通过 QFileDialog 让用户重新选择同一文件即可触发 macOS 授予 TCC 权限
+    permission_denied = pyqtSignal(str)
 
 
 class LoadFileListWorker(QRunnable):
@@ -258,9 +262,77 @@ class LoadContentWorker(QRunnable):
         self.file_type = file_type
         self.signals = WorkerSignals()
 
+    def _precheck_file_access(self, path) -> Optional[str]:
+        """
+        预检查文件可访问性 (修复 macOS 重启后 [Errno 1] Operation not permitted)
+
+        背景:
+          macOS 上 TCC (Transparency, Consent, and Control) 会在系统重启后的
+          首次访问时拒绝未授权的文件路径，errno = 1 (EPERM)。
+          表现为: 程序加载 ~/Downloads/*.gp3 等文件失败，但用户在选择窗口
+          里"重新打开文件夹"后再次选择同一文件即可成功——因为 QFileDialog
+          会触发 macOS 授予 TCC 权限。
+
+        行为:
+          1. 文件存在 → 尝试以二进制读模式打开；若 OSError 携带 errno == 1
+             或 errno == 13 (EACCES) 或文本中含 "Operation not permitted"
+             / "Permission denied"，视为权限受限，发回错误描述。
+          2. 路径不存在 → 视为文件丢失。
+          3. 正常 → 返回 None。
+
+        返回:
+          None - 可访问
+          str  - 不可访问的错误描述 (供上层显示与发信号)
+        """
+        if isinstance(path, (list, tuple)):
+            # 图片批量加载场景：任一文件不可访问就整体失败
+            for p in path:
+                err = self._precheck_file_access(p)
+                if err:
+                    return err
+            return None
+        if not path:
+            return "文件路径为空"
+        if not os.path.exists(path):
+            return f"文件不存在: {path}"
+        if not os.path.isfile(path):
+            return f"路径不是文件: {path}"
+        # 实际尝试打开，避免把权限问题延迟到 ApolloTab 内部
+        try:
+            with open(path, 'rb') as _f:
+                _f.read(1)  # 读取1字节，强制触发系统调用
+            return None
+        except OSError as e:
+            # macOS: errno 1 (EPERM) "Operation not permitted"
+            # 常规: errno 13 (EACCES) "Permission denied"
+            errno_no = getattr(e, 'errno', None)
+            if errno_no in (1, 13) or 'not permitted' in str(e).lower() or 'permission denied' in str(e).lower():
+                return (f"macOS系统权限限制 ({errno_no or 'EPERM'}): "
+                        f"系统重启后首次访问此文件可能受限，"
+                        f"请在文件选择窗口中重新打开此文件以授权。\n\n文件: {path}")
+            return f"无法访问文件: {e}"
+
     def run(self) -> None:
         try:
             images = []
+            # 通用 macOS TCC 预检查 - 所有类型都先校验一次
+            precheck_err = self._precheck_file_access(self.file_path)
+            if precheck_err:
+                # 通知主线程弹出恢复对话框 (QFileDialog 重新选择可触发 TCC 授权)
+                self.signals.permission_denied.emit(
+                    self.file_path[0] if isinstance(self.file_path, (list, tuple)) and self.file_path
+                    else (self.file_path if isinstance(self.file_path, str) else "")
+                )
+                # 同时返回错误图，保证界面不会卡在空白/loading 状态
+                first_path = (self.file_path[0] if isinstance(self.file_path, (list, tuple)) and self.file_path
+                              else (self.file_path if isinstance(self.file_path, str) else ""))
+                err_image = self._create_error_image(
+                    f"{I18n.t('messages.gtp_load_fail', error=precheck_err)}"
+                )
+                self.window.loaded_images = [err_image]
+                self.signals.finished.emit([err_image])
+                return
+
             if self.file_type == 'pdf':
                 images = self._load_pdf()
             elif self.file_type == 'images':
@@ -335,23 +407,28 @@ class LoadContentWorker(QRunnable):
     def _load_gtp(self) -> List[QPixmap]:
         """
         加载Guitar Pro文件(.gp3/.gp4/.gp5/.gpx/.gtp/.gp)
-        
+
         原理: 使用 gtp_engine 库的 GTPPlayer 高级API完整处理 GTP 文件，
               包括解析、渲染、音频初始化等。
               GTPPlayer 封装了所有GTP相关逻辑，主程序只需简单调用。
-        
+
         依赖库:
           - gtp_engine (含 guitarpro, PyQt5, pyfluidsynth)
+
+        macOS 兼容性:
+          系统重启后首次访问文件可能因 TCC 权限返回 errno 1 (EPERM)，
+          run() 阶段的预检查会先拦截；此处仍保留 OSError 兜底以防
+          预检查因路径大小写/符号链接差异漏判。
         """
         images = []
         try:
             # 使用 GTPPlayer 进行完整的加载和渲染
             from ApolloTab import GTPPlayer
-            
+
             # 创建播放器实例并加载文件
             player = GTPPlayer()
             player.load(self.file_path)
-            
+
             # v2.0新增: 根据当前UI主题设置GTP渲染主题
             # 浅色UI → light渲染 / 深色UI → dark渲染（用户可在深色模式下手动切换）
             render_theme = ThemeManager.get_gtp_render_theme()
@@ -364,32 +441,46 @@ class LoadContentWorker(QRunnable):
                     print(f"[LoadContentWorker] 设置GTP渲染主题失败(使用默认): {e}")
             else:
                 print(f"[LoadContentWorker] 当前GTPPlayer版本不支持主题切换，使用默认主题")
-            
+
             # 渲染当前音轨（默认第0轨）
             pixmaps = player.render_track(0)
-            
+
             # 保存播放器实例到window（供后续音频/时间线功能使用）
             self.window.gtp_player = player
-            
+
             # 捕获布局数据(播放光标功能依赖此数据)
             self.window._page_layouts = player.last_layouts
-            
+
             # 进度报告：完成
             self.signals.progress.emit(100)
-            
+
             images = pixmaps
-            
+
         except ImportError as e:
             # gtp_engine 或依赖未安装时，回退到信息展示图
             info_pixmap = self._create_gtp_info_image(
                 f"GTP引擎依赖缺失:\n{str(e)}\n\n请安装: pip install gtp-engine"
             )
             images.append(info_pixmap)
+        except OSError as e:
+            # macOS TCC 权限限制 (errno 1) / 常规 EACCES (errno 13) — 兜底分支
+            errno_no = getattr(e, 'errno', None)
+            err_text = str(e)
+            if errno_no in (1, 13) or 'not permitted' in err_text.lower() or 'permission denied' in err_text.lower():
+                # 通知主线程弹出重新选择对话框
+                self.signals.permission_denied.emit(self.file_path)
+                friendly = (f"macOS系统权限限制 ({errno_no or 'EPERM'}): "
+                            f"系统重启后首次访问此文件可能受限。\n\n"
+                            f"请在弹出的对话框中点击「重新选择文件」以授权。\n\n"
+                            f"原始错误: {err_text}")
+            else:
+                friendly = f"GTP加载失败:\n{err_text}"
+            images.append(self._create_error_image(friendly))
         except Exception as e:
             # 其他错误时，显示错误信息和回退预览
             error_pixmap = self._create_error_image(f"GTP加载失败:\n{str(e)}")
             images.append(error_pixmap)
-        
+
         return images
 
     def _create_error_image(self, message: str) -> QPixmap:
@@ -2821,6 +2912,8 @@ class DisplayWindow(QMainWindow):
         worker.signals.finished.connect(self._on_content_loaded)
         worker.signals.error.connect(self._on_content_load_error)
         worker.signals.progress.connect(lambda p: None)
+        # macOS TCC 权限受限信号 - 弹窗让用户重新选择文件以触发系统授权
+        worker.signals.permission_denied.connect(self._on_permission_denied)
         pool.start(worker)
 
     def _on_content_loaded(self, images=None)->None:
@@ -3147,6 +3240,67 @@ class DisplayWindow(QMainWindow):
         """加载失败回调"""
         self.is_loading=False
         QMessageBox.critical(self,I18n.t("messages.load_error"),I18n.t("messages.load_error_msg", msg=msg))
+
+    def _on_permission_denied(self, file_path: str) -> None:
+        """
+        macOS TCC 权限受限处理 (修复 [Errno 1] Operation not permitted)
+
+        背景:
+          系统重启后首次访问 ~/Downloads 下的文件时, macOS TCC 可能尚未授权,
+          直接 open() 会被返回 errno 1 (EPERM) 即 "Operation not permitted"。
+          用户在选择窗口里"重新打开文件夹"后能加载成功, 是因为 QFileDialog
+          会让 macOS 立即授予该路径的访问权限。
+
+        行为:
+          1. 弹窗提示用户当前被拒原因 + 提供"重新选择文件"按钮
+          2. 按钮触发 QFileDialog.getOpenFileName, 预填目录为原文件所在目录
+          3. 用户在系统对话框中确认同一文件 → macOS 授予 TCC 权限
+          4. 自动调用 update_content 重新加载 (此时预检查会通过)
+        """
+        self.is_loading = False
+        # 提取所在目录, 用于 QFileDialog 初始定位
+        try:
+            start_dir = os.path.dirname(file_path) if file_path and os.path.exists(os.path.dirname(file_path)) else ""
+        except Exception:
+            start_dir = ""
+        filename = os.path.basename(file_path) if file_path else ""
+
+        # 仅在 macOS 给出带语境的提示, 其他平台显示通用信息
+        is_macos = sys.platform == 'darwin'
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle(I18n.t("messages.permission_denied_title"))
+        msg.setText(I18n.t("messages.permission_denied_text", filename=filename))
+        msg.setInformativeText(I18n.t("messages.permission_denied_info"))
+        # 自定义按钮 - "重新选择文件"为主操作, "取消"为次要操作
+        reselect_btn = None
+        if is_macos:
+            reselect_btn = msg.addButton(I18n.t("messages.reselect_file"), QMessageBox.AcceptRole)
+        cancel_btn = msg.addButton(QMessageBox.Cancel)
+        if reselect_btn is not None:
+            msg.setDefaultButton(reselect_btn)
+        else:
+            msg.setDefaultButton(cancel_btn)
+        msg.exec_()
+
+        if reselect_btn is not None and msg.clickedButton() == reselect_btn:
+            # 构建文件类型过滤器
+            if self.file_type == 'gtp':
+                file_filter = "Guitar Pro Files (*.gp3 *.gp4 *.gp5 *.gpx *.gtp *.gp)"
+            elif self.file_type == 'pdf':
+                file_filter = "PDF Files (*.pdf)"
+            else:
+                file_filter = "Image Files (*.png *.jpg *.jpeg *.webp)"
+            new_path, _ = QFileDialog.getOpenFileName(
+                self,
+                I18n.t("messages.reselect_file"),
+                start_dir,
+                file_filter
+            )
+            if new_path and os.path.isfile(new_path):
+                # 重新触发内容加载 - 此时 macOS 已通过文件对话框授予 TCC 权限
+                self.update_content(new_path, self.file_type, self.base_speed)
 
     def update_content(self,file_path,file_type:str,speed:int)->None:
         """更新显示内容"""
