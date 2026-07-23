@@ -253,7 +253,13 @@
     "recent_remove": "Remove from list",
     "recent_list_label": "Recent Files",
     "recent_expand": "Expand ▼",
-    "recent_collapse": "Collapse ▲"
+    "recent_collapse": "Collapse ▲",
+    "favorites_list_label": "Favorites",
+    "favorites_expand": "Expand ▼",
+    "favorites_collapse": "Collapse ▲",
+    "favorites_empty": "(No favorites yet)",
+    "favorite_add": "Add to Favorites",
+    "favorite_remove": "Remove from Favorites"
   },
   "settings_dialog": {
     "window_title": "Settings",

@@ -253,7 +253,13 @@
     "recent_remove": "Удалить из списка",
     "recent_list_label": "Недавние файлы",
     "recent_expand": "Развернуть ▼",
-    "recent_collapse": "Свернуть ▲"
+    "recent_collapse": "Свернуть ▲",
+    "favorites_list_label": "Избранное",
+    "favorites_expand": "Развернуть ▼",
+    "favorites_collapse": "Свернуть ▲",
+    "favorites_empty": "(Нет избранного)",
+    "favorite_add": "Добавить в избранное",
+    "favorite_remove": "Удалить из избранного"
   },
   "settings_dialog": {
     "window_title": "Настройки",

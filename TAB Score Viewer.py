@@ -49,7 +49,10 @@ Core Features / 核心功能:
      设置面板 - 集中管理语言/主题/UI字体/GTP渲染参数，支持一键恢复默认，支持持久化与实时预览
  21. Fullscreen mode - F11 toggle / toolbar button / smart ESC behavior (exit fullscreen instead of close)
      全屏模式 - F11切换/工具栏按钮/ESC智能行为(全屏时退出全屏而非关闭)
- 22. Theme extension system - users can define custom themes via JSON/Python files in themes/ directory,
+     22. Favorites list - independent collapsible list above Recent Files (3/6 row viewport, scrollable);
+         cross-list star status sync via right-click menu; persisted to config/settings.json
+     收藏列表 - 最近文件之上独立可折叠列表(3/6 行视口可滚动);通过右键菜单跨列表同步星号状态;持久化到 config/settings.json
+ 23. Theme extension system - users can define custom themes via JSON/Python files in themes/ directory,
      auto-loaded into the settings theme selector, applying to both UI and GTP rendering
      主题扩展系统 - 用户可在 themes/ 目录下通过 JSON/Python 文件定义自定义主题，
      自动加载到设置界面的主题选择器中，同时应用到 UI 和 GTP 渲染
@@ -5925,6 +5928,11 @@ class SelectionWindow(QMainWindow):
         self.MAX_RECENT_FILES:int=4       # 最大记录数 (可调范围: 1-10)
         self._recent_expanded:bool=False  # 最近文件列表折叠状态 (默认折叠)
 
+        # 收藏功能数据 - 最多 100 个文件路径，emoji 前缀在 UI 层渲染
+        self._favorite_files: List[str] = []          # 收藏文件绝对路径(最多 100)
+        self.MAX_FAVORITE_FILES: int = 100
+        self._favorites_expanded: bool = False        # 默认折叠
+
         # 启动时更新检查相关 - 每个会话仅执行一次
         self._startup_check_done:bool=False
         self._startup_check_worker:Optional[UpdateCheckWorker]=None
@@ -5968,6 +5976,26 @@ class SelectionWindow(QMainWindow):
         folder_layout.addWidget(self.about_btn)
         main_layout.addLayout(folder_layout)
 
+        # === 收藏文件列表 (独立控件，支持折叠/展开，放在最近文件之前) ===
+        # Favorites list (separate widget, collapsible, placed before recent files)
+
+        # 标题行: 标签 + 展开/折叠按钮 (水平布局) / Title row: label + toggle button
+        favorites_header_layout=QHBoxLayout()
+        favorites_header_layout.setContentsMargins(0,0,0,4)  # 减少底部间距
+        self.favorites_label=QLabel(I18n.t("settings_window.favorites_list_label"))
+        self.favorites_toggle_btn=QPushButton(I18n.t("settings_window.favorites_expand"))
+        self.favorites_toggle_btn.setFixedHeight(24)  # 紧凑按钮高度
+        self.favorites_toggle_btn.clicked.connect(self._toggle_favorites_list)
+        favorites_header_layout.addWidget(self.favorites_label)
+        favorites_header_layout.addStretch()
+        favorites_header_layout.addWidget(self.favorites_toggle_btn)
+
+        self.favorites_list=QListWidget()
+        self.favorites_list.setObjectName("favorites_list_widget")  # CSS选择器ID
+        self.favorites_list.itemClicked.connect(self._on_favorites_file_clicked)  # 单击打开收藏文件
+        self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.favorites_list.customContextMenuRequested.connect(self._show_favorites_context_menu)
+
         # === 最近打开文件列表 (独立控件，支持折叠/展开) ===
         # Recent files list (separate widget, collapsible)
 
@@ -6008,7 +6036,9 @@ class SelectionWindow(QMainWindow):
         self.original_items:List[Tuple]=[]
         self.is_searching:bool=False
 
-        main_layout.addLayout(recent_header_layout)       # 标题行(标签+展开/折叠按钮)
+        main_layout.addLayout(favorites_header_layout)   # 收藏标题行(标签+展开/折叠按钮)
+        main_layout.addWidget(self.favorites_list)        # 收藏文件列表(独立控件)
+        main_layout.addLayout(recent_header_layout)       # 最近文件标题行(标签+展开/折叠按钮)
         main_layout.addWidget(self.recent_list)            # 最近文件列表(独立控件)
         main_layout.addSpacing(8)                         # 两列表之间间距: 8px (可调范围5-10px)
         main_layout.addWidget(file_list_label)
@@ -6042,6 +6072,12 @@ class SelectionWindow(QMainWindow):
             QListWidget#recent_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};color:{t['accent']};}}
             QListWidget#recent_list_widget::item:selected{{background-color:{t['accent']};color:{t['bg_primary']};font-weight:bold;}}
             QListWidget#recent_list_widget::item:hover{{background-color:{t['accent']};opacity:0.15;border-radius:4px;}}
+            /* 收藏文件列表样式 (独立控件，带主色) / Favorites list with primary color */
+            QListWidget#favorites_list_widget{{background-color:{t['bg_surface']};color:{t['primary']};
+                border:1px solid{t['primary']};border-radius:6px;outline:none;}}
+            QListWidget#favorites_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};color:{t['primary']};}}
+            QListWidget#favorites_list_widget::item:selected{{background-color:{t['primary']};color:{t['bg_primary']};font-weight:bold;}}
+            QListWidget#favorites_list_widget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
             QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
                 border:1px solid{t['border']};border-radius:6px;outline:none;}}
             QListWidget::item{{padding:6px;border-bottom:1px solid{t['border']};}}
@@ -6071,6 +6107,9 @@ class SelectionWindow(QMainWindow):
                     print(f"提示: 上次目录不可用({self.last_folder})，请重新选择")
                     self.last_folder=''
                     self.save_config()  # 清除无效路径
+            # 刷新收藏状态(UI 控件已在 init_ui 创建) / Refresh favorites UI
+            self._refresh_favorite_stars_on_recent_list()
+            self._refresh_favorites_list()
         except Exception as e:
             print(f"恢复配置出错: {e}")
 
@@ -6080,7 +6119,7 @@ class SelectionWindow(QMainWindow):
             self._start_update_check_silent()
 
     def load_config(self)->None:
-        """加载配置文件 - 恢复目录、语言、主题、字体、GTP渲染参数和最近文件"""
+        """加载配置文件 - 恢复目录、语言、主题、字体、GTP渲染参数、收藏和最近文件"""
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE,'r',encoding='utf-8') as f:
@@ -6089,6 +6128,13 @@ class SelectionWindow(QMainWindow):
                     # 加载最近文件列表(过滤不存在的文件) / Load recent files (filter missing)
                     raw_recent=cfg.get('recent_files', [])
                     self._recent_files=[p for p in raw_recent if os.path.isfile(p)]
+                    # 加载收藏文件列表(过滤不存在/不支持扩展名的文件)
+                    raw_fav=cfg.get('favorite_files', [])
+                    self._favorite_files=[
+                        p for p in raw_fav
+                        if os.path.isfile(p)
+                        and os.path.splitext(p)[1].lower() in SUPPORTED_ALL_EXTENSIONS
+                    ]
                     # 应用语言/主题/UI字体/GTP渲染参数
                     apply_config_settings(cfg)
             else:
@@ -6098,7 +6144,7 @@ class SelectionWindow(QMainWindow):
             self.last_folder=''
 
     def save_config(self)->None:
-        """保存配置文件 - 包含目录、语言、主题、字体、GTP渲染参数和最近文件"""
+        """保存配置文件 - 包含目录、语言、主题、字体、GTP渲染参数、收藏和最近文件"""
         try:
             cfg={
                 'last_folder': self.current_directory,
@@ -6107,6 +6153,7 @@ class SelectionWindow(QMainWindow):
                 'ui_font': _UI_FONT_FAMILY,
                 'gtp_font': getattr(RenderConfig, 'NOTE_FONT_FAMILY', 'Arial'),
                 'recent_files': self._recent_files,  # 保存最近文件列表
+                'favorite_files': self._favorite_files,  # 保存收藏文件列表
                 'check_update_on_startup': get_check_update_on_startup(),  # 启动时检查更新
                 'render_config': {
                     attr: getattr(RenderConfig, attr)
@@ -6292,7 +6339,7 @@ class SelectionWindow(QMainWindow):
                 self.show_display(fpath,'gtp')
 
     def show_context_menu(self,pos:QPoint)->None:
-        """右键菜单 - 支持查看/播放/打开文件位置等操作"""
+        """右键菜单 - 支持查看/播放/收藏/打开文件位置等操作"""
         item=self.file_list.itemAt(pos)
         if not item:return
         fpath=item.data(Qt.UserRole);is_dir=item.data(Qt.UserRole+1) or False
@@ -6312,6 +6359,15 @@ class SelectionWindow(QMainWindow):
             menu.addSeparator()
             # 通用：任何文件都可在资源管理器中定位
             menu.addAction(I18n.t("settings_window.context_open_location"),lambda:self.open_file_location(fpath))
+            # 收藏切换（仅支持的文件格式，按当前状态显示"添加/取消"）
+            if ext in SUPPORTED_ALL_EXTENSIONS:
+                menu.addSeparator()
+                if self._is_favorite(fpath):
+                    menu.addAction(I18n.t("settings_window.favorite_remove"),
+                                  lambda:self._remove_favorite(fpath))
+                else:
+                    menu.addAction(I18n.t("settings_window.favorite_add"),
+                                  lambda:self._add_favorite(fpath))
         menu.exec_(self.file_list.mapToGlobal(pos))
 
     def open_file_location(self,fpath:str)->None:
@@ -6458,6 +6514,7 @@ class SelectionWindow(QMainWindow):
         # 持久化保存 + 刷新UI / Persist and refresh UI
         self.save_config()
         self._refresh_recent_list()
+        self._refresh_favorite_stars_on_recent_list()
 
     def _on_recent_file_clicked(self, item: QListWidgetItem) -> None:
         """
@@ -6483,7 +6540,7 @@ class SelectionWindow(QMainWindow):
         """
         最近文件列表的右键菜单
 
-        功能: 提供打开文件、在资源管理器中定位、从列表移除
+        功能: 提供打开文件、在资源管理器中定位、添加/取消收藏、从列表移除
         """
         item=self.recent_list.itemAt(pos)
         if not item:return
@@ -6496,6 +6553,13 @@ class SelectionWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(I18n.t("settings_window.context_open_location"),
                       lambda:self.open_file_location(fpath))
+        # 收藏切换项 (按当前状态显示「添加/取消收藏」)
+        if self._is_favorite(fpath):
+            menu.addAction(I18n.t("settings_window.favorite_remove"),
+                          lambda:self._remove_favorite(fpath))
+        else:
+            menu.addAction(I18n.t("settings_window.favorite_add"),
+                          lambda:self._add_favorite(fpath))
         menu.addAction(I18n.t("settings_window.recent_remove"),
                       lambda:self._remove_recent_file(fpath))
         menu.exec_(self.recent_list.mapToGlobal(pos))
@@ -6591,6 +6655,135 @@ class SelectionWindow(QMainWindow):
             self.recent_toggle_btn.setText(I18n.t("settings_window.recent_expand"))
 
         self._refresh_recent_list()
+
+    # ============================================================
+    # 收藏功能 / Favorites
+    # ============================================================
+
+    def _toggle_favorites_list(self) -> None:
+        """切换收藏列表的展开/折叠状态"""
+        self._favorites_expanded = not self._favorites_expanded
+        if self._favorites_expanded:
+            self.favorites_toggle_btn.setText(I18n.t("settings_window.favorites_collapse"))
+        else:
+            self.favorites_toggle_btn.setText(I18n.t("settings_window.favorites_expand"))
+        self._apply_favorites_list_height()
+
+    def _apply_favorites_list_height(self) -> None:
+        """
+        根据展开/折叠状态设置收藏列表高度
+        折叠 3 行 / 展开 6 行
+        """
+        # 计算单行高度
+        row_h = self.favorites_list.sizeHintForRow(0) if self.favorites_list.count() > 0 else 28
+        if self._favorites_expanded:
+            target_h = row_h * 6 + 12
+        else:
+            target_h = row_h * 3 + 12
+        self.favorites_list.setFixedHeight(target_h)
+        # 内容超过视口时显示滚动条
+        self.favorites_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+    def _is_favorite(self, file_path: str) -> bool:
+        """判断给定路径是否已收藏"""
+        if not file_path:
+            return False
+        return os.path.abspath(file_path) in [os.path.abspath(p) for p in self._favorite_files]
+
+    def _add_favorite(self, file_path: str) -> None:
+        """添加收藏 (去重 + 头插 + 截断 + 持久化 + 刷新)"""
+        if not file_path:
+            return
+        abs_path = os.path.abspath(file_path)
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext not in SUPPORTED_ALL_EXTENSIONS:
+            return
+        if not os.path.isfile(abs_path):
+            return
+        # 去重
+        self._favorite_files = [p for p in self._favorite_files if os.path.abspath(p) != abs_path]
+        # 头插
+        self._favorite_files.insert(0, abs_path)
+        # 截断
+        self._favorite_files = self._favorite_files[:self.MAX_FAVORITE_FILES]
+        # 持久化 + 刷新
+        self.save_config()
+        self._refresh_favorites_list()
+        self._refresh_favorite_stars_on_recent_list()
+
+    def _remove_favorite(self, file_path: str) -> None:
+        """移除收藏"""
+        if not file_path:
+            return
+        abs_path = os.path.abspath(file_path)
+        self._favorite_files = [p for p in self._favorite_files if os.path.abspath(p) != abs_path]
+        self.save_config()
+        self._refresh_favorites_list()
+        self._refresh_favorite_stars_on_recent_list()
+
+    def _refresh_favorites_list(self) -> None:
+        """刷新收藏列表"""
+        self.favorites_list.clear()
+        if not self._favorite_files:
+            empty_item = QListWidgetItem(I18n.t("settings_window.favorites_empty"))
+            empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsEnabled)
+            empty_item.setForeground(QColor(ThemeManager.get('text_muted')))
+            self.favorites_list.addItem(empty_item)
+            self._apply_favorites_list_height()
+            return
+        for fav_path in self._favorite_files:
+            if not os.path.isfile(fav_path):
+                continue
+            filename = os.path.basename(fav_path)
+            item = QListWidgetItem(f"⭐ {filename}")
+            item.setData(Qt.UserRole, fav_path)
+            item.setToolTip(I18n.t("settings_window.favorites_empty") + f"\n{fav_path}")
+            self.favorites_list.addItem(item)
+        self._apply_favorites_list_height()
+
+    def _on_favorites_file_clicked(self, item) -> None:
+        """收藏行单击 - 复用最近文件打开逻辑"""
+        if not item or self.is_loading:
+            return
+        fpath = item.data(Qt.UserRole)
+        if fpath and os.path.isfile(fpath):
+            self._open_recent_file_by_path(fpath)  # 复用现有打开逻辑
+            # 不再 _add_recent_file（因为 _open_recent_file_by_path → show_display 内部会调）
+
+    def _refresh_favorite_stars_on_recent_list(self) -> None:
+        """
+        重刷最近文件列表每行的星号状态 (用 emoji 前缀)
+        """
+        for i in range(self.recent_list.count()):
+            item = self.recent_list.item(i)
+            if not item:
+                continue
+            fpath = item.data(Qt.UserRole)
+            if not fpath:
+                continue  # 跳过空态项
+            filename = os.path.basename(fpath) if fpath else ""
+            if self._is_favorite(fpath):
+                item.setText(f"⭐ {filename}")
+            else:
+                item.setText(f"📄 {filename}")
+
+    def _show_favorites_context_menu(self, pos) -> None:
+        """收藏列表的右键菜单"""
+        item = self.favorites_list.itemAt(pos)
+        if not item:
+            return
+        fpath = item.data(Qt.UserRole)
+        if not fpath:
+            return
+        menu = QMenu(self)
+        menu.addAction(I18n.t("settings_window.context_view_file"),
+                      lambda: self._open_recent_file_by_path(fpath))
+        menu.addSeparator()
+        menu.addAction(I18n.t("settings_window.context_open_location"),
+                      lambda: self.open_file_location(fpath))
+        menu.addAction(I18n.t("settings_window.favorite_remove"),
+                      lambda: self._remove_favorite(fpath))
+        menu.exec_(self.favorites_list.mapToGlobal(pos))
 
 
 # ============================================================

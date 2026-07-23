@@ -253,7 +253,13 @@
     "recent_remove": "从列表中移除",
     "recent_list_label": "最近文件",
     "recent_expand": "展开 ▼",
-    "recent_collapse": "折叠 ▲"
+    "recent_collapse": "折叠 ▲",
+    "favorites_list_label": "收藏",
+    "favorites_expand": "展开 ▼",
+    "favorites_collapse": "折叠 ▲",
+    "favorites_empty": "(暂无收藏)",
+    "favorite_add": "添加到收藏",
+    "favorite_remove": "取消收藏"
   },
   "settings_dialog": {
     "window_title": "设置",
