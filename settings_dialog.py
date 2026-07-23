@@ -42,8 +42,20 @@ from config import _DEFAULT_RENDER_VALUES
 def _get_selection_window_cls():
     """
     延迟获取主文件中的 SelectionWindow 类
-    使用 importlib 实现以避免循环导入与文件名的空格问题
+
+    关键陷阱: 当主文件以 `python "TAB Score Viewer.py"` 启动时,
+    Python 将其注册为 sys.modules['__main__'], 而不是 'TAB Score Viewer'.
+    如果用 importlib.import_module("TAB Score Viewer") 会**重新创建**模块实例,
+    导致 isinstance 检查永远失败 (因为是不同的类对象)!
+
+    修复: 优先从 sys.modules['__main__'] 获取, 避免 importlib 重新加载
     """
+    import sys
+    # 优先方案: 从 __main__ 获取 (覆盖 99% 的情况)
+    main_mod = sys.modules.get('__main__')
+    if main_mod is not None and hasattr(main_mod, 'SelectionWindow'):
+        return getattr(main_mod, 'SelectionWindow', None)
+    # 兜底: 使用 importlib (用于测试或非主入口场景)
     import importlib
     try:
         mod = importlib.import_module("TAB Score Viewer")
