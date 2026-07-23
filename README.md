@@ -2,7 +2,7 @@
 
 **[English](#english)** | **[中文](#中文)**
 
-A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) engine, with multi-format support, 30fps smooth auto-scroll playback, speed curve control, text annotations, loop playback, audio synthesis, and multilingual UI.
+A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhuwenqian/ApolloTab) engine, with multi-format support, smooth auto-scroll playback, speed curve control, text annotations, loop playback, audio synthesis, and multilingual UI.
 
 一个功能强大的吉他谱（TAB）查看器，基于 ApolloTab 引擎，支持多种格式文件浏览、自动滚动播放（30fps平滑）、速度曲线调节、文本标注、循环播放和音频合成。
 
@@ -29,17 +29,21 @@ A powerful Guitar TAB score viewer powered by [ApolloTab](https://github.com/Zhu
 | **Loop Playback**            | No loop / Global loop / A-B region loop                                                               |
 | **Text Annotations**         | Double-click to add notes with color/font/bold styles, hover to show delete button                    |
 | **Annotation Import/Export** | Auto-load `.anno.json`, real-time save, per-track/per-page PNG/**JPG**/PDF A4 export (async with progress bar, cancel support) |
+| **Annotation Manager**       | Dedicated dialog to batch browse, edit, delete, and create annotations                                |
 | **Global Undo/Redo**         | Ctrl+Z / Ctrl+Y, max 50 steps                                                                         |
-| **Annotation Manager**       | Batch management with create/edit/delete                                                              |
+| **Favorites**                | Star-toggle any file from the list (hover star / right-click menu); dedicated favorites list above recent files (3 default, 6 expanded, scrollable) |
+| **Difficulty Rating**        | Auto 0–10 star score for GTP files (length, BPM, techniques: bends/harmonics/tapping/vibrato/hammer-ons/pull-offs/slides); drum/piano/keyboard/bass tracks excluded; SQLite cache; tooltip on hover |
+| **Custom Shortcuts**         | Per-action remapping in Settings → Shortcuts (click cell to capture, Esc/Backspace/Enter; conflict detection; reset all); max 3 keys; modifier-only disallowed |
 | **Click-to-Play**            | Click anywhere on score to jump and start playback                                                    |
 | **Page Navigation**          | Page input box for PDF/multi-image mode                                                               |
 | **Mouse Wheel**              | Scroll with Ctrl (fast) / Shift (fine) modifiers                                                      |
-| **Context Menu**             | Open file location (Windows/Linux compatible)                                                         |
+| **Context Menu**             | Open file location (Windows/Linux compatible), add/remove favorite                                    |
 | **Track Selection**          | Dropdown to switch tracks, instant re-render, per-track annotations                                   |
-| **Dark/Light Theme**         | Modern dark/light UI with custom components + SVG icons (Lucide-style)                                |
+| **Dark/Light Theme**         | Modern dark/light UI with custom components + SVG icons (Lucide-style); custom JSON/Python theme loader |
 | **Keyboard Shortcuts**       | Space play/pause, arrow keys, Ctrl+Z/Y undo/redo, ESC close                                           |
-| **Multilingual UI**          | Chinese (Simplified) / English, one-click switch in settings                                          |
-| **Application Icon**         | Custom icon (icon.ico / icon.png) for window + taskbar                                                           |
+| **Multilingual UI**          | Chinese (Simplified) / English / Russian, one-click switch in settings                                |
+| **About / Update Check**     | About dialog with version, ApolloTab credit, license, AI disclosure; GitHub Releases auto-check on launch (5s timeout, cancellable) |
+| **Application Icon**         | Custom icon (icon.ico / icon.png) for window + taskbar                                                |
 | **Cross-Platform Packaging** | PyInstaller packaging: Windows EXE, Linux DEB/ZIP, macOS APP (see [Packaging](#packaging--distribution)) |
 
 ## Quick Start
@@ -147,15 +151,18 @@ bash build_dmg.sh
 ### Usage
 
 1. Launch the program, click "Select Folder" button to choose your guitar tab directory
-2. File list shows all supported formats (PNG/JPG/WEBP/PDF/GP3-GP5/GPX)
+2. File list shows all supported formats (PNG/JPG/WEBP/PDF/GP3-GP5/GPX), plus a separate **Favorites** list above the recent files; hover any entry to reveal a star button (or right-click → Add/Remove favorite). GTP files automatically show a 0–10 star **difficulty rating** as a tooltip on hover.
 3. Double-click a file to open the score viewer:
    - Single image: Display and play directly
    - PDF: Render pages as images and concatenate
    - Multiple images: Sort by filename and display continuously
    - GTP files: Parse and render as tablature via ApolloTab engine, with audio, track switching, playhead cursor
 4. Use toolbar and control panel for playback, speed adjustment, annotation, etc.
+5. **Settings → Shortcuts** lets you remap any key binding. **Settings → About** checks for new releases.
 
 ## Shortcuts
+
+Default bindings (all of them can be remapped in **Settings → Shortcuts**):
 
 | Key       | Action           |
 | --------- | ---------------- |
@@ -165,6 +172,8 @@ bash build_dmg.sh
 | `Ctrl+Z`  | Undo annotation  |
 | `Ctrl+Y`  | Redo annotation  |
 | `ESC`     | Close window     |
+
+> See [Custom Shortcuts](#custom-shortcuts) below for remapping rules and capture editor behavior.
 
 ## Mouse Operations
 
@@ -180,12 +189,43 @@ bash build_dmg.sh
 | `Ctrl + click progress`  | Set loop point A                |
 | `Shift + click progress` | Set loop point B                |
 
+## Custom Shortcuts
+
+Open **Settings → Shortcuts** to remap any action. The dialog lists 11 actions in a table (action on the left, binding on the right).
+
+- **Capture mode**: click a cell to enter (highlighted yellow). Press your key combo to bind.
+  - `Esc` cancels · `Backspace` clears (binds an empty string = permanently disables the action) · `Enter` confirms the held combo.
+- **Rules**:
+  - At least 1 non-modifier key is required.
+  - Modifier keys (`Ctrl` / `Shift` / `Alt` / `Meta` / `CapsLock` / `Tab`) cannot be the only key in a binding; they must be combined with at least one regular key.
+  - Maximum 3 keys per binding.
+- **Conflict detection**: if the new combo is already used by another action, you'll be prompted to **Replace / Clear / Cancel**.
+- **Cross-platform**: `Option` is treated as `Alt`; `Command` / `Win` / `Super` are all mapped to `Meta` so saved bindings stay portable. macOS automatically swaps the display names of `Ctrl` and `Cmd` so they match the physical key you pressed.
+- **Reset All**: a single button restores all actions to their default bindings.
+- **Persistence**: custom bindings are stored in `config/settings.json` under `custom_shortcuts`.
+
 ## Project Structure
 
 ```
 TAB Score Viewer/
-├── TAB Score Viewer.py      # Main program (includes I18n class, icon loader)
+├── TAB Score Viewer.py      # Main program (SelectionWindow / DisplayWindow entry)
+├── constants.py             # Shared constants (paths, default settings, key maps)
+├── models.py                # Dataclasses for annotations, settings, file items
+├── theme.py                 # ThemeManager (dark/light + custom JSON/Python themes)
+├── i18n.py                  # I18n singleton for zh_CN / en_US / ru_RU translations
+├── fonts.py                 # UI font selection helpers
+├── config.py                # settings.json load/save with defaults
+├── workers.py               # QRunnable workers (file load, rendering, etc.)
+├── difficulty_scoring.py    # GTP difficulty rating engine + SQLite cache
+├── shortcuts.py             # ShortcutAction / ShortcutManager (v2.5.0, cross-platform)
+├── shortcuts_dialog.py      # ShortcutCustomizeDialog + capture editor (v2.5.0)
+├── settings_dialog.py       # Settings window (general + theme + shortcuts tabs)
+├── annotation_dialogs.py    # Annotation create / edit / manager dialogs
+├── about_dialog.py          # About window with version, credit, update check button
+├── update_checker.py        # Async GitHub Releases check (5s timeout)
 ├── TAB Score Viewer.spec    # PyInstaller packaging config (onedir mode, Windows)
+├── TAB Score Viewer_linux.spec  # PyInstaller packaging config - Linux
+├── TAB Score Viewer_macOS.spec  # PyInstaller packaging config - macOS
 ├── build_dmg.sh             # macOS DMG packaging script
 ├── prepare_macos_build.sh   # macOS: collect dylibs and fix @rpath
 ├── runtime_hook_macos.py    # macOS runtime hook: preload dylibs
@@ -196,19 +236,26 @@ TAB Score Viewer/
 │   ├── play.svg             # Play triangle icon
 │   ├── stop.svg             # Stop square icon
 │   ├── volume.svg           # Speaker icon
-│   └── ...                  # (13 total icons)
+│   ├── star.svg             # Hollow star (favorite off)
+│   ├── star-filled.svg      # Filled star (favorite on)
+│   └── ...                  # (15 total icons)
 ├── icon.png                 # App icon source (PNG, 2048x2048)
 ├── icon.ico                 # App icon (ICO multi-size)
+├── icon.icns                # App icon (macOS multi-size)
 ├── README.md                # Project documentation (this file)
 ├── requirements.txt         # Python dependencies
 ├── LICENSE                  # License file (MPL 2.0)
+├── themes/                  # Custom theme drop-in directory (JSON / .py)
+│   └── example_custom.json
 ├── locales/                 # Translation files
 │   ├── zh_CN.json           # Simplified Chinese
-│   └── en_US.json           # English
+│   ├── en_US.json           # English
+│   └── ru_RU.json           # Russian
 ├── config/
-│   └── settings.json        # User settings (auto-generated at runtime)
+│   └── settings.json        # User settings (auto-generated at runtime; stores custom_shortcuts, favorite_files, etc.)
 ├── data/
-│   └── annotations/         # Annotation data storage (JSON format, legacy compat)
+│   ├── annotations/         # Annotation data storage (JSON format, legacy compat)
+│   └── difficulty_cache.db  # SQLite cache for GTP difficulty scores (v2.4.0)
 ├── libfluidsynth-3.dll      # FluidSynth dynamic lib (LGPL 2.1)
 ├── SDL3.dll                 # SDL3 dynamic lib (FluidSynth dependency)
 ├── sndfile.dll              # libsndfile dynamic lib (FluidSynth dependency)
@@ -490,16 +537,20 @@ The code in this project is **AI-assisted**. The author is responsible for archi
 | **文本标注系统**    | 双击谱面任意位置添加演奏技巧说明，支持颜色、字体大小、粗体等样式，悬停显示删除按钮                            |
 | **标注自动导入/导出** | 自动加载同名 `.anno.json` 文件，实时保存，支持分轨/分页 PNG/**JPG**/PDF A4导出（含标注，异步导出+进度条+可取消）                |
 | **标注全局撤销重做**  | Ctrl+Z 撤销 / Ctrl+Y 重做，最大50步深度                                        |
-| **标注管理器**     | 批量管理标注，支持新建/编辑/删除                                                    |
+| **标注管理器**     | 独立对话框批量浏览、编辑、删除与新建标注                                                 |
+| **收藏功能**      | 文件项悬停星标 / 右键菜单切换收藏，最近文件列表上方独立展示收藏列表（默认3行，展开6行，可滚动）                       |
+| **难度评分**      | GTP 文件自动 0–10 星难度评分（时长、BPM、推弦/揉弦/泛音/击勾弦/滑音/震音/点弦等综合算法），自动排除鼓/钢琴/键盘/贝斯音轨，SQLite 缓存，鼠标悬停显示 tooltip |
+| **快捷键自定义**    | 设置 → 快捷键 一栏以表格展示11个操作，单元格点击进入捕获模式（Esc 取消/Backspace 清空/Enter 确认），冲突检测弹「替换/清空/取消」，最多 3 键，不允许纯修饰键 |
 | **点击跳转播放**    | 单击谱面任意位置自动跳转并开始播放                                                    |
 | **页码导航**      | PDF / 多图片模式底部显示页码输入框，直接跳转指定页面                                        |
 | **鼠标滚轮**      | 滚轮滚动谱面，Ctrl 加速 / Shift 精细控制                                          |
-| **右键菜单**      | 打开文件所在位置（Windows/Linux 兼容）                                           |
+| **右键菜单**      | 打开文件所在位置（Windows/Linux 兼容）、添加/移除收藏                                    |
 | **GTP音轨选择**   | 下拉菜单切换音轨，即时重渲染，分轨独立标注                                                |
-| **深色/浅色主题**  | 现代化深色/浅色 UI，自定义组件风格 + SVG 图标(Lucide风格)                                  |
+| **深色/浅色主题**  | 现代化深色/浅色 UI，自定义组件风格 + SVG 图标(Lucide风格)，支持自定义 JSON / Python 主题         |
 | **键盘快捷键**     | 空格播放/暂停、方向键调速/Ctrl+Z撤销/Ctrl+Y重做/ESC关闭                                   |
-| **多语言界面**     | 支持中文(简体)/英文切换，翻译文件位于 locales/ 目录，设置中一键切换                             |
-| **应用图标**      | 自定义图标(icon.ico)，窗口图标 + 任务栏图标统一显示                                     |
+| **多语言界面**     | 支持中文(简体) / 英文 / 俄文 三语切换，翻译文件位于 locales/ 目录，设置中一键切换                     |
+| **关于 / 自动更新** | 关于窗口显示版本、ApolloTab 致谢、许可证、AI 辅助声明；启动时静默调用 GitHub Releases API 检查更新（5s 超时，可取消） |
+| **应用图标**      | 自定义图标(icon.ico / icon.icns)，窗口图标 + 任务栏图标统一显示                            |
 | **跨平台打包**     | 支持 PyInstaller 打包：Windows EXE / Linux DEB+ZIP / macOS APP（详见[打包发布说明](#打包发布说明)） |
 
 ## 快速开始
@@ -618,15 +669,18 @@ bash build_dmg.sh
 ### 使用方法
 
 1. 启动程序后，点击「选择文件夹」按钮选择存放吉他谱的目录
-2. 文件列表会显示所有支持的格式文件（PNG/JPG/WEBP/PDF/GP3-GP5/GPX）
+2. 文件列表会显示所有支持的格式文件（PNG/JPG/WEBP/PDF/GP3-GP5/GPX），最近文件列表上方还有独立的「收藏」列表；悬停文件项显示星标按钮（或右键菜单切换收藏）。GTP 文件会自动显示 0–10 星难度评分（鼠标悬停查看 tooltip）。
 3. 双击文件打开谱面查看器：
    - 单张图片：直接显示并播放
    - PDF：逐页渲染为图片拼接显示
    - 多张图片：按文件名排序后拼接连续显示
    - GTP 文件：通过 ApolloTab 引擎完整解析渲染为六线谱图像，支持音频播放、音轨切换、播放光标
 4. 使用工具栏和控制面板进行播放、调速、标注等操作
+5. 「设置 → 快捷键」可重新映射任意按键；「关于」窗口可手动检查更新。
 
 ## 快捷键
+
+默认绑定（所有快捷键均可在「设置 → 快捷键」中重新映射）：
 
 | 快捷键      | 功能      |
 | -------- | ------- |
@@ -638,6 +692,8 @@ bash build_dmg.sh
 | `Ctrl+Z` | 标注撤销    |
 | `Ctrl+Y` | 标注重做    |
 | `ESC`    | 关闭当前窗口  |
+
+> 捕获规则、跨平台行为与冲突处理见下方「[快捷键自定义](#快捷键自定义)」。
 
 ## 鼠标操作
 
@@ -653,13 +709,43 @@ bash build_dmg.sh
 | `Ctrl + 点击进度条`  | 设置循环 A 点       |
 | `Shift + 点击进度条` | 设置循环 B 点       |
 
+## 快捷键自定义
+
+打开「设置 → 快捷键」即可重新绑定任意操作。表格中左侧是操作名，右侧是当前绑定。
+
+- **捕获模式**：点击右侧单元格进入（黄底高亮），按目标组合键即可绑定。
+  - `Esc` 取消 · `Backspace` 清空（空串 = 永久禁用该操作）· `Enter` 确认当前按住的状态。
+- **绑定规则**：
+  - 至少包含 1 个非修饰键。
+  - 修饰键（`Ctrl` / `Shift` / `Alt` / `Meta` / `CapsLock` / `Tab`）不能单独成键，必须与至少 1 个普通按键组合。
+  - 组合键最多 3 个键。
+- **冲突检测**：新组合已被其他操作占用时，弹窗提示「替换 / 清空 / 取消」。
+- **跨平台语义**：`Option` 等价于 `Alt`；`Command` / `Win` / `Super` 统一映射为 `Meta`，存盘后跨平台保持一致。macOS 上自动交换 `Ctrl` 与 `Cmd` 的显示名，与物理按键保持一致。
+- **重置所有**：一键恢复所有操作到默认绑定。
+- **持久化**：自定义绑定写入 `config/settings.json` 的 `custom_shortcuts` 字段。
+
 ## 项目结构
 
 ```
 TAB Score Viewer/
-├── TAB Score Viewer.py      # 主程序（含I18n国际化类、图标加载器）
+├── TAB Score Viewer.py      # 主程序入口（SelectionWindow / DisplayWindow）
+├── constants.py             # 共享常量（路径、默认设置、键映射）
+├── models.py                # 标注/设置/文件项的 dataclass
+├── theme.py                 # ThemeManager（深/浅色 + 自定义 JSON/Python 主题）
+├── i18n.py                  # I18n 单例（zh_CN / en_US / ru_RU）
+├── fonts.py                 # UI 字体选择工具
+├── config.py                # settings.json 读写与默认值
+├── workers.py               # QRunnable 异步任务（文件加载、渲染等）
+├── difficulty_scoring.py    # GTP 难度评分引擎 + SQLite 缓存
+├── shortcuts.py             # ShortcutAction / ShortcutManager（v2.5.0，跨平台）
+├── shortcuts_dialog.py      # 快捷键自定义对话框 + 捕获编辑器（v2.5.0）
+├── settings_dialog.py       # 设置窗口（通用 / 主题 / 快捷键 Tab）
+├── annotation_dialogs.py    # 标注创建 / 编辑 / 批量管理 对话框
+├── about_dialog.py          # 关于窗口（版本、致谢、许可证、检查更新按钮）
+├── update_checker.py        # 异步 GitHub Releases 更新检查（5s 超时）
 ├── TAB Score Viewer.spec    # PyInstaller 打包配置 - Windows 版
 ├── TAB Score Viewer_linux.spec  # PyInstaller 打包配置 - Linux 版
+├── TAB Score Viewer_macOS.spec  # PyInstaller 打包配置 - macOS 版
 ├── build_deb.sh             # DEB 包自动化构建脚本（含启动脚本+桌面快捷方式）
 ├── build_dmg.sh             # macOS DMG 打包脚本
 ├── prepare_macos_build.sh   # macOS 准备脚本：收集动态库并修复 @rpath
@@ -671,19 +757,26 @@ TAB Score Viewer/
 │   ├── play.svg             # 播放三角形图标
 │   ├── stop.svg             # 停止方形图标
 │   ├── volume.svg           # 扬声器图标
-│   └── ...                  # （共13个图标）
+│   ├── star.svg             # 空心星（未收藏）
+│   ├── star-filled.svg      # 实心星（已收藏）
+│   └── ...                  # （共15个图标）
 ├── icon.png                 # 应用图标源文件 (PNG, 2048x2048)
 ├── icon.ico                 # 应用图标 (ICO多尺寸: 16/32/48/64/128/256)
+├── icon.icns                # 应用图标 (macOS 多尺寸)
 ├── README.md                 # 项目说明文档（本文件）
 ├── requirements.txt          # Python 依赖列表
 ├── LICENSE                   # 许可证文件 (MPL 2.0)
+├── themes/                  # 自定义主题投放目录（JSON / .py）
+│   └── example_custom.json
 ├── locales/                  # 多语言翻译文件目录
 │   ├── zh_CN.json            # 简体中文翻译
-│   └── en_US.json            # 英文翻译
+│   ├── en_US.json            # 英文翻译
+│   └── ru_RU.json            # 俄文翻译
 ├── config/
-│   └── settings.json         # 用户设置（运行时自动生成）
+│   └── settings.json         # 用户设置（运行时自动生成；含 custom_shortcuts / favorite_files 等）
 ├── data/
-│   └── annotations/          # 旧版标注数据存储（JSON格式，兼容保留）
+│   ├── annotations/          # 旧版标注数据存储（JSON格式，兼容保留）
+│   └── difficulty_cache.db   # GTP 难度评分 SQLite 缓存（v2.4.0）
 ├── libfluidsynth-3.dll       # FluidSynth 动态库 (LGPL 2.1)
 ├── SDL3.dll                  # SDL3 动态库 (FluidSynth 依赖)
 ├── sndfile.dll               # libsndfile 动态库 (FluidSynth 依赖)
