@@ -7,8 +7,8 @@ Description: Universal Guitar TAB Score Viewer / 功能描述: 万能吉他谱�
              支持格式: PNG, JPG, JPEG, WEBP(image), PDF(document), GP3-GP5/GPX(GTP tablature)
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-07-22 (v2.4.0 - GTP 难度评分)
-最后修改: 2026-07-22 (v2.4.0 - GTP 难度评分)
+Last Modified: 2026-07-23 (v2.5.2 - 修复 Mac Qt Ctrl/Cmd 互换)
+最后修改: 2026-07-23 (v2.5.2 - 修复 Mac Qt Ctrl/Cmd 互换)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -133,6 +133,8 @@ from difficulty_scoring import (
     LoadDifficultyWorker,
     DifficultyResult,
 )
+# 快捷键自定义 (v2.5.0 - 设置窗口可视化面板, 支持 1-3 键组合/冲突检测/持久化)
+from shortcuts import ShortcutManager, DEFAULT_SHORTCUTS
 from about_dialog import AboutDialog
 from settings_dialog import SettingsDialog
 from config import apply_config_settings, get_check_update_on_startup
@@ -2037,7 +2039,8 @@ class DisplayWindow(QMainWindow):
     def init_ui(self)->None:
         """初始化用户界面"""
         self.setWindowTitle(I18n.t("app.title"))
-        self.setGeometry(150,80,1100,850)
+        # 窗口高度 -50px (用户要求: 减少垂直距离, 让窗口更紧凑)
+        self.setGeometry(150,80,1100,800)
         self._apply_theme()
 
         central=QWidget();self.setCentralWidget(central)
@@ -2401,10 +2404,11 @@ class DisplayWindow(QMainWindow):
         # 状态信息栏已移除(简化界面，位置/时间信息可在进度条提示中查看)
 
         # 快捷键帮助
-        hg=QGroupBox(I18n.t("control_panel.shortcut_group"));hl=QVBoxLayout(hg)
-        help_txt=QLabel(I18n.t("control_panel.shortcut_help"))
-        help_txt.setStyleSheet(f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:11px;")
-        hl.addWidget(help_txt);layout.addWidget(hg)
+        # 使用实例变量以便在 GTP 模式下动态隐藏 (用户要求: GTP 模式下不显示快捷键区)
+        self.shortcut_group_box=QGroupBox(I18n.t("control_panel.shortcut_group"));hl=QVBoxLayout(self.shortcut_group_box)
+        self.help_txt=QLabel(I18n.t("control_panel.shortcut_help"))
+        self.help_txt.setStyleSheet(f"color:{ThemeManager.get('text_muted', '#64748B')};font-size:11px;")
+        hl.addWidget(self.help_txt);layout.addWidget(self.shortcut_group_box)
 
         # === GTP音轨音量控制(仅GTP文件显示，默认隐藏) ===
         self.volume_group_box = QGroupBox(I18n.t("control_panel.volume_group"))
@@ -2558,6 +2562,9 @@ class DisplayWindow(QMainWindow):
                 self.metronome_beat_spin.setVisible(False)
             if hasattr(self, 'metronome_beat_denominator_spin'):
                 self.metronome_beat_denominator_spin.setVisible(False)
+            # GTP模式: 隐藏快捷键帮助区 (用户要求: 简化 GTP 模式界面)
+            if hasattr(self, 'shortcut_group_box'):
+                self.shortcut_group_box.setVisible(False)
         else:
             # [v1.1.3] 图片/PDF 模式也需要初始化音频引擎，以便使用节拍器
             self._init_audio_engine()
@@ -2586,6 +2593,9 @@ class DisplayWindow(QMainWindow):
                 self.metronome_beat_spin.setVisible(True)
             if hasattr(self, 'metronome_beat_denominator_spin'):
                 self.metronome_beat_denominator_spin.setVisible(True)
+            # 非GTP模式: 显示快捷键帮助区
+            if hasattr(self, 'shortcut_group_box'):
+                self.shortcut_group_box.setVisible(True)
 
         # 延迟重算: 确保窗口布局完成后再精确计算一次总滚动距离
         QTimer.singleShot(200,self._calculate_total_distance)
@@ -5038,7 +5048,7 @@ class DisplayWindow(QMainWindow):
           4. 更新工具栏按钮图标和提示文字
 
         边界情况处理:
-          - _saved_geometry为None时使用默认大小1100x850
+          - _saved_geometry为None时使用默认大小1100x800
         """
         self.is_fullscreen=False
         self.showNormal()
@@ -5046,7 +5056,8 @@ class DisplayWindow(QMainWindow):
             self.restoreGeometry(self._saved_geometry)
             print(f"[Fullscreen] 已恢复窗口几何信息")
         else:
-            self.setGeometry(150,80,1100,850)
+            # 窗口高度 -50px (用户要求: 减少垂直距离, 让窗口更紧凑)
+            self.setGeometry(150,80,1100,800)
             print(f"[Fullscreen] ⚠ 无保存的几何信息，使用默认大小")
         self._update_fullscreen_button()
         print(f"[Fullscreen] ✓ 已退出全屏模式")
@@ -5070,10 +5081,53 @@ class DisplayWindow(QMainWindow):
 
     # ========== 键盘事件 ==========
 
-    def keyPressEvent(self,event:QKeyEvent)->None:
-        """键盘快捷键 - 含全局标注撤销/重做(Ctrl+Z / Ctrl+Y) + Ctrl+K创建标注"""
+    def keyPressEvent(self,event:'QKeyEvent')->None:
+        """键盘快捷键 - 通过 ShortcutManager 分发 (v2.5.0)
+
+        优先级:
+          1. 用户自定义 (config/settings.json → ShortcutManager)
+          2. DEFAULT_SHORTCUTS 默认注册
+          3. 命中后调用 callback_attr 指向的方法 (如 toggle_playback, _anno_undo 等)
+          4. 未命中 → 走 super().keyPressEvent 传递
+        """
         try:
-            # === 标注撤销/重做(优先于其他快捷键) ===
+            mgr = ShortcutManager.instance()
+            seq = mgr.event_to_sequence(event)
+            if not seq:
+                super().keyPressEvent(event)
+                return
+
+            # 1. 查表 (用户优先 > 默认)
+            action_id = mgr.lookup(seq)
+            if action_id:
+                # 找到对应操作, 调用回调
+                for a in DEFAULT_SHORTCUTS:
+                    if a.id == action_id:
+                        # 检查 callback 是否存在 (可能因显示窗口未完全初始化而缺失)
+                        if hasattr(self, a.callback_attr):
+                            try:
+                                getattr(self, a.callback_attr)()
+                                return
+                            except Exception:
+                                pass
+                        break
+                # 命中但回调不存在或执行失败 - 继续到原硬编码逻辑
+
+            # 2. 回退: 原硬编码逻辑 (兼容未通过 ShortcutManager 注册的键, 如 F1 帮助等)
+            self._legacy_keypress(event)
+        except Exception:
+            super().keyPressEvent(event)
+
+
+    def _legacy_keypress(self, event:'QKeyEvent')->None:
+        """
+        原硬编码快捷键逻辑 (keyPressEvent 回退路径)
+
+        设计原因:
+          - ShortcutManager 接管"已注册的操作", 未注册的键仍由本方法处理
+          - 保留所有原有行为 (Ctrl+Z / Ctrl+Y / Space / 方向键 / F11 / Escape)
+        """
+        try:
             if event.modifiers() & Qt.ControlModifier:
                 if event.key() == Qt.Key_Z:       # Ctrl+Z: 撤销标注
                     self._anno_undo(); return
@@ -5106,9 +5160,23 @@ class DisplayWindow(QMainWindow):
                     self.exit_fullscreen()  # v2.1.0修改: 全屏模式下ESC退出全屏而非关闭
                 else:
                     self.close()             # 窗口模式保持原有行为: 关闭窗口
-            super().keyPressEvent(event)
+            else:
+                super().keyPressEvent(event)
         except Exception:
             pass
+
+
+    def get_custom_shortcuts_snapshot(self) -> dict:
+        """
+        获取当前 ShortcutManager 中的自定义快捷键 (供设置面板同步)
+
+        返回: {action_id: key_seq_str}
+        """
+        try:
+            from config import get_custom_shortcuts
+            return get_custom_shortcuts()
+        except Exception:
+            return {}
 
     def showEvent(self,event:QShowEvent)->None:
         """窗口显示事件"""
@@ -5814,13 +5882,15 @@ class SelectionWindow(QMainWindow):
                 border:1px solid{t['accent']};border-radius:6px;outline:none;}}
             QListWidget#recent_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};color:{t['accent']};}}
             QListWidget#recent_list_widget::item:selected{{background-color:{t['accent']};color:{t['bg_primary']};font-weight:bold;}}
-            QListWidget#recent_list_widget::item:hover{{background-color:{t['accent']};opacity:0.15;border-radius:4px;}}
+            /* hover: 使用背景色叠加避免文字变淡不可见 / hover: tint background only, keep text readable */
+            QListWidget#recent_list_widget::item:hover{{background-color:{t['bg_secondary']};color:{t['accent']};border-radius:4px;}}
             /* 收藏文件列表样式 (独立控件，带主色) / Favorites list with primary color */
             QListWidget#favorites_list_widget{{background-color:{t['bg_surface']};color:{t['primary']};
                 border:1px solid{t['primary']};border-radius:6px;outline:none;}}
             QListWidget#favorites_list_widget::item{{padding:6px;border-bottom:1px solid{t['border']};color:{t['primary']};}}
             QListWidget#favorites_list_widget::item:selected{{background-color:{t['primary']};color:{t['bg_primary']};font-weight:bold;}}
-            QListWidget#favorites_list_widget::item:hover{{background-color:{t['primary']};opacity:0.15;border-radius:4px;}}
+            /* hover: 使用背景色叠加避免文字变淡不可见 / hover: tint background only, keep text readable */
+            QListWidget#favorites_list_widget::item:hover{{background-color:{t['bg_secondary']};color:{t['primary']};border-radius:4px;}}
             QListWidget{{background-color:{t['bg_surface']};color:{t['text_primary']};
                 border:1px solid{t['border']};border-radius:6px;outline:none;}}
             QListWidget::item{{padding:6px;border-bottom:1px solid{t['border']};}}
@@ -5894,7 +5964,7 @@ class SelectionWindow(QMainWindow):
             self.last_folder=''
 
     def save_config(self)->None:
-        """保存配置文件 - 包含目录、语言、主题、字体、GTP渲染参数、收藏和最近文件"""
+        """保存配置文件 - 包含目录、语言、主题、字体、GTP渲染参数、收藏和最近文件、自定义快捷键"""
         try:
             cfg={
                 'last_folder': self.current_directory,
@@ -5909,12 +5979,23 @@ class SelectionWindow(QMainWindow):
                     attr: getattr(RenderConfig, attr)
                     for attr, _, _, _, _, _ in _RENDER_PARAMS
                 },
+                'custom_shortcuts': self._get_custom_shortcuts_for_save(),  # 自定义快捷键 (v2.5.0)
             }
             os.makedirs(os.path.dirname(CONFIG_FILE),exist_ok=True)
             with open(CONFIG_FILE,'w',encoding='utf-8') as f:
                 json.dump(cfg,f,ensure_ascii=False,indent=2)
         except Exception as e:
             print(f"保存配置失败: {e}")
+
+    def _get_custom_shortcuts_for_save(self) -> dict:
+        """从 ShortcutManager 提取当前生效的自定义快捷键"""
+        try:
+            from shortcuts import ShortcutManager
+            mgr = ShortcutManager.instance()
+            # 只保存非空的自定义值 (空字符串也算"被禁用",需要保存)
+            return {aid: seq for aid, seq in mgr._custom.items()}
+        except Exception:
+            return {}
 
     def _open_settings_dialog(self)->None:
         """打开设置对话框, 集中配置语言/主题/字体/GTP渲染参数"""

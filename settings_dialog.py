@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QAbstractButton,
     QCheckBox,
+    QScrollArea,
 )
 
 from ApolloTab.utils.constants import RenderConfig
@@ -88,7 +89,8 @@ class SettingsDialog(QDialog):
         self.setObjectName("SettingsDialog")
         self.setWindowTitle(I18n.t("settings_dialog.window_title"))
         self.setWindowIcon(get_app_icon())
-        self.resize(560, 520)
+        # 窗口高度 -50px (用户要求: 减少垂直距离, 让窗口更紧凑)
+        self.resize(560, 470)
 
         # 记录原始值, 用于取消时恢复主题和 UI 字体预览
         self._original_theme = ThemeManager.current_name()
@@ -150,9 +152,18 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self.general_tab, I18n.t("settings_dialog.tab_general"))
 
         # GTP 渲染设置页
+        # 使用 QScrollArea 包裹, 防止内容超出窗口高度时显示不全 (用户要求)
+        # 当窗口高度被压缩时, 用户可以滚动查看所有渲染参数
         self.gtp_tab = QWidget()
-        gtp_layout = QFormLayout(self.gtp_tab)
+        gtp_outer_layout = QVBoxLayout(self.gtp_tab)
+        gtp_outer_layout.setContentsMargins(0, 0, 0, 0)
+        gtp_outer_layout.setSpacing(0)
+
+        # 内容容器 - 承载实际表单
+        gtp_content = QWidget()
+        gtp_layout = QFormLayout(gtp_content)
         gtp_layout.setLabelAlignment(Qt.AlignRight)
+        gtp_layout.setContentsMargins(8, 8, 8, 8)
 
         # GTP 渲染字体
         self.gtp_font_combo = QFontComboBox()
@@ -181,7 +192,31 @@ class SettingsDialog(QDialog):
             gtp_layout.addRow(label, spin)
             self._render_spinboxes[attr] = spin
 
+        # 滚动区域 - 包裹内容, 高度受限时可滚动
+        gtp_scroll = QScrollArea()
+        gtp_scroll.setWidgetResizable(True)  # 内容自适应滚动区域宽度
+        gtp_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 水平不滚动
+        gtp_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 垂直按需滚动
+        gtp_scroll.setFrameShape(QScrollArea.NoFrame)  # 无边框, 视觉更简洁
+        gtp_scroll.setWidget(gtp_content)
+
+        gtp_outer_layout.addWidget(gtp_scroll)
+
         self.tabs.addTab(self.gtp_tab, I18n.t("settings_dialog.tab_gtp"))
+
+        # 快捷键自定义页 (延迟导入: 兼容 shortcuts_dialog.py 尚未就绪/语法错误的情况)
+        self.shortcuts_tab = None
+        try:
+            from shortcuts_dialog import ShortcutCustomizeDialog
+            self.shortcuts_tab = ShortcutCustomizeDialog()
+            self.tabs.addTab(self.shortcuts_tab, I18n.t("settings_dialog.tab_shortcuts"))
+        except Exception as e:
+            # shortcuts_dialog.py 缺失/语法错误时, 不影响设置对话框其他功能
+            try:
+                print(f"[SettingsDialog] shortcuts_tab 加载失败: {e}")
+            except Exception:
+                pass
+
         main_layout.addWidget(self.tabs)
 
         # 按钮: 确定 / 取消 / 恢复默认
@@ -228,6 +263,19 @@ class SettingsDialog(QDialog):
                 padding: 6px 14px; margin: 2px; border-radius: 4px; }}
             QTabBar::tab:selected {{ background-color: {t['primary']}; color: white; }}
             QGroupBox {{ color: {t['text_primary']}; border: 1px solid {t['border']}; margin-top: 8px; }}
+            QTableWidget {{ background-color: {t['bg_surface']}; color: {t['text_primary']};
+                border: 1px solid {t['border']}; gridline-color: {t['border']};
+                font-family: {get_font_family_css('ui')}; }}
+            QTableWidget::item {{ padding: 6px 8px; border: none; }}
+            QTableWidget::item:selected {{ background-color: {t['primary']}; color: white; }}
+            QHeaderView::section {{ background-color: {t['bg_secondary']}; color: {t['text_primary']};
+                padding: 6px 8px; border: 1px solid {t['border']}; font-weight: bold; }}
+            /* 滚动区域 - GTP 渲染参数页等可滚动内容 */
+            QScrollArea {{ background-color: transparent; border: none; }}
+            QScrollBar:vertical {{ background: {t['bg_secondary']}; width: 10px; border-radius: 5px; }}
+            QScrollBar::handle:vertical {{ background: {t['border']}; border-radius: 5px; min-height: 30px; }}
+            QScrollBar::handle:vertical:hover {{ background: {t['text_muted']}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         """)
         self.setStyleSheet(qss)
 
@@ -337,6 +385,14 @@ class SettingsDialog(QDialog):
                 self._parent_window.save_config()
             except Exception:
                 pass
+
+        # 自定义快捷键 - 通过 config.set_custom_shortcuts() 写入内存, save_config() 负责持久化
+        from config import set_custom_shortcuts
+        try:
+            if getattr(self, 'shortcuts_tab', None) is not None:
+                set_custom_shortcuts(self.shortcuts_tab.get_current_dict())
+        except Exception:
+            pass
 
         self.accept()
 
