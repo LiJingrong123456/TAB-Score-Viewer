@@ -71,6 +71,9 @@ class SettingsDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._parent_window = parent
+        # 设置 objectName 让 QSS 选择器 QDialog#SettingsDialog 精确匹配本对话框
+        # 解决作为 SelectionWindow 子控件时,父 QSS 覆盖导致主题样式不立即生效的问题
+        self.setObjectName("SettingsDialog")
         self.setWindowTitle(I18n.t("settings_dialog.window_title"))
         self.setWindowIcon(get_app_icon())
         self.resize(560, 520)
@@ -85,6 +88,13 @@ class SettingsDialog(QDialog):
         self._setup_ui()
         self._apply_theme()
         self._load_current_values()
+
+        # 监听主题变化信号: 主题变更后立即刷新对话框样式
+        # 防止外部触发主题变更(如 DisplayWindow 内 GTP 渲染主题同步)时遗漏本对话框
+        try:
+            ThemeManager.theme_changed.connect(self._on_theme_changed)
+        except Exception:
+            pass
 
     def _setup_ui(self) -> None:
         """初始化设置对话框 UI"""
@@ -180,7 +190,9 @@ class SettingsDialog(QDialog):
         """
         应用当前主题样式到设置对话框
 
-        性能优化(P0-1): 使用 _get_cached_qss() 缓存QSS字符串。
+        原理: 通过 setStyleSheet 设置 QSS,Qt 会自动将样式传播给所有子控件。
+        QSS 中使用 QDialog 选择器(因为 SettingsDialog 继承自 QDialog),
+        子控件通过类型选择器(QLabel/QPushButton 等)匹配并应用样式。
         """
         theme_name = ThemeManager.current_name()
         t = ThemeManager.current()
@@ -206,6 +218,13 @@ class SettingsDialog(QDialog):
             QGroupBox {{ color: {t['text_primary']}; border: 1px solid {t['border']}; margin-top: 8px; }}
         """)
         self.setStyleSheet(qss)
+
+    def _on_theme_changed(self, _theme_name: str) -> None:
+        """
+        主题变更信号槽: 外部触发主题切换时立即刷新本对话框样式
+        防御性: 兜底保证,正常情况下 _preview_theme 已经手动调用了 _apply_theme
+        """
+        self._apply_theme()
 
     def _load_current_values(self) -> None:
         """从当前配置和 RenderConfig 加载默认值到控件"""
