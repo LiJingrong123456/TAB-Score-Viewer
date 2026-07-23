@@ -56,10 +56,15 @@ Core Features / 核心功能:
      auto-loaded into the settings theme selector, applying to both UI and GTP rendering
      主题扩展系统 - 用户可在 themes/ 目录下通过 JSON/Python 文件定义自定义主题，
      自动加载到设置界面的主题选择器中，同时应用到 UI 和 GTP 渲染
+ 24. GTP difficulty scoring - silent background parsing (QRunnable+QThreadPool) for .gp*/.gpx/.gtp files,
+     0-10 star rating based on BPM/duration/techniques (bends/harmonics/tapping/vibrato/hammer/pull/slide/...),
+     SQLite cache by mtime, displayed as ★N/10 or ☆N/10 at end of file list item with rich tooltip
+     GTP 难度评分 - 后台静默解析 .gp*/.gpx/.gtp 文件，按 BPM/时长/技巧（Bend/Harmonic/Tapping/Vibrato/Hammer/Pull/Slide...）输出 0-10 评分，
+     SQLite 缓存 (按 mtime 失效)，文件项末尾显示 ★N/10 或 ☆N/10，鼠标悬停显示评分明细
 
 Created: 2026-06-06 / 创建日期: 2026-06-06
-Last Modified: 2026-06-30 (v2.2.0 - Theme extension system: custom JSON/Python themes)
-最后修改: 2026-06-30 (v2.2.0 - 主题扩展系统：自定义 JSON/Python 主题)
+Last Modified: 2026-07-22 (v2.4.0 - GTP 难度评分)
+最后修改: 2026-07-22 (v2.4.0 - GTP 难度评分)
 
 Dependencies / 依赖库:
   - PyQt5 >= 5.15     # GUI framework (windows/widgets/signals/painting/PDF export)
@@ -177,6 +182,12 @@ from annotation_dialogs import (
     AnnotationCreateDialog,
     AnnotationEditDialog,
     AnnotationManagerDialog,
+)
+# 难度评分模块 (GTP 文件 0-10 难度自动评分 + SQLite 缓存)
+from difficulty_scoring import (
+    compute_difficulty,
+    LoadDifficultyWorker,
+    DifficultyResult,
 )
 from about_dialog import AboutDialog
 from settings_dialog import SettingsDialog
@@ -6087,6 +6098,14 @@ class SelectionWindow(QMainWindow):
         self.MAX_FAVORITE_FILES: int = 100
         self._favorites_expanded: bool = False        # 默认折叠
 
+        # 难度评分数据 - 后台 Worker + 结果缓存
+        self._difficulty_worker = None  # 当前 LoadDifficultyWorker 引用（用于取消）
+        self._difficulty_results: Dict[str, DifficultyResult] = {}  # 路径 -> 结果
+        # 行文本尾部匹配正则（用于清理旧星号，避免重复追加）
+        self._DIFF_STAR_RE = __import__('re').compile(
+            r'\s*[☆★]\s*\d+(?:\.\d+)?/10\s*$'
+        )
+
         # 启动时更新检查相关 - 每个会话仅执行一次
         self._startup_check_done:bool=False
         self._startup_check_worker:Optional[UpdateCheckWorker]=None
@@ -6453,6 +6472,10 @@ class SelectionWindow(QMainWindow):
             self.file_list.addItem(item);self.original_items.append((name,fpath,is_dir))
         self.file_list.setUpdatesEnabled(True)
 
+        # 异步难度评分 (后台静默解析 GTP 文件，写入 SQLite 缓存，回写星号)
+        if self.current_directory:
+            self._start_difficulty_scoring(self.current_directory)
+
     def _on_files_error(self,msg:str)->None:
         """加载错误处理 - 区分目录错误与一般错误"""
         self.is_loading=False;self.file_list.clear()
@@ -6466,6 +6489,131 @@ class SelectionWindow(QMainWindow):
             QMessageBox.warning(self,I18n.t("settings_window.permission_denied_title"),I18n.t("settings_window.permission_denied_msg", msg=msg))
         else:
             QMessageBox.critical(self,I18n.t("messages.load_error"),I18n.t("messages.load_error_msg", msg=msg))
+
+    # ============================================================
+    # 难度评分 (Difficulty Scoring) — 后台 Worker
+    # ============================================================
+    def _start_difficulty_scoring(self,folder:str)->None:
+        """启动后台难度评分 - 仅对 GTP 类文件 (.gp/.gp3-5/.gpx/.gtp)"""
+        # 取消旧 Worker (防止并发)
+        if self._difficulty_worker is not None:
+            try:
+                self._difficulty_worker.cancel()
+            except Exception:
+                pass
+
+        # 收集当前目录下的 GTP 文件
+        gtp_files=[]
+        try:
+            for fname in os.listdir(folder):
+                fpath=os.path.join(folder,fname)
+                if not os.path.isfile(fpath):
+                    continue
+                ext=os.path.splitext(fname)[1].lower()
+                if ext in SUPPORTED_GTP_EXTENSIONS:
+                    gtp_files.append(fpath)
+        except OSError:
+            return
+
+        if not gtp_files:
+            return
+
+        # 重置当前结果缓存
+        self._difficulty_results={}
+
+        worker=LoadDifficultyWorker(gtp_files)
+        worker.signals.one_done.connect(self._on_difficulty_one_done)
+        worker.signals.all_done.connect(self._on_difficulty_all_done)
+        self._difficulty_worker=worker
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_difficulty_one_done(self,path:str,result:DifficultyResult)->None:
+        """单个文件评分完成 - 在主线程匹配列表项并更新文本/tooltip"""
+        try:
+            self._difficulty_results[path]=result
+            for i in range(self.file_list.count()):
+                item=self.file_list.item(i)
+                if item and item.data(Qt.UserRole)==path:
+                    self._apply_difficulty_to_item(item, result)
+                    break
+        except Exception:
+            pass
+
+    def _on_difficulty_all_done(self)->None:
+        """Worker 完成 - 清理引用"""
+        self._difficulty_worker=None
+
+    def _apply_difficulty_to_item(self,item:QListWidgetItem,result:DifficultyResult)->None:
+        """更新单行的文本和 tooltip (不刷新列表，防止闪烁)"""
+        try:
+            # 解析失败 / 无有效音轨 -> 不显示
+            if result.error or result.track_count==0:
+                return
+            # 清理旧的星号 (防止重复追加)
+            text=self._DIFF_STAR_RE.sub('',item.text())
+            star='★' if result.score>=5.0 else '☆'
+            item.setText(f"{text}  {star} {result.score:.1f}/10")
+            item.setToolTip(self._build_difficulty_tooltip(result))
+        except Exception:
+            pass
+
+    def _build_difficulty_tooltip(self,result:DifficultyResult)->str:
+        """构建多语言评分明细 tooltip"""
+        try:
+            sec=int(result.duration_sec)
+            mm,ss=divmod(sec,60)
+            duration_str=f"{mm}:{ss:02d}"
+            # 评分标签 (含星号)
+            star='★' if result.score>=5.0 else '☆'
+            header=I18n.t("settings_window.difficulty_label",
+                          score=f"{star} {result.score:.1f}/10")
+            title=I18n.t("settings_window.difficulty_tooltip_title")
+            tracks_label=I18n.t("settings_window.difficulty_tooltip_tracks")
+            bpm_label=I18n.t("settings_window.difficulty_tooltip_bpm")
+            dur_label=I18n.t("settings_window.difficulty_tooltip_duration")
+            tech_label=I18n.t("settings_window.difficulty_tooltip_techniques")
+            factors_label=I18n.t("settings_window.difficulty_tooltip_factors")
+            sep="─"*15
+            # 技术名称 (硬编码多语言，技术术语相对稳定)
+            tech_names_zh={
+                'bend':'推弦','harmonic':'泛音','tapping':'点弦','vibrato':'颤音',
+                'whammy':'摇杆','trill':'击弦颤音','tremolo':'震音','slide':'滑弦',
+                'hammer':'击弦','pull':'勾弦'
+            }
+            try:
+                cur_lang=I18n.current_language() or 'zh_CN'
+            except Exception:
+                cur_lang='zh_CN'
+            if cur_lang.startswith('en'):
+                tech_map={'bend':'Bend','harmonic':'Harmonic','tapping':'Tapping',
+                          'vibrato':'Vibrato','whammy':'Whammy','trill':'Trill',
+                          'tremolo':'Tremolo','slide':'Slide','hammer':'Hammer',
+                          'pull':'Pull'}
+            elif cur_lang.startswith('ru'):
+                tech_map={'bend':'Подтяжка','harmonic':'Флажолет','tapping':'Тэппинг',
+                          'vibrato':'Вибрато','whammy':'Тремоло-бар','trill':'Трель',
+                          'tremolo':'Тремоло','slide':'Слайд','hammer':'Хаммер',
+                          'pull':'Пулл-офф'}
+            else:
+                tech_map=tech_names_zh
+            # 拼装
+            lines=[f"{header}",sep,
+                   f"{tracks_label}: {result.track_count}",
+                   f"{bpm_label}: {result.bpm}",
+                   f"{dur_label}: {duration_str}",
+                   sep,tech_label+":"]
+            for key in ('bend','harmonic','tapping','vibrato','whammy',
+                        'trill','tremolo','slide','hammer','pull'):
+                cnt=result.techniques.get(key,0)
+                lines.append(f"  • {tech_map.get(key,key)}: {cnt}")
+            f=result.factors
+            lines.append(sep)
+            lines.append(f"{factors_label}:")
+            lines.append(f"  base={f.get('base',0):.1f} tech=+{f.get('tech',0):.1f} "
+                         f"bpm=+{f.get('bpm',0):.1f} dur=+{f.get('dur',0):.1f}")
+            return "\n".join(lines)
+        except Exception:
+            return I18n.t("settings_window.difficulty_calculating")
 
     def on_file_double_clicked(self,item:QListWidgetItem)->None:
         """双击文件项 - 图片格式自动加载同目录所有图片(按序拼接)"""

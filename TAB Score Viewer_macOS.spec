@@ -85,6 +85,17 @@ hiddenimports = [
     'guitarpro',
     'pyfluidsynth',
     'fluidsynth',
+    # 项目根目录模块(确保 PyInstaller 静态分析遗漏时仍能被打包)
+    'update_checker',
+    'theme',
+    'settings_dialog',
+    'config',
+    'constants',
+    'fonts',
+    'i18n',
+    'annotation_dialogs',
+    'about_dialog',
+    'models',
 ]
 
 # ===== 排除模块 =====

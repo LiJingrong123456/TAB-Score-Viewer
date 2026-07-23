@@ -263,7 +263,15 @@
     "favorites_collapse": "Свернуть ▲",
     "favorites_empty": "(Нет избранного)",
     "favorite_add": "Добавить в избранное",
-    "favorite_remove": "Удалить из избранного"
+    "favorite_remove": "Удалить из избранного",
+    "difficulty_label": "Сложность: {score}",
+    "difficulty_tooltip_title": "Детали оценки",
+    "difficulty_calculating": "Расчёт...",
+    "difficulty_tooltip_tracks": "Эфф. дорожек",
+    "difficulty_tooltip_bpm": "BPM",
+    "difficulty_tooltip_duration": "Длительность",
+    "difficulty_tooltip_techniques": "Приёмы",
+    "difficulty_tooltip_factors": "Факторы оценки"
   },
   "settings_dialog": {
     "window_title": "Настройки",

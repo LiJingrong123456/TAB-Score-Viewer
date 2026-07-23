@@ -263,7 +263,15 @@
     "favorites_collapse": "折叠 ▲",
     "favorites_empty": "(暂无收藏)",
     "favorite_add": "添加到收藏",
-    "favorite_remove": "取消收藏"
+    "favorite_remove": "取消收藏",
+    "difficulty_label": "难度评分: {score}",
+    "difficulty_tooltip_title": "评分明细",
+    "difficulty_calculating": "计算中...",
+    "difficulty_tooltip_tracks": "有效音轨",
+    "difficulty_tooltip_bpm": "BPM",
+    "difficulty_tooltip_duration": "时长",
+    "difficulty_tooltip_techniques": "技术统计",
+    "difficulty_tooltip_factors": "评分因子"
   },
   "settings_dialog": {
     "window_title": "设置",
