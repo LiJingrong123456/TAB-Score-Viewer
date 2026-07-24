@@ -1,0 +1,10 @@
+# 开发依赖 (与 requirements.txt 分离, 避免污染运行时)
+# 安装命令: pip install -r requirements-dev.txt
+#
+# 注意: 本项目复用根目录 venv/ 作为开发环境
+#  - 生产环境只需 requirements.txt
+#  - 开发/CI 环境再追加本文件
+
+# 测试框架
+pytest>=7.0
+pytest-cov>=4.0

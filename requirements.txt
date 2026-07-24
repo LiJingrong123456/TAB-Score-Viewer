@@ -18,3 +18,9 @@ pyguitarpro>=0.11
 # 仓库: https://github.com/FluidSynth/fluidSynth
 pyfluidsynth>=1.4.0
 apollotab>=0.3.8
+
+# 调音器 - 跨平台音频录制 (PortAudio 绑定)
+# 许可证: MIT
+# 仓库: https://github.com/spatialaudio/python-sounddevice
+sounddevice>=0.4.6
+numpy>=1.24
