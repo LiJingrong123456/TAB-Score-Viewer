@@ -316,7 +316,8 @@
     "anno_undo": "撤销标注",
     "anno_redo": "重做标注",
     "anno_create": "创建标注",
-    "metronome_toggle": "切换节拍器"
+    "metronome_toggle": "切换节拍器",
+    "tuner_toggle": "打开调音器"
   },
   "about_dialog": {
     "window_title": "关于",
@@ -358,5 +359,23 @@
     "recommend_label": "推荐下载（需重命名为 FluidR3_GM.sf2）：",
     "download_btn": "下载",
     "got_it_btn": "了解"
+  },
+  "tuner": {
+    "window_title": "调音器",
+    "start": "开始",
+    "stop": "停止",
+    "target_string": "目标弦",
+    "status_idle": "就绪 - 点击「开始」启动麦克风",
+    "status_listening": "🎤 正在监听... 请弹响琴弦",
+    "status_stopped": "已停止",
+    "no_signal": "无信号",
+    "strings": {
+      "E2": "E2 (6弦)",
+      "A2": "A2 (5弦)",
+      "D3": "D3 (4弦)",
+      "G3": "G3 (3弦)",
+      "B3": "B3 (2弦)",
+      "E4": "E4 (1弦)"
+    }
   }
 }

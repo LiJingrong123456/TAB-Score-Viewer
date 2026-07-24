@@ -4,7 +4,7 @@ tests/test_shortcuts.py
 shortcuts.py 单元测试:
   - _MODIFIER_KEY_MAP 跨平台语义 (Mac swap)
   - ShortcutAction dataclass
-  - DEFAULT_SHORTCUTS 11 个操作
+  - DEFAULT_SHORTCUTS 12 个操作 (v2.7.0 增加 tuner_toggle)
   - ShortcutManager.set_custom / set_custom_bulk / clear_all / remove_custom
   - ShortcutManager.get_key / get_action
   - ShortcutManager.event_to_sequence  (mock QKeyEvent)
@@ -83,8 +83,9 @@ class TestShortcutAction:
 # DEFAULT_SHORTCUTS
 # ============================================================
 class TestDefaultShortcuts:
-    def test_count_11(self):
-        assert len(DEFAULT_SHORTCUTS) == 11
+    def test_count_12(self):
+        # v2.7.0 增加 tuner_toggle, 总数 11 → 12
+        assert len(DEFAULT_SHORTCUTS) == 12
 
     def test_ids_unique(self):
         ids = [a.id for a in DEFAULT_SHORTCUTS]

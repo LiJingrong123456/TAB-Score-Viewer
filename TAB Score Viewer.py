@@ -2295,6 +2295,27 @@ class DisplayWindow(QMainWindow):
         self.curve_btn.clicked.connect(self._open_speed_curve_editor)
         tb.addWidget(self.curve_btn)
 
+        # 调音器按钮 (v2.7.0 新增) (SVG图标: 音叉)
+        # QToolButton 带下拉菜单, 满足"工具栏 + 菜单 + 快捷键"三入口
+        self.tuner_btn = QToolButton()
+        self.tuner_btn.setText(I18n.t("tuner.window_title"))
+        self.tuner_btn.setIcon(load_icon('tuner'))
+        self.tuner_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.tuner_btn.setToolTip(I18n.t("tuner.window_title") + " (Ctrl+T)")
+        self.tuner_btn.setPopupMode(QToolButton.InstantPopup)
+        self.tuner_btn.setMinimumSize(QSize(80, 36))
+        # 下拉菜单
+        tuner_menu = QMenu(self)
+        action_open_tuner = QAction(I18n.t("tuner.window_title"), self)
+        action_open_tuner.setIcon(load_icon('tuner'))
+        action_open_tuner.setShortcut("Ctrl+T")
+        action_open_tuner.triggered.connect(self._open_tuner)
+        tuner_menu.addAction(action_open_tuner)
+        self.tuner_btn.setMenu(tuner_menu)
+        # 点击主按钮也直接打开
+        self.tuner_btn.clicked.connect(self._open_tuner)
+        tb.addWidget(self.tuner_btn)
+
         return tb
 
     def _create_control_panel(self)->QWidget:
@@ -5007,6 +5028,37 @@ class DisplayWindow(QMainWindow):
             ) else self.base_speed
             secs = int(effective_speed * self.TIME_SCALE)
             self.time_end_label.setText(f"{secs//60:02d}:{secs%60:02d}")
+
+    # ========== 调音器 (v2.7.0 新增) ==========
+    # 单例缓存: 多次打开调音器不创建新窗口
+    _tuner_dialog = None
+
+    def _open_tuner(self) -> None:
+        """
+        打开调音器窗口 (v2.7.0)
+
+        入口: 工具栏按钮 / Ctrl+T 快捷键
+        行为: 复用同一个 TunerDialog 实例 (单例模式)
+        异常: sounddevice / numpy 缺失时弹错误提示而不崩溃
+        """
+        # 懒加载 tuner 模块 (sounddevice 在某些环境可能未装)
+        try:
+            from tuner import TunerDialog
+        except ImportError as e:
+            QMessageBox.warning(
+                self,
+                I18n.t("tuner.window_title"),
+                f"调音器依赖缺失: {e}\n请执行: pip install sounddevice numpy",
+            )
+            return
+
+        if DisplayWindow._tuner_dialog is None or \
+                not DisplayWindow._tuner_dialog.isVisible():
+            DisplayWindow._tuner_dialog = TunerDialog(parent=self)
+        # show() 而非 exec_(): 不阻塞当前窗口, 允许用户继续看谱
+        DisplayWindow._tuner_dialog.show()
+        DisplayWindow._tuner_dialog.raise_()
+        DisplayWindow._tuner_dialog.activateWindow()
 
     # ========== 全屏模式(v2.1.0新增) ==========
 

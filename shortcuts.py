@@ -410,6 +410,12 @@ DEFAULT_SHORTCUTS: List[ShortcutAction] = [
         default_key="Ctrl+M",
         callback_attr="_metronome_toggle",
     ),
+    ShortcutAction(
+        id="tuner_toggle",
+        name_key="shortcuts.tuner_toggle",
+        default_key="Ctrl+T",
+        callback_attr="_open_tuner",
+    ),
 ]
 
 

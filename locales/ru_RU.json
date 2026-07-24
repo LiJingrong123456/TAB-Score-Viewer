@@ -316,7 +316,8 @@
     "anno_undo": "Отменить аннотацию",
     "anno_redo": "Повторить аннотацию",
     "anno_create": "Создать аннотацию",
-    "metronome_toggle": "Метроном"
+    "metronome_toggle": "Метроном",
+    "tuner_toggle": "Открыть тюнер"
   },
   "about_dialog": {
     "window_title": "О программе",
@@ -358,5 +359,23 @@
     "recommend_label": "Рекомендуемая загрузка (переименуйте в FluidR3_GM.sf2):",
     "download_btn": "Скачать",
     "got_it_btn": "Понятно"
+  },
+  "tuner": {
+    "window_title": "Тюнер",
+    "start": "Старт",
+    "stop": "Стоп",
+    "target_string": "Целевая струна",
+    "status_idle": "Готово - нажмите 'Старт' для активации микрофона",
+    "status_listening": "🎤 Слушаю... щипните струну",
+    "status_stopped": "Остановлено",
+    "no_signal": "Нет сигнала",
+    "strings": {
+      "E2": "E2 (6-я)",
+      "A2": "A2 (5-я)",
+      "D3": "D3 (4-я)",
+      "G3": "G3 (3-я)",
+      "B3": "B3 (2-я)",
+      "E4": "E4 (1-я)"
+    }
   }
 }

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 调音器/音叉: 两个U形叉 + 下方横条 -->
+  <path d="M6 3v8a2 2 0 0 0 2 2 2 2 0 0 0 2-2V3"/>
+  <path d="M14 3v8a2 2 0 0 0 2 2 2 2 0 0 0 2-2V3"/>
+  <line x1="6" y1="14" x2="6" y2="21"/>
+  <line x1="18" y1="14" x2="18" y2="21"/>
+  <line x1="3" y1="21" x2="21" y2="21"/>
+  <circle cx="6" cy="9" r="1" fill="currentColor"/>
+  <circle cx="18" cy="9" r="1" fill="currentColor"/>
+</svg>

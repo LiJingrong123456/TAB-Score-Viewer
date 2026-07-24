@@ -316,7 +316,8 @@
     "anno_undo": "Undo Annotation",
     "anno_redo": "Redo Annotation",
     "anno_create": "Create Annotation",
-    "metronome_toggle": "Toggle Metronome"
+    "metronome_toggle": "Toggle Metronome",
+    "tuner_toggle": "Open Tuner"
   },
   "about_dialog": {
     "window_title": "About",
@@ -358,5 +359,23 @@
     "recommend_label": "Recommended download (rename to FluidR3_GM.sf2):",
     "download_btn": "Download",
     "got_it_btn": "Got it"
+  },
+  "tuner": {
+    "window_title": "Tuner",
+    "start": "Start",
+    "stop": "Stop",
+    "target_string": "Target String",
+    "status_idle": "Ready - click 'Start' to activate microphone",
+    "status_listening": "🎤 Listening... pluck a string",
+    "status_stopped": "Stopped",
+    "no_signal": "No signal",
+    "strings": {
+      "E2": "E2 (6th)",
+      "A2": "A2 (5th)",
+      "D3": "D3 (4th)",
+      "G3": "G3 (3rd)",
+      "B3": "B3 (2nd)",
+      "E4": "E4 (1st)"
+    }
   }
 }
