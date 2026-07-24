@@ -150,9 +150,14 @@ from workers import (
     ThemeRefreshSignals,
     ThemeRefreshWorker,
 )
+from annotation_manager import AnnotationManager
 
 # 兼容: 主文件内的 _UI_FONT_FAMILY 引用改为从 fonts 模块获取
 _UI_FONT_FAMILY = get_ui_font_family()
+
+# 调音器对话框单例 (v2.7.0) - 模块级变量, 供 DisplayWindow / SelectionWindow 共享
+# 避免两个窗口各打开一个 TunerDialog 抢麦克风
+_tuner_dialog_singleton = None
 
 
 # ============================================================
@@ -1965,14 +1970,9 @@ class DisplayWindow(QMainWindow):
 
         # 高级功能状态
         self.annotations:List[Annotation]=[]     # 当前音轨的标注列表(视图，实际存储在_annotations_by_track中)
-        self._annotations_by_track:Dict[int,List[Annotation]]={}  # 按音轨索引分轨存储的标注字典
-        # === 全局撤销/重做栈 ===
-        # 原理: 命令模式 + 快照栈。每次修改annotations前保存当前状态深拷贝到undo_stack，
-        #       撤销时将当前状态移入redo_stack并恢复上一个快照。
-        #       所有标注操作(画布双击/管理器增删改)统一走此栈，Ctrl+Z/Y全局生效。
-        self._undo_stack:List[List[Annotation]]=[]   # 撤销栈(历史状态)
-        self._redo_stack:List[List[Annotation]]=[]   # 重做栈(被撤销可恢复)
-        self._UNDO_MAX_DEPTH=50                      # 最大撤销深度(防止内存膨胀)
+        # 标注管理已抽离到 annotation_manager.AnnotationManager
+        # (撤销/重做栈、按轨分轨存储均在其内部维护)
+        self.ann_manager = AnnotationManager(self)
         self.speed_curve:SpeedCurveConfig=SpeedCurveConfig()  # 速度曲线
         # === 速度曲线排序缓存(避免每帧重新sorted) ===
         self._cached_sorted_curve_pts:list=None  # 缓存的已排序points列表
@@ -2295,24 +2295,11 @@ class DisplayWindow(QMainWindow):
         self.curve_btn.clicked.connect(self._open_speed_curve_editor)
         tb.addWidget(self.curve_btn)
 
-        # 调音器按钮 (v2.7.0 新增) (SVG图标: 音叉)
-        # QToolButton 带下拉菜单, 满足"工具栏 + 菜单 + 快捷键"三入口
-        self.tuner_btn = QToolButton()
-        self.tuner_btn.setText(I18n.t("tuner.window_title"))
-        self.tuner_btn.setIcon(load_icon('tuner'))
-        self.tuner_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        # 调音器按钮 (v2.7.0) (SVG图标: 音叉) - ModernButton 风格统一
+        self.tuner_btn = ModernButton(
+            I18n.t("tuner.window_title"), 'accent', 'tuner'
+        )
         self.tuner_btn.setToolTip(I18n.t("tuner.window_title") + " (Ctrl+T)")
-        self.tuner_btn.setPopupMode(QToolButton.InstantPopup)
-        self.tuner_btn.setMinimumSize(QSize(80, 36))
-        # 下拉菜单
-        tuner_menu = QMenu(self)
-        action_open_tuner = QAction(I18n.t("tuner.window_title"), self)
-        action_open_tuner.setIcon(load_icon('tuner'))
-        action_open_tuner.setShortcut("Ctrl+T")
-        action_open_tuner.triggered.connect(self._open_tuner)
-        tuner_menu.addAction(action_open_tuner)
-        self.tuner_btn.setMenu(tuner_menu)
-        # 点击主按钮也直接打开
         self.tuner_btn.clicked.connect(self._open_tuner)
         tb.addWidget(self.tuner_btn)
 
@@ -3987,220 +3974,53 @@ class DisplayWindow(QMainWindow):
     # ========== 标注管理 ==========
 
     def add_annotation(self,ann:Annotation)->None:
-        """添加标注(集成全局撤销)"""
-        self._anno_save_snapshot()  # 修改前保存快照
-        self.annotations.append(ann)
-        self.display_widget.set_annotations(self.annotations)
-        self._save_annotations()
+        """添加标注(集成全局撤销) - 委托给 ann_manager"""
+        self.ann_manager.add(ann)
 
     def _open_annotation_manager(self)->None:
         """打开标注管理器(保存引用供撤销/重做同步)"""
         dlg=AnnotationManagerDialog(self,self.annotations)
-        self._ann_manager = dlg  # 保存引用，用于撤销/重做时同步列表
+        self.ann_manager.set_active_manager(dlg)  # 供 undo/redo 同步
         dlg.annotationsChanged.connect(self._on_annotations_changed)
         dlg.exec_()
-        self._ann_manager = None  # 关闭后清除引用
+        self.ann_manager.set_active_manager(None)  # 关闭后清除引用
 
     def _on_annotations_changed(self,new_anns:List[Annotation])->None:
         """标注列表变更回调"""
         self.annotations=new_anns
         self.display_widget.set_annotations(self.annotations)
-        self._save_annotations()
+        self.ann_manager.save()
 
-    def _get_annotation_file_path(self)->str:
-        """
-        获取当前音轨的标注存储路径(同名.anno.json策略 + 分轨)
-        
-        原理: 标注文件与源文件放在同一目录:
-          - 非GTP/单轨: {源文件名}.anno.json (例: 晚安北京.png.anno.json)
-          - GTP多轨:   {源文件名}.t{轨道号}.anno.json (例: song.gp4.t0.anno.json, song.gp4.t1.anno.json)
-              每个音轨独立一个标注文件，切换音轨时自动加载对应轨道的标注。
-        
-        兼容性: 如果源文件路径无效(如多图模式)，回退到旧的 data/annotations/ 路径
-        
-        返回:
-            标注文件的绝对路径字符串
-        """
-        if isinstance(self.file_path, str) and self.file_path:
-            # GTP多轨文件: 文件名后追加 .t{track_idx}
-            if self.gtp_player and self.gtp_player.is_loaded:
-                return f"{self.file_path}.t{self.gtp_player.current_track}{ANNOTATION_EXT}"
-            # 非GTP/单轨文件: 直接追加 .anno.json
-            return self.file_path + ANNOTATION_EXT
-        # 回退: 多图模式等无法确定源文件时，用旧路径
-        base = "multi_image"
-        os.makedirs(ANNOTATION_DIR, exist_ok=True)
-        return os.path.join(ANNOTATION_DIR, f"{base}.json")
-
-    def _get_annotation_file_path_legacy(self)->str:
-        """
-        获取旧版标注存储路径(data/annotations/{base}.json)
-        用于向后兼容: 加载时同时检查新旧两个位置
-        """
-        if isinstance(self.file_path, str):
-            base = os.path.splitext(os.path.basename(self.file_path))[0]
-        else:
-            base = "multi_image"
-        os.makedirs(ANNOTATION_DIR, exist_ok=True)
-        return os.path.join(ANNOTATION_DIR, f"{base}.json")
+    # ========== 标注管理已迁移至 annotation_manager.AnnotationManager ==========
+    # 委托方法 (保留以兼容调用方):
+    #   self._load_annotations         → self.ann_manager.load()
+    #   self._save_annotations         → self.ann_manager.save()
+    #   self._switch_track_annotations  → self.ann_manager.switch_track(...)
+    #   self._anno_save_snapshot       → self.ann_manager.save_snapshot()
+    #   self._anno_undo                → self.ann_manager.undo()
+    #   self._anno_redo                → self.ann_manager.redo()
+    #   self._load_track_annotations   → self.ann_manager.load_track_annotations(...)
 
     def _load_annotations(self)->None:
-        """
-        从JSON加载标注 - 支持新旧两种路径(优先新路径)
-        
-        加载顺序:
-          1. 新路径: {源文件}.anno.json (同目录)
-          2. 旧路径: data/annotations/{base}.json (兼容旧版)
-        """
-        # 尝试新路径(同目录 .anno.json)
-        new_path = self._get_annotation_file_path()
-        old_path = self._get_annotation_file_path_legacy()
-        
-        load_from = None
-        if os.path.exists(new_path):
-            load_from = new_path
-        elif os.path.exists(old_path):
-            load_from = old_path  # 向后兼容: 旧位置有数据则加载
-        
-        if load_from:
-            try:
-                with open(load_from, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.annotations = [Annotation(**d) for d in data]
-                return
-            except Exception:
-                pass
-        self.annotations = []
+        self.ann_manager.load()
 
     def _save_annotations(self)->None:
-        """保存标注到JSON - 写入到源文件同目录的 .anno.json 文件"""
-        try:
-            fpath = self._get_annotation_file_path()
-            dname = os.path.dirname(fpath)
-            if dname:
-                os.makedirs(dname, exist_ok=True)
-            with open(fpath, 'w', encoding='utf-8') as f:
-                json.dump([asdict(a) for a in self.annotations], f,
-                          ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存标注失败: {e}")
+        self.ann_manager.save()
 
     def _switch_track_annotations(self, old_track:int, new_track:int)->None:
-        """
-        切换音轨时的标注切换(保存当前轨 → 加载目标轨)
-        
-        原理: GTP多轨文件每个音轨有独立的标注文件(.t0.anno.json, .t1.anno.json, ...)。
-              切换音轨时:
-                1. 将当前annotations存入分轨字典 _annotations_by_track[old_track]
-                2. 从字典或文件中加载 new_track 的 annotations
-                3. 更新画布显示 + 清空撤销/重做栈(跨轨撤销无意义)
-        
-        参数:
-            old_track: 切换前的音轨索引
-            new_track: 切换后的音轨索引
-        """
-        if old_track == new_track:
-            return
-
-        # 1. 保存当前轨标注到内存字典
-        self._annotations_by_track[old_track] = self.annotations.copy()
-
-        # 2. 持久化当前轨标注到文件(确保不丢失)
-        try:
-            fpath = self._get_annotation_file_path()  # 注意: 此时gtp_current_track还是old_track!
-            dname = os.path.dirname(fpath)
-            if dname:
-                os.makedirs(dname, exist_ok=True)
-            with open(fpath, 'w', encoding='utf-8') as f:
-                json.dump([asdict(a) for a in self.annotations], f,
-                          ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-        # 3. 加载目标轨标注(优先内存 > 文件 > 空列表)
-        # 先更新GTP播放器的当前音轨索引
-        if self.gtp_player:
-            self.gtp_player.current_track = new_track
-
-        if new_track in self._annotations_by_track and self._annotations_by_track[new_track]:
-            # 内存中有缓存
-            self.annotations = [Annotation(**asdict(a)) for a in self._annotations_by_track[new_track]]
-        else:
-            # 从文件加载或空列表
-            self._load_annotations()
-            self._annotations_by_track[new_track] = self.annotations.copy()
-
-        # 4. 更新画布显示
-        self.display_widget.set_annotations(self.annotations)
-
-        # 5. 清空撤销/重做栈(跨轨操作不应共享撤销历史)
-        self._undo_stack.clear()
-        self._redo_stack.clear()
-
-    # ========== 全局撤销/重做 ==========
+        self.ann_manager.switch_track(old_track, new_track)
 
     def _anno_save_snapshot(self)->None:
-        """
-        保存当前标注状态快照到撤销栈(修改前必须调用)
-        
-        性能优化(P0-3): 存储 dict 列表而非 Annotation 对象列表，
-                        避免每次快照创建N个Annotation对象。
-                        仅在撤销/重做时按需重建Annotation对象。
-        
-        使用场景: 所有修改annotations的操作前调用此方法:
-                  - 双击画布添加/编辑标注
-                  - 管理器中新增/编辑/删除/清空标注
-        """
-        snapshot = [asdict(a) for a in self.annotations]
-        self._undo_stack.append(snapshot)
-        self._redo_stack.clear()  # 新操作清空重做栈
-        # 限制深度防止内存膨胀
-        if len(self._undo_stack) > self._UNDO_MAX_DEPTH:
-            self._undo_stack.pop(0)
+        self.ann_manager.save_snapshot()
 
     def _anno_undo(self)->None:
-        """
-        Ctrl+Z 全局撤销 - 回退到上一个标注状态
-        
-        性能优化(P0-3): 栈中存储dict列表，撤销时按需重建Annotation对象。
-        """
-        if not self._undo_stack:
-            return
-        # 当前状态存入重做栈(存储dict，延迟重建)
-        redo_snap = [asdict(a) for a in self.annotations]
-        self._redo_stack.append(redo_snap)
-        # 恢复上一个状态(从dict重建Annotation)
-        prev = self._undo_stack.pop()
-        self.annotations = [Annotation(**d) for d in prev]
-        # 刷新UI
-        self.display_widget.set_annotations(self.annotations)
-        self._save_annotations()
-        # 同步管理器(如果打开着)
-        if hasattr(self, '_ann_manager') and self._ann_manager:
-            self._ann_manager.annotations = self.annotations
-            self._ann_manager._populate_list()
+        self.ann_manager.undo()
 
     def _anno_redo(self)->None:
-        """
-        Ctrl+Y 全局重做 - 恢复被撤销的状态
-        
-        性能优化(P0-3): 栈中存储dict列表，重做时按需重建Annotation对象。
-        """
-        if not self._redo_stack:
-            return
-        # 当前状态存入撤销栈(存储dict)
-        undo_snap = [asdict(a) for a in self.annotations]
-        self._undo_stack.append(undo_snap)
-        # 恢复重做状态(从dict重建Annotation)
-        nxt = self._redo_stack.pop()
-        self.annotations = [Annotation(**d) for d in nxt]
-        # 刷新UI
-        self.display_widget.set_annotations(self.annotations)
-        self._save_annotations()
-        # 同步管理器(如果打开着)
-        if hasattr(self, '_ann_manager') and self._ann_manager:
-            self._ann_manager.annotations = self.annotations
-            self._ann_manager._populate_list()
+        self.ann_manager.redo()
+
+    def _load_track_annotations(self, track_idx:int)->list:
+        return self.ann_manager.load_track_annotations(track_idx)
 
     def _create_annotation_at_cursor(self)->None:
         """
@@ -4616,24 +4436,6 @@ class DisplayWindow(QMainWindow):
             valid_imgs = valid_imgs[page_mode[1]-1:page_mode[2]]
         return (valid_imgs, self.annotations.copy(), "")
 
-    def _load_track_annotations(self, track_idx:int)->list:
-        """加载指定轨道的标注(从文件或内存缓存)"""
-        if track_idx in self._annotations_by_track and self._annotations_by_track[track_idx]:
-            return [Annotation(**asdict(a)) for a in self._annotations_by_track[track_idx]]
-        if self.gtp_player:
-            old_track = self.gtp_player.current_track
-            self.gtp_player.current_track = track_idx
-            fpath = self._get_annotation_file_path()
-            self.gtp_player.current_track = old_track
-        if os.path.exists(fpath):
-            try:
-                with open(fpath, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    return [Annotation(**d) for d in data]
-            except Exception:
-                pass
-        return []
-
     def _get_a4_size_px(self, dpi:int=300)->tuple:
         """
         获取A4纸的像素尺寸
@@ -5030,18 +4832,15 @@ class DisplayWindow(QMainWindow):
             self.time_end_label.setText(f"{secs//60:02d}:{secs%60:02d}")
 
     # ========== 调音器 (v2.7.0 新增) ==========
-    # 单例缓存: 多次打开调音器不创建新窗口
-    _tuner_dialog = None
-
     def _open_tuner(self) -> None:
         """
         打开调音器窗口 (v2.7.0)
 
-        入口: 工具栏按钮 / Ctrl+T 快捷键
-        行为: 复用同一个 TunerDialog 实例 (单例模式)
+        入口: 工具栏按钮 / Ctrl+T 快捷键 / SelectionWindow 工具栏按钮
+        行为: 复用 _tuner_dialog_singleton 单例 (跨类共享)
         异常: sounddevice / numpy 缺失时弹错误提示而不崩溃
         """
-        # 懒加载 tuner 模块 (sounddevice 在某些环境可能未装)
+        global _tuner_dialog_singleton
         try:
             from tuner import TunerDialog
         except ImportError as e:
@@ -5052,13 +4851,12 @@ class DisplayWindow(QMainWindow):
             )
             return
 
-        if DisplayWindow._tuner_dialog is None or \
-                not DisplayWindow._tuner_dialog.isVisible():
-            DisplayWindow._tuner_dialog = TunerDialog(parent=self)
-        # show() 而非 exec_(): 不阻塞当前窗口, 允许用户继续看谱
-        DisplayWindow._tuner_dialog.show()
-        DisplayWindow._tuner_dialog.raise_()
-        DisplayWindow._tuner_dialog.activateWindow()
+        if _tuner_dialog_singleton is None or \
+                not _tuner_dialog_singleton.isVisible():
+            _tuner_dialog_singleton = TunerDialog(parent=self)
+        _tuner_dialog_singleton.show()
+        _tuner_dialog_singleton.raise_()
+        _tuner_dialog_singleton.activateWindow()
 
     # ========== 全屏模式(v2.1.0新增) ==========
 
@@ -5833,6 +5631,12 @@ class SelectionWindow(QMainWindow):
         self.folder_label=QLabel(I18n.t("settings_window.folder_not_selected"))
         self.folder_button=QPushButton(I18n.t("settings_window.folder_btn"))
         self.folder_button.clicked.connect(self.select_folder)
+        # 调音器按钮 (v2.7.0) - 选择界面也可调音, 不必先打开文件
+        self.tuner_btn = ModernButton(
+            I18n.t("tuner.window_title"), 'accent', 'tuner'
+        )
+        self.tuner_btn.setToolTip(I18n.t("tuner.window_title"))
+        self.tuner_btn.clicked.connect(self._open_tuner)
         # 设置按钮: 点击打开设置对话框, 集中管理语言/主题/字体/GTP渲染参数
         self.settings_btn=QPushButton("⚙ " + I18n.t("settings_dialog.window_title"))
         self.settings_btn.setToolTip(I18n.t("settings_dialog.window_title"))
@@ -5844,6 +5648,7 @@ class SelectionWindow(QMainWindow):
         folder_layout.addWidget(self.folder_label)
         folder_layout.addWidget(self.folder_button)
         folder_layout.addStretch()
+        folder_layout.addWidget(self.tuner_btn)
         folder_layout.addWidget(self.settings_btn)
         folder_layout.addWidget(self.about_btn)
         main_layout.addLayout(folder_layout)
@@ -6068,6 +5873,38 @@ class SelectionWindow(QMainWindow):
         """打开关于对话框, 显示版本和作者信息"""
         dialog = AboutDialog(self)
         dialog.exec_()
+
+    # ========== 调音器 (v2.7.0 选择界面入口) ==========
+    # 独立于 DisplayWindow 的单例: 选择界面/查看界面都能用, 不需要先打开文件
+    _tuner_dialog = None
+
+    def _open_tuner(self) -> None:
+        """
+        打开调音器窗口 (v2.7.0)
+
+        与 DisplayWindow 共用同一单例: 任意界面打开后再切到另一界面,
+        不会创建新窗口 (避免多个 TunerDialog 抢占麦克风)
+        """
+        try:
+            from tuner import TunerDialog
+        except ImportError as e:
+            QMessageBox.warning(
+                self,
+                I18n.t("tuner.window_title"),
+                f"调音器依赖缺失: {e}\n请执行: pip install sounddevice numpy",
+            )
+            return
+
+        # 单例: 优先用现有窗口 (DisplayWindow 或 SelectionWindow 创建的)
+        if SelectionWindow._tuner_dialog is None or \
+                not SelectionWindow._tuner_dialog.isVisible():
+            SelectionWindow._tuner_dialog = TunerDialog(parent=self)
+        # 与 DisplayWindow 共享同一个实例 (跨类单例)
+        # 通过类属性互通, 这样无论从哪个窗口打开都显示同一个对话框
+        DisplayWindow._tuner_dialog = SelectionWindow._tuner_dialog
+        SelectionWindow._tuner_dialog.show()
+        SelectionWindow._tuner_dialog.raise_()
+        SelectionWindow._tuner_dialog.activateWindow()
 
     # ------------------------------------------------------------
     # 启动时静默更新检查

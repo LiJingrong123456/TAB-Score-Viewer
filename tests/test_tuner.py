@@ -478,14 +478,41 @@ class TestMainFileIntegration:
     """验证主文件含 _open_tuner 方法 (静态文本检查)"""
 
     def test_open_tuner_method_exists(self):
-        """主文件源码应含 _open_tuner 方法定义"""
+        """主文件源码应含 _open_tuner 方法定义 (DisplayWindow + SelectionWindow)"""
         from constants import _APP_BASE_DIR
         main_path = os.path.join(_APP_BASE_DIR, "TAB Score Viewer.py")
         with open(main_path, "r", encoding="utf-8") as f:
             src = f.read()
-        assert "def _open_tuner" in src, "_open_tuner 方法未定义"
+        # DisplayWindow + SelectionWindow 各有一个 _open_tuner
+        assert src.count("def _open_tuner") == 2, (
+            f"应有两个 _open_tuner (DisplayWindow + SelectionWindow), "
+            f"实际 {src.count('def _open_tuner')}"
+        )
         assert "from tuner import TunerDialog" in src, "主文件未导入 TunerDialog"
-        assert "tuner_btn" in src, "主文件未添加 tuner_btn 工具栏按钮"
+        # 工具栏 + 选择界面都有 tuner_btn
+        assert src.count("tuner_btn") >= 2, (
+            "tuner_btn 应在工具栏 + 选择界面至少出现 2 次"
+        )
+        # 模块级单例变量
+        assert "_tuner_dialog_singleton" in src, \
+            "缺少模块级 _tuner_dialog_singleton 单例变量"
+
+    def test_selection_window_has_tuner_btn(self):
+        """SelectionWindow 应在 folder_layout 区域包含 tuner_btn"""
+        from constants import _APP_BASE_DIR
+        main_path = os.path.join(_APP_BASE_DIR, "TAB Score Viewer.py")
+        with open(main_path, "r", encoding="utf-8") as f:
+            src = f.read()
+        # 验证 SelectionWindow 内 tuner_btn 出现
+        # 通过 find class 边界简化
+        sel_idx = src.find("class SelectionWindow")
+        assert sel_idx > 0
+        # 找到 _open_tuner 第二次定义位置 (SelectionWindow 内)
+        open_tuner_pos = src.find("def _open_tuner", sel_idx)
+        assert open_tuner_pos > sel_idx, "SelectionWindow 缺少 _open_tuner"
+        # 检查 tuner_btn 也在 SelectionWindow 内
+        sel_tuner_btn = src.find("self.tuner_btn", sel_idx)
+        assert sel_tuner_btn > sel_idx, "SelectionWindow 缺少 tuner_btn"
 
     def test_requirements_has_sounddevice(self):
         from constants import _APP_BASE_DIR
