@@ -54,6 +54,7 @@
     "position_label": "Позиция: {pct}%",
     "time_label": "Время: {time}",
     "shortcut_help": "Пробел: Играть/Пауза\n↑/↓: Изменить позицию\n←/→: Точная настройка скорости\nCtrl+K: Добавить аннотацию в позиции курсора\nCtrl+M: Переключить метроном\nПКМ по партитуре: Добавить аннотацию\nESC: Закрыть",
+    "shortcut_help_gtp": "Пробел: Играть/Пауза\nCtrl+K: Добавить аннотацию в позиции курсора\nCtrl+M: Переключить метроном\nПКМ по партитуре: Добавить аннотацию\nESC: Закрыть",
     "shortcut_group": "Горячие клавиши",
     "volume_group": "Громкость дорожек (GTP)",
     "metronome_group": "Метроном",
@@ -347,5 +348,15 @@
     "update_network_error_title": "Не удалось проверить обновления",
     "update_network_error_msg": "Не удалось подключиться к GitHub. Проверьте сеть и попробуйте снова.\n\nОшибка: {error}",
     "update_open_release_btn": "Открыть страницу релиза"
+  },
+  "soundfont_missing": {
+    "title": "Звуковая библиотека не найдена",
+    "main_message": "Не найдена библиотека FluidR3_GM.sf2. Воспроизведение GTP-файлов будет недоступно.",
+    "source_hint": "Если вы запускаете из исходного кода, поместите файл библиотеки в папку soundfont в корне проекта.",
+    "macos_hint": "macOS (упакованный .app): <app>.app/Contents/Resources/soundfont/",
+    "win_linux_hint": "Windows / Linux: <executable_dir>/_internal/soundfont/",
+    "recommend_label": "Рекомендуемая загрузка (переименуйте в FluidR3_GM.sf2):",
+    "download_btn": "Скачать",
+    "got_it_btn": "Понятно"
   }
 }

@@ -54,6 +54,7 @@
     "position_label": "位置: {pct}%",
     "time_label": "时间: {time}",
     "shortcut_help": "空格: 播放/暂停\n↑↓: 调整位置\n←→: 微调速度\nCtrl+K: 鼠标位置添加标注\nCtrl+M: 切换节拍器\n右键谱面: 添加标注\nESC: 关闭",
+    "shortcut_help_gtp": "空格: 播放/暂停\nCtrl+K: 鼠标位置添加标注\nCtrl+M: 切换节拍器\n右键谱面: 添加标注\nESC: 关闭",
     "shortcut_group": "快捷键",
     "volume_group": "音轨音量 (GTP)",
     "metronome_group": "节拍器",
@@ -347,5 +348,15 @@
     "update_network_error_title": "检查更新失败",
     "update_network_error_msg": "无法连接到 GitHub, 请检查网络后重试。\n\n错误信息: {error}",
     "update_open_release_btn": "打开 Release 页面"
+  },
+  "soundfont_missing": {
+    "title": "音色库缺失",
+    "main_message": "未找到 FluidR3_GM.sf2 音色库，GTP 文件播放将不可用。",
+    "source_hint": "如果是从源码运行，请将音色库文件放到项目根目录的 soundfont 文件夹。",
+    "macos_hint": "macOS（打包好的 .app）：<app>.app/Contents/Resources/soundfont/",
+    "win_linux_hint": "Windows / Linux：可执行文件同目录的 _internal/soundfont/",
+    "recommend_label": "推荐下载（需重命名为 FluidR3_GM.sf2）：",
+    "download_btn": "下载",
+    "got_it_btn": "了解"
   }
 }

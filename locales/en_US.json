@@ -54,6 +54,7 @@
     "position_label": "Position: {pct}%",
     "time_label": "Time: {time}",
     "shortcut_help": "Space: Play/Pause\nUp/Down: Adjust Position\nLeft/Right: Fine-tune Speed\nCtrl+K: Add annotation at cursor\nCtrl+M: Toggle Metronome\nRight-click score: Add annotation\nESC: Close",
+    "shortcut_help_gtp": "Space: Play/Pause\nCtrl+K: Add annotation at cursor\nCtrl+M: Toggle Metronome\nRight-click score: Add annotation\nESC: Close",
     "shortcut_group": "Shortcuts",
     "volume_group": "Track Volume (GTP)",
     "metronome_group": "Metronome",
@@ -347,5 +348,15 @@
     "update_network_error_title": "Update Check Failed",
     "update_network_error_msg": "Unable to connect to GitHub. Please check your network and try again.\n\nError: {error}",
     "update_open_release_btn": "Open Release Page"
+  },
+  "soundfont_missing": {
+    "title": "SoundFont Library Missing",
+    "main_message": "FluidR3_GM.sf2 soundfont not found. GTP file playback will be unavailable.",
+    "source_hint": "If running from source, place the soundfont file in the project's root soundfont folder.",
+    "macos_hint": "macOS (packaged .app): <app>.app/Contents/Resources/soundfont/",
+    "win_linux_hint": "Windows / Linux: <executable_dir>/_internal/soundfont/",
+    "recommend_label": "Recommended download (rename to FluidR3_GM.sf2):",
+    "download_btn": "Download",
+    "got_it_btn": "Got it"
   }
 }
