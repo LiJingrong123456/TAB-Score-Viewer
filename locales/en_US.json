@@ -62,7 +62,9 @@
     "metronome_volume": "Volume:",
     "metronome_gain": "Gain:",
     "metronome_bpm": "BPM:",
-    "metronome_beat": "Time Sig.:"
+    "metronome_beat": "Time Sig.:",
+    "countdown_hint": "Countdown (press Esc or click play again to cancel)",
+    "countdown_cancel_hint": "Press Esc or click play again to cancel countdown"
   },
   "bottom_bar": {
     "page_total": "/ {total}"

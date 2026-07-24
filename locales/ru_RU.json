@@ -62,7 +62,9 @@
     "metronome_volume": "Громкость:",
     "metronome_gain": "Усиление:",
     "metronome_bpm": "BPM:",
-    "metronome_beat": "Размер:"
+    "metronome_beat": "Размер:",
+    "countdown_hint": "Подготовка (Esc или повторное нажатие Play для отмены)",
+    "countdown_cancel_hint": "Esc или повторное нажатие Play для отмены"
   },
   "bottom_bar": {
     "page_total": "из {total}"

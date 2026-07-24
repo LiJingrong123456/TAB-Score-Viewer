@@ -62,7 +62,9 @@
     "metronome_volume": "音量:",
     "metronome_gain": "增益:",
     "metronome_bpm": "BPM:",
-    "metronome_beat": "拍号:"
+    "metronome_beat": "拍号:",
+    "countdown_hint": "预备拍 (按 Esc 或再次点击播放取消)",
+    "countdown_cancel_hint": "按 Esc 或再次点击播放 取消预备拍"
   },
   "bottom_bar": {
     "page_total": "/ {total}"

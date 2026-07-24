@@ -169,6 +169,95 @@ _tuner_dialog_singleton = None
 # 自定义UI组件
 # ============================================================
 
+
+class CountdownOverlay(QWidget):
+    """
+    预备拍倒计时覆盖层 (v2.7.0)
+
+    位置: 浮在 DisplayWidget 之上, 全屏铺满
+    内容: 半透明黑色背景 + 中央大数字 (3 → 2 → 1) + 顶部提示文字
+    行为: 数字每秒更新; 倒计时结束由 DisplayWindow 主动 hide()
+    取消: 再次点击播放按钮 或 Esc 键, 由 DisplayWindow 调 hide()
+    """
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        # 不抢焦点, 避免拦截键盘事件 (Esc 由 DisplayWindow.keyPressEvent 处理)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+
+        self._number_text: str = "3"
+        self._hint_text: str = ""
+
+    def set_number(self, n: int, hint: str = "") -> None:
+        """更新倒计时数字; n=-1 表示显示「开始!」"""
+        if n > 0:
+            self._number_text = str(n)
+        elif n == 0:
+            self._number_text = "GO"
+        else:
+            self._number_text = "GO"
+        self._hint_text = hint
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        # 半透明黑色背景
+        p.fillRect(self.rect(), QColor(0, 0, 0, 160))
+
+        # 顶部提示文字
+        if self._hint_text:
+            hint_font = QFont(p.font())
+            hint_font.setPointSize(14)
+            hint_font.setBold(False)
+            p.setFont(hint_font)
+            p.setPen(QColor(220, 220, 220))
+            fm_hint = QFontMetrics(hint_font)
+            hint_w = fm_hint.horizontalAdvance(self._hint_text)
+            p.drawText(
+                (self.width() - hint_w) // 2,
+                self.height() // 2 - 120,
+                self._hint_text
+            )
+
+        # 中央大数字
+        big_font = QFont(p.font())
+        big_font.setPointSize(140 if self._number_text == "GO" else 180)
+        big_font.setBold(True)
+        p.setFont(big_font)
+
+        # 数字颜色: 3/2/1 白色, GO 绿色
+        if self._number_text == "GO":
+            p.setPen(QColor(16, 185, 129))  # success
+        else:
+            p.setPen(QColor(255, 255, 255))
+        fm_big = QFontMetrics(big_font)
+        num_w = fm_big.horizontalAdvance(self._number_text)
+        num_h = fm_big.ascent()
+        # 垂直居中略偏上
+        p.drawText(
+            (self.width() - num_w) // 2,
+            (self.height() + num_h) // 2 - 20,
+            self._number_text
+        )
+
+        # 底部小提示 (取消方法)
+        tip_font = QFont(p.font())
+        tip_font.setPointSize(11)
+        p.setFont(tip_font)
+        p.setPen(QColor(180, 180, 180))
+        tip = I18n.t("control_panel.countdown_cancel_hint")
+        fm_tip = QFontMetrics(tip_font)
+        tip_w = fm_tip.horizontalAdvance(tip)
+        p.drawText(
+            (self.width() - tip_w) // 2,
+            self.height() - 40,
+            tip
+        )
+
 class ModernButton(QPushButton):
     """
     现代化按钮组件 - 支持动态主题切换 + SVG 图标
@@ -2032,6 +2121,16 @@ class DisplayWindow(QMainWindow):
         self.is_fullscreen:bool=False
         self._saved_geometry=None  # 类型: Optional[QByteArray]
 
+        # === [v2.7.0] 预备拍 (Countdown) 状态 ===
+        # GTP 歌曲流全新开始前插入 3 秒倒计时, 让用户有时间准备
+        # 倒计时期间不调 gtp_player.play(), 倒计时结束才真正开始播放
+        self._countdown_active:bool=False
+        self._countdown_remaining:int=0
+        self._countdown_seconds:int=3
+        self._countdown_timer:Optional[QTimer]=None
+        self._countdown_overlay:Optional['CountdownOverlay']=None
+        self._countdown_pending_seek_ms:float=0.0
+
         self.init_ui()
         self._load_annotations()               # 加载已有标注
         self.load_content_async()              # 异步加载内容
@@ -2962,7 +3061,34 @@ class DisplayWindow(QMainWindow):
           - 若处于暂停状态(is_paused=True): 调用 resume()，
             歌曲 MIDI 流恢复，节拍器继续保持独立播放（暂停期间没停）
           - 若非暂停: 全新开始或从停止恢复，按原逻辑 seek + play
+
+        [v2.7.0 / 预备拍] GTP 模式 + 全新开始（非暂停恢复）时:
+          - 先启动 3 秒倒计时, 倒计时期间不调 gtp_player.play()
+          - 倒计时结束才真正 seek + play, 用户可有时间准备
+          - 取消: 倒计时期间再点播放按钮 / 按 Esc
         """
+        # 倒计时期间再次点击播放 → 取消预备拍, 不开始播放
+        if self._countdown_active:
+            self._cancel_countdown()
+            return
+
+        # [v2.7.0] GTP 模式 + 全新开始 → 启动预备拍倒计时
+        # 条件: GTP 模式 + 有可播放音频 + 非暂停恢复 + 有保存的 seek 时间或从头开始
+        if (self.gtp_player and self.gtp_player.is_audio_ready
+                and self.file_type == 'gtp'
+                and not self.gtp_player.is_paused):
+            # 如果有保存的暂停时间, 记下来等倒计时结束再 seek
+            self._countdown_pending_seek_ms = (
+                self._paused_time_ms if self._paused_time_ms > 0 else 0.0
+            )
+            self._start_countdown()
+            return
+
+        # 倒计时之外的情况 (恢复暂停 / 图片模式 / 节拍器) 走原逻辑
+        self._do_actual_playback()
+
+    def _do_actual_playback(self) -> None:
+        """实际开始播放 (原 start_playback 的核心逻辑, 被 start_playback / 倒计时结束共用)"""
         # 使用固定30fps定时器(33ms)，不再用base_speed作为间隔
         self.timer.start(33)
         self._last_tick_time = time.perf_counter()  # 重置时间戳，从当前时刻开始计时
@@ -2989,6 +3115,116 @@ class DisplayWindow(QMainWindow):
         self.play_btn.setText(I18n.t("control_panel.pause_btn"))
         self.play_btn.set_color('warning')  # 暂停状态: 橙色警告色
         self.stop_btn.setEnabled(True)
+
+    # ========== 预备拍倒计时 (v2.7.0 新增) ==========
+
+    def _start_countdown(self) -> None:
+        """
+        启动 3 秒预备拍倒计时 (仅 GTP 模式全新开始时)
+
+        [v2.7.0 改进] 倒计时开始前先停止任何在播放的节拍器:
+          - GTP 暂停状态: 节拍器保持独立播放 (设计意图)
+          - 此时开始全新播放, 用户期望: 节拍器先停, 倒计时结束再与歌曲流一起启动
+          - 方案: 调 gtp_player.stop() 完全重置, 倒计时结束 play() 会按 set_metronome 状态
+            自动重新启动歌曲流 + 节拍器
+
+        [v2.7.0 改进] 倒计时期间定时器 (self.timer) 不启动, 避免误滚播放条
+        """
+        # [v2.7.0] 全新开始前: 完全停止现有音频 (含正在独立播放的节拍器)
+        # 否则 3 秒倒计时期间节拍器会继续响, 体验割裂
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            # 关键: 完整重置而非仅暂停, 否则节拍器线程仍存活
+            # 倒计时结束调 play() 时会按 set_metronome 状态自动重启节拍器
+            self.gtp_player.stop()
+
+        # [v2.7.0] 完全重置: 清空 _paused_time_ms (因为 gtp_player.stop() 已经重置 seek)
+        # 倒计时结束应从歌曲开头开始播放
+        self._paused_time_ms = 0.0
+
+        self._countdown_active = True
+        self._countdown_remaining = self._countdown_seconds  # 3
+
+        # 创建 / 复用覆盖层
+        if self._countdown_overlay is None:
+            self._countdown_overlay = CountdownOverlay(self.display_widget)
+        # 覆盖在 display_widget 整个区域
+        self._countdown_overlay.setGeometry(self.display_widget.rect())
+        self._countdown_overlay.raise_()
+        self._countdown_overlay.show()
+        self._countdown_overlay.set_number(
+            self._countdown_remaining,
+            I18n.t("control_panel.countdown_hint")
+        )
+
+        # 启动 1 秒 QTimer
+        if self._countdown_timer is None:
+            self._countdown_timer = QTimer(self)
+            self._countdown_timer.timeout.connect(self._on_countdown_tick)
+        self._countdown_timer.start(1000)
+
+    def _on_countdown_tick(self) -> None:
+        """倒计时每秒回调"""
+        self._countdown_remaining -= 1
+        if self._countdown_remaining > 0:
+            # 更新数字
+            if self._countdown_overlay:
+                self._countdown_overlay.set_number(
+                    self._countdown_remaining,
+                    I18n.t("control_panel.countdown_hint")
+                )
+        else:
+            # 倒计时结束 → 显示 GO! + 短暂停顿 + 真正开始播放
+            self._finish_countdown()
+
+    def _finish_countdown(self) -> None:
+        """倒计时结束: 显示 GO! 0.5 秒后开始播放"""
+        # 停止 1 秒定时器
+        if self._countdown_timer:
+            self._countdown_timer.stop()
+
+        # 显示 GO!
+        if self._countdown_overlay:
+            self._countdown_overlay.set_number(0)
+
+        # 0.5 秒后真正开始播放
+        QTimer.singleShot(500, self._after_go_signal)
+
+    def _after_go_signal(self) -> None:
+        """
+        GO! 显示 0.5 秒后: 隐藏覆盖层 + seek + 真正播放
+
+        [v2.7.0 改进] 同时启动节拍器:
+          - 显式调 gtp_player.set_metronome 同步配置 (即使 _start_countdown 中已 stop)
+          - play() 内部按 set_metronome 状态自动启停节拍器
+          - 行为:
+              * _metronome_enabled=True → 歌曲流 + 节拍器同步启动
+              * _metronome_enabled=False → 仅歌曲流
+        """
+        # 隐藏覆盖层
+        if self._countdown_overlay:
+            self._countdown_overlay.hide()
+        self._countdown_active = False
+        # 把暂存的 seek 时间还原给 _paused_time_ms 让 _do_actual_playback 使用
+        if self._countdown_pending_seek_ms > 0:
+            self._paused_time_ms = self._countdown_pending_seek_ms
+        # [v2.7.0] 双重保险: 显式同步节拍器配置到 ApolloTab
+        # 即使 _start_countdown 中已 stop, set_metronome 状态也应保留
+        if self.gtp_player and self.gtp_player.is_audio_ready:
+            self.gtp_player.set_metronome(
+                self._metronome_enabled,
+                self._metronome_volume,
+                self._metronome_gain,
+            )
+        self._do_actual_playback()
+
+    def _cancel_countdown(self) -> None:
+        """取消倒计时 (用户再次点击播放按钮 或 按 Esc)"""
+        if self._countdown_timer:
+            self._countdown_timer.stop()
+        if self._countdown_overlay:
+            self._countdown_overlay.hide()
+        self._countdown_active = False
+        self._countdown_pending_seek_ms = 0.0
 
     def closeEvent(self, event):
         """
@@ -5013,7 +5249,10 @@ class DisplayWindow(QMainWindow):
             elif event.key()==Qt.Key_F11:           # F11: 切换全屏模式(v2.1.0新增)
                 self.toggle_fullscreen()
             elif event.key()==Qt.Key_Escape:        # ESC: 全屏时退出全屏，否则关闭窗口
-                if self.is_fullscreen:
+                # [v2.7.0] 倒计时期间按 Esc → 取消预备拍
+                if self._countdown_active:
+                    self._cancel_countdown()
+                elif self.is_fullscreen:
                     self.exit_fullscreen()  # v2.1.0修改: 全屏模式下ESC退出全屏而非关闭
                 else:
                     self.close()             # 窗口模式保持原有行为: 关闭窗口
